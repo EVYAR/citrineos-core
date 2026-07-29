@@ -1,0 +1,33 @@
+name: Sync dev to Gitea
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-gitea-dev
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mirror dev to Gitea
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          git -c http.extraHeader="Authorization: token ${GITEA_TOKEN}" \
+            push "https://git.samasha.ir/evyar/${repo_name}.git" \
+            HEAD:refs/heads/dev
