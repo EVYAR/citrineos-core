@@ -7,7 +7,7 @@ FROM --platform=${BUILDPLATFORM:-linux/amd64} node:24.16.0 AS build
 
 # Corepack otherwise downloads pnpm from registry.npmjs.org, which is not
 # reliably reachable from the Dokploy build host.
-ENV COREPACK_NPM_REGISTRY=https://mirror2.chabokan.net/npm
+ENV COREPACK_NPM_REGISTRY=https://mirror2.chabokan.net/npm/
 ENV COREPACK_DEFAULT_TO_LATEST=0
 
 RUN corepack enable
@@ -27,7 +27,7 @@ RUN pnpm --filter "@citrineos/server..." build
 # Using a slim image to reduce the final image size
 FROM node:24.16.0-slim
 
-ENV COREPACK_NPM_REGISTRY=https://mirror2.chabokan.net/npm
+ENV COREPACK_NPM_REGISTRY=https://mirror2.chabokan.net/npm/
 ENV COREPACK_DEFAULT_TO_LATEST=0
 
 RUN corepack enable
