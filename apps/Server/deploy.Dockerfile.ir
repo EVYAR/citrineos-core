@@ -2,13 +2,14 @@
 #
 #  SPDX-License-Identifier: Apache-2.0
 
-FROM --platform=${BUILDPLATFORM:-linux/amd64} node:24.16.0 AS build
+ARG NODE_IMAGE=git.ev-yar.ir/evyar/node:24-alpine
+FROM --platform=${BUILDPLATFORM:-linux/amd64} ${NODE_IMAGE} AS build
 
 WORKDIR /usr/local/apps/citrineos
 
-# Use the deployment mirror directly because Corepack's metadata lookup against
-# the public npm registry is not reliably reachable from the Iran build host.
-RUN npm config set registry https://mirror2.chabokan.net/npm/ \
+# Use the internal Verdaccio mirror directly because Corepack's metadata lookup
+# against the public npm registry is not reliably reachable from the Iran host.
+RUN npm config set registry http://89.42.199.156:4873/ \
     && npm install --global pnpm@10.19.0
 ENV npm_config_nodedir=/usr/local
 
@@ -16,9 +17,9 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/server..." build
 
-FROM node:24.16.0-slim
+FROM ${NODE_IMAGE}
 
-RUN npm config set registry https://mirror2.chabokan.net/npm/ \
+RUN npm config set registry http://89.42.199.156:4873/ \
     && npm install --global pnpm@10.19.0
 
 COPY --from=build /usr/local/apps/citrineos /usr/local/apps/citrineos
