@@ -80,15 +80,26 @@ export class S3Storage implements ConfigStore {
   }
 
   async getFile(id: string, filePath?: string): Promise<string | undefined> {
-    const command = new GetObjectCommand({
-      Bucket: filePath ? filePath : this.defaultBucketName,
-      Key: id,
-    });
-    const { Body } = await this.s3Client.send(command);
+    try {
+      const command = new GetObjectCommand({
+        Bucket: filePath ? filePath : this.defaultBucketName,
+        Key: id,
+      });
+      const { Body } = await this.s3Client.send(command);
 
-    if (!Body) return;
+      if (!Body) return;
 
-    return await S3Storage.streamToString(Body as Readable);
+      return await S3Storage.streamToString(Body as Readable);
+    } catch (error: any) {
+      if (
+        error.name === 'NotFound' ||
+        error.name === 'NoSuchKey' ||
+        error.$metadata?.httpStatusCode === 404
+      ) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async exists(path: string): Promise<boolean> {
