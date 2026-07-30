@@ -4,6 +4,7 @@
 import {
   CreateBucketCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -90,8 +91,25 @@ export class S3Storage implements ConfigStore {
     return await S3Storage.streamToString(Body as Readable);
   }
 
-  async exists(_path: string): Promise<boolean> {
-    throw new Error('exists is not implemented for S3 storage');
+  async exists(path: string): Promise<boolean> {
+    try {
+      await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.defaultBucketName,
+          Key: path,
+        }),
+      );
+      return true;
+    } catch (error: any) {
+      if (
+        error.name === 'NotFound' ||
+        error.name === 'NoSuchKey' ||
+        error.$metadata?.httpStatusCode === 404
+      ) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   async createDirectory(_path: string, _options?: { recursive?: boolean }): Promise<void> {
