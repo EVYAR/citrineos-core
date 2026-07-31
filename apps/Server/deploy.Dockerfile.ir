@@ -2,7 +2,7 @@
 #
 #  SPDX-License-Identifier: Apache-2.0
 
-ARG NODE_IMAGE=git.ev-yar.ir/evyar/node:24-alpine
+ARG NODE_IMAGE=git.ev-yar.ir/evyar/node:24.16.0-alpine
 FROM --platform=${BUILDPLATFORM:-linux/amd64} ${NODE_IMAGE} AS build
 
 WORKDIR /usr/local/apps/citrineos
