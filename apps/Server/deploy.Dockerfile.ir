@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 #  SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 #
 #  SPDX-License-Identifier: Apache-2.0
@@ -14,6 +15,50 @@ RUN npm config set registry http://89.42.199.156:4873/ \
 ENV npm_config_nodedir=/usr/local
 
 COPY . .
+
+# Upstream S3Storage still leaves ConfigStore.exists() unimplemented. Patch the
+# build context only so the forked TypeScript source remains unchanged.
+RUN node <<'NODE'
+const fs = require('node:fs');
+const path = 'packages/core/src/util/files/s3Storage.ts';
+let source = fs.readFileSync(path, 'utf8');
+
+const importNeedle = `  GetObjectCommand,
+  PutObjectCommand,`;
+const importReplacement = `  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,`;
+const existsNeedle = `  async exists(_path: string): Promise<boolean> {
+    throw new Error('exists is not implemented for S3 storage');
+  }`;
+const existsReplacement = `  async exists(path: string): Promise<boolean> {
+    try {
+      await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: this.defaultBucketName,
+          Key: path,
+        }),
+      );
+      return true;
+    } catch (error: any) {
+      if (
+        error.name === 'NotFound' ||
+        error.name === 'NoSuchKey' ||
+        error.$metadata?.httpStatusCode === 404
+      ) {
+        return false;
+      }
+      throw error;
+    }
+  }`;
+
+if (!source.includes(importNeedle) || !source.includes(existsNeedle)) {
+  throw new Error('Unexpected S3Storage source; refusing to apply build-only patch');
+}
+source = source.replace(importNeedle, importReplacement).replace(existsNeedle, existsReplacement);
+fs.writeFileSync(path, source);
+NODE
+
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/server..." build
 
