@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 #  SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 #
 #  SPDX-License-Identifier: Apache-2.0
@@ -18,46 +17,7 @@ COPY . .
 
 # Upstream S3Storage still leaves ConfigStore.exists() unimplemented. Patch the
 # build context only so the forked TypeScript source remains unchanged.
-RUN node <<'NODE'
-const fs = require('node:fs');
-const path = 'packages/core/src/util/files/s3Storage.ts';
-let source = fs.readFileSync(path, 'utf8');
-
-const importNeedle = `  GetObjectCommand,
-  PutObjectCommand,`;
-const importReplacement = `  GetObjectCommand,
-  HeadObjectCommand,
-  PutObjectCommand,`;
-const existsNeedle = `  async exists(_path: string): Promise<boolean> {
-    throw new Error('exists is not implemented for S3 storage');
-  }`;
-const existsReplacement = `  async exists(path: string): Promise<boolean> {
-    try {
-      await this.s3Client.send(
-        new HeadObjectCommand({
-          Bucket: this.defaultBucketName,
-          Key: path,
-        }),
-      );
-      return true;
-    } catch (error: any) {
-      if (
-        error.name === 'NotFound' ||
-        error.name === 'NoSuchKey' ||
-        error.$metadata?.httpStatusCode === 404
-      ) {
-        return false;
-      }
-      throw error;
-    }
-  }`;
-
-if (!source.includes(importNeedle) || !source.includes(existsNeedle)) {
-  throw new Error('Unexpected S3Storage source; refusing to apply build-only patch');
-}
-source = source.replace(importNeedle, importReplacement).replace(existsNeedle, existsReplacement);
-fs.writeFileSync(path, source);
-NODE
+RUN echo 'Y29uc3QgZnMgPSByZXF1aXJlKCdub2RlOmZzJyk7CmNvbnN0IHBhdGggPSAncGFja2FnZXMvY29yZS9zcmMvdXRpbC9maWxlcy9zM1N0b3JhZ2UudHMnOwpsZXQgc291cmNlID0gZnMucmVhZEZpbGVTeW5jKHBhdGgsICd1dGY4Jyk7Cgpjb25zdCBpbXBvcnROZWVkbGUgPSBgICBHZXRPYmplY3RDb21tYW5kLAogIFB1dE9iamVjdENvbW1hbmQsYDsKY29uc3QgaW1wb3J0UmVwbGFjZW1lbnQgPSBgICBHZXRPYmplY3RDb21tYW5kLAogIEhlYWRPYmplY3RDb21tYW5kLAogIFB1dE9iamVjdENvbW1hbmQsYDsKY29uc3QgZXhpc3RzTmVlZGxlID0gYCAgYXN5bmMgZXhpc3RzKF9wYXRoOiBzdHJpbmcpOiBQcm9taXNlPGJvb2xlYW4+IHsKICAgIHRocm93IG5ldyBFcnJvcignZXhpc3RzIGlzIG5vdCBpbXBsZW1lbnRlZCBmb3IgUzMgc3RvcmFnZScpOwogIH1gOwpjb25zdCBleGlzdHNSZXBsYWNlbWVudCA9IGAgIGFzeW5jIGV4aXN0cyhwYXRoOiBzdHJpbmcpOiBQcm9taXNlPGJvb2xlYW4+IHsKICAgIHRyeSB7CiAgICAgIGF3YWl0IHRoaXMuczNDbGllbnQuc2VuZCgKICAgICAgICBuZXcgSGVhZE9iamVjdENvbW1hbmQoewogICAgICAgICAgQnVja2V0OiB0aGlzLmRlZmF1bHRCdWNrZXROYW1lLAogICAgICAgICAgS2V5OiBwYXRoLAogICAgICAgIH0pLAogICAgICApOwogICAgICByZXR1cm4gdHJ1ZTsKICAgIH0gY2F0Y2ggKGVycm9yOiBhbnkpIHsKICAgICAgaWYgKAogICAgICAgIGVycm9yLm5hbWUgPT09ICdOb3RGb3VuZCcgfHwKICAgICAgICBlcnJvci5uYW1lID09PSAnTm9TdWNoS2V5JyB8fAogICAgICAgIGVycm9yLiRtZXRhZGF0YT8uaHR0cFN0YXR1c0NvZGUgPT09IDQwNAogICAgICApIHsKICAgICAgICByZXR1cm4gZmFsc2U7CiAgICAgIH0KICAgICAgdGhyb3cgZXJyb3I7CiAgICB9CiAgfWA7CgppZiAoIXNvdXJjZS5pbmNsdWRlcyhpbXBvcnROZWVkbGUpIHx8ICFzb3VyY2UuaW5jbHVkZXMoZXhpc3RzTmVlZGxlKSkgewogIHRocm93IG5ldyBFcnJvcignVW5leHBlY3RlZCBTM1N0b3JhZ2Ugc291cmNlOyByZWZ1c2luZyB0byBhcHBseSBidWlsZC1vbmx5IHBhdGNoJyk7Cn0Kc291cmNlID0gc291cmNlLnJlcGxhY2UoaW1wb3J0TmVlZGxlLCBpbXBvcnRSZXBsYWNlbWVudCkucmVwbGFjZShleGlzdHNOZWVkbGUsIGV4aXN0c1JlcGxhY2VtZW50KTsKZnMud3JpdGVGaWxlU3luYyhwYXRoLCBzb3VyY2UpOwo=' | base64 -d | node
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/server..." build
