@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out complete history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -29,5 +29,5 @@ jobs:
           set -euo pipefail
           repo_name="${GITHUB_REPOSITORY#*/}"
           git -c http.extraHeader="Authorization: token ${GITEA_TOKEN}" \
-            push "https://git.samasha.ir/evyar/${repo_name}.git" \
+            push "https://git.ev-yar.ir/evyar/${repo_name}.git" \
             HEAD:refs/heads/dev
