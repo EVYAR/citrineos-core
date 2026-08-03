@@ -1,0 +1,34 @@
+#  SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+#
+#  SPDX-License-Identifier: Apache-2.0
+
+ARG NODE_IMAGE=git.ev-yar.ir/evyar/node:24.16.0-alpine
+FROM --platform=${BUILDPLATFORM:-linux/amd64} ${NODE_IMAGE} AS build
+
+WORKDIR /usr/local/apps/citrineos
+
+# Use the internal Verdaccio mirror directly because Corepack's metadata lookup
+# against the public npm registry is not reliably reachable from the Iran host.
+RUN npm config set registry http://89.42.199.156:4873/ \
+    && npm install --global pnpm@10.19.0
+ENV npm_config_nodedir=/usr/local
+
+COPY . .
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter "@citrineos/ocpp-server..." build
+
+FROM ${NODE_IMAGE}
+
+RUN npm config set registry http://89.42.199.156:4873/ \
+    && npm install --global pnpm@10.19.0
+
+COPY --from=build /usr/local/apps/citrineos /usr/local/apps/citrineos
+
+WORKDIR /usr/local/apps/citrineos
+
+RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
+
+EXPOSE ${PORT}
+
+ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]
