@@ -4,8 +4,8 @@
 services:
   citrine-core:
     build:
-      context: ../
-      dockerfile: ./Server/deploy.Dockerfile
+      context: ../..
+      dockerfile: ./apps/ocpp-server/deploy.Dockerfile.ir
     environment:
       APP_NAME: ${APP_NAME:-all}
       APP_ENV: docker
@@ -23,8 +23,8 @@ services:
       BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_FORCE_PATH_STYLE: ${BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_FORCE_PATH_STYLE:-true}
       BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_ACCESS_KEY_ID: ${BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_ACCESS_KEY_ID}
       BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_SECRET_ACCESS_KEY: ${BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_SECRET_ACCESS_KEY}
-      CITRINEOS_util_messageBroker_amqp_url: ${CITRINEOS_UTIL_MESSAGEBROKER_AMQP_URL}
-      CITRINEOS_util_cache_redis_url: ${CITRINEOS_UTIL_CACHE_REDIS_URL}
+      CITRINEOS_UTIL_MESSAGEBROKER_AMQP_URL: ${CITRINEOS_UTIL_MESSAGEBROKER_AMQP_URL}
+      CITRINEOS_UTIL_CACHE_REDIS_URL: ${CITRINEOS_UTIL_CACHE_REDIS_URL}
     expose:
       - "8080"
       - "8081"
