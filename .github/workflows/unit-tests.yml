@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
     outputs:
       base: ${{ steps.filter.outputs.base }}
       core: ${{ steps.filter.outputs.core }}
@@ -48,7 +48,7 @@ jobs:
   tests:
     needs: changes
     if: ${{ needs.changes.outputs.base == 'true' || needs.changes.outputs.core == 'true' || needs.changes.outputs.server == 'true' || needs.changes.outputs.shared == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
 
     steps:
       - name: Checkout repository
@@ -79,7 +79,7 @@ jobs:
   operator-ui-e2e:
     needs: changes
     if: ${{ needs.changes.outputs.operator-ui == 'true' || needs.changes.outputs.shared == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
     timeout-minutes: 45
 
     steps:
