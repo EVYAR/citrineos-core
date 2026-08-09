@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
     outputs:
       swagger_valid: ${{ steps.validate-swagger.outputs.swagger_valid }}
 
@@ -53,7 +53,7 @@ jobs:
   publish-swagger:
     needs: build
     if: needs.build.outputs.swagger_valid == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
 
     steps:
       - name: Download Swagger Artifact
