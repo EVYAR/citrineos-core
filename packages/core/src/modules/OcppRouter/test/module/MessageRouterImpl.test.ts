@@ -566,6 +566,15 @@ describe('MessageRouterImpl', () => {
       await expect(
         router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID),
       ).rejects.toThrow(RetryMessageError);
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        STATION_ID,
+        expect.objectContaining({
+          success: false,
+          outcome: 'DISPATCH_FAILED',
+          error: expect.objectContaining({ code: 'CALL_ALREADY_IN_PROGRESS' }),
+        }),
+      );
     });
 
     it('should return success false when boot status is Rejected', async () => {
@@ -582,6 +591,15 @@ describe('MessageRouterImpl', () => {
 
       expect(result.success).toBe(false);
       expect(networkHook).not.toHaveBeenCalled();
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        STATION_ID,
+        expect.objectContaining({
+          success: false,
+          outcome: 'DISPATCH_FAILED',
+          error: expect.objectContaining({ code: 'REGISTRATION_REJECTED' }),
+        }),
+      );
     });
 
     it('should allow TriggerMessage<BootNotification> even when Rejected', async () => {
@@ -622,6 +640,84 @@ describe('MessageRouterImpl', () => {
         CORRELATION_ID,
         CacheNamespace.Transactions + IDENTIFIER,
       );
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        STATION_ID,
+        expect.objectContaining({
+          success: false,
+          outcome: 'DISPATCH_FAILED',
+          error: expect.objectContaining({ code: 'NETWORK_SEND_FAILED' }),
+        }),
+      );
+    });
+
+    it('should callback with TIMED_OUT when the charger never answers', async () => {
+      vi.useFakeTimers();
+      try {
+        cache.get.mockResolvedValue(null);
+
+        await router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID);
+        await vi.advanceTimersByTimeAsync(config.maxCallLengthSeconds * 1000);
+
+        expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
+          CORRELATION_ID,
+          STATION_ID,
+          expect.objectContaining({
+            success: false,
+            outcome: 'TIMED_OUT',
+            error: expect.objectContaining({
+              code: 'CHARGER_RESPONSE_TIMEOUT',
+              details: { timeoutSeconds: config.maxCallLengthSeconds },
+            }),
+          }),
+        );
+        expect(cache.remove).toHaveBeenCalledWith(
+          CORRELATION_ID,
+          CacheNamespace.Transactions + IDENTIFIER,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('should cancel the response deadline when the charger returns CALLERROR', async () => {
+      vi.useFakeTimers();
+      try {
+        cache.get
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(action + '@' + new Date().toISOString());
+
+        await router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID);
+        await router._onCallError(
+          IDENTIFIER,
+          [
+            MessageTypeId.CallError,
+            CORRELATION_ID,
+            ErrorCode.InternalError,
+            'charger failed',
+            { reason: 'hardware' },
+          ],
+          new Date(),
+          PROTOCOL,
+        );
+        await vi.advanceTimersByTimeAsync(config.maxCallLengthSeconds * 1000);
+
+        expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
+          CORRELATION_ID,
+          STATION_ID,
+          expect.objectContaining({
+            outcome: 'CALL_ERROR',
+            error: expect.objectContaining({ code: ErrorCode.InternalError }),
+          }),
+        );
+        expect(dispatcher.dispatchCallbackUrl).not.toHaveBeenCalledWith(
+          CORRELATION_ID,
+          STATION_ID,
+          expect.objectContaining({ outcome: 'TIMED_OUT' }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should dispatch webhook on successful send', async () => {
@@ -946,6 +1042,35 @@ describe('MessageRouterImpl', () => {
     });
   });
 
+  describe('_onCallResult terminal outcomes', () => {
+    it('callbacks with INVALID_CALL_RESULT when charger confirmation fails validation', async () => {
+      cache.get.mockResolvedValue(OCPP_CallAction.GetBaseReport + '@' + new Date().toISOString());
+      vi.spyOn(router as any, '_validateCallResult').mockReturnValue({
+        isValid: false,
+        errors: [{ message: 'invalid' }],
+      });
+
+      await expect(
+        router._onCallResult(
+          IDENTIFIER,
+          [MessageTypeId.CallResult, CORRELATION_ID, {}],
+          new Date(),
+          PROTOCOL,
+        ),
+      ).rejects.toBeInstanceOf(OcppError);
+
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        STATION_ID,
+        expect.objectContaining({
+          success: false,
+          outcome: 'CALL_ERROR',
+          error: expect.objectContaining({ code: 'INVALID_CALL_RESULT' }),
+        }),
+      );
+    });
+  });
+
   // ─── _routeCall ────────────────────────────────────────────────────────────
 
   describe('_routeCall', () => {
@@ -1048,11 +1173,17 @@ describe('MessageRouterImpl', () => {
 
       await (router as any)._routeCallError(IDENTIFIER, message, action, timestamp, PROTOCOL);
 
-      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
-        CORRELATION_ID,
-        STATION_ID,
-        expect.any(OcppError),
-      );
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(CORRELATION_ID, STATION_ID, {
+        success: false,
+        outcome: 'CALL_ERROR',
+        correlationId: CORRELATION_ID,
+        action,
+        error: {
+          code: ErrorCode.InternalError,
+          description: 'test error',
+          details: { detail: 'some detail' },
+        },
+      });
     });
   });
 

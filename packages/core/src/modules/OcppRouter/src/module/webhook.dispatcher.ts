@@ -259,7 +259,9 @@ export class WebhookDispatcher {
     ocppConnectionName: string,
     payload: any,
   ): Promise<void> {
-    const url: string | null = await this._cache.get(
+    // Atomically claim the callback so a response racing the deadline cannot
+    // publish two different terminal outcomes for the same command.
+    const url: string | null = await this._cache.remove<string>(
       correlationId,
       AbstractModule.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
     );
