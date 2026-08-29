@@ -286,25 +286,29 @@ export abstract class AbstractModule implements IModule {
     }
 
     if (callbackUrl) {
-      // TODO: Handle callErrors, failure to send to charger, timeout from charger, with different responses to callback
+      // The callback registration is part of dispatch correctness. Await it before
+      // sending so a fast charger CallResult cannot race an uncommitted cache write.
       this._logger.debug(
         `Setting callback URL: ${callbackUrl} for correlationId: ${_correlationId}`,
       );
-      this._cache
-        .set(
+      try {
+        const stored = await this._cache.set(
           _correlationId,
           callbackUrl,
           AbstractModule.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
           this._config.maxCachingSeconds,
-        )
-        .then((value) => {
-          if (value) {
-            this._logger.debug(`Successfully set cache for correlationId: ${_correlationId}`);
-          } else {
-            this._logger.warn(`Failed to set cache for correlationId: ${_correlationId}`);
-          }
-        })
-        .catch((error) => this._logger.error('Error setting cache: ', error));
+        );
+        if (!stored) {
+          this._logger.error(`Failed to set callback cache for correlationId: ${_correlationId}`);
+          return { success: false, payload: `Unable to register command callback` };
+        }
+      } catch (error) {
+        this._logger.error(
+          `Error setting callback cache for correlationId: ${_correlationId}`,
+          error,
+        );
+        return { success: false, payload: `Unable to register command callback` };
+      }
     }
     // TODO: Future - Compound key with tenantId
     return this._cache.get<string>(identifier, CacheNamespace.Connections).then((connection) => {

@@ -28,6 +28,8 @@ import { v4 as uuidv4 } from 'uuid';
 
 export class WebhookDispatcher {
   protected static readonly SUBSCRIPTION_REFRESH_INTERVAL_MS = 3 * 60 * 1000;
+  protected static readonly CALLBACK_MAX_ATTEMPTS = 3;
+  protected static readonly CALLBACK_RETRY_DELAY_MS = 200;
 
   protected _logger: Logger<ILogObj>;
   protected _ocppMessageRepository: IOCPPMessageRepository;
@@ -277,20 +279,28 @@ export class WebhookDispatcher {
       }
     }
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-      });
-      if (!response.ok) {
+    const body = JSON.stringify(payload);
+    for (let attempt = 1; attempt <= WebhookDispatcher.CALLBACK_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await fetch(url, { method: `POST`, headers, body });
+        if (response.ok) return;
+
         const errorText = await response.text();
+        const retryable =
+          response.status === 408 || response.status === 429 || response.status >= 500;
         this._logger.error(
-          `Callback to ${url} failed: ${response.status} ${response.statusText} - ${errorText}`,
+          `Callback to ${url} failed (attempt ${attempt}): ${response.status} ${response.statusText} - ${errorText}`,
+        );
+        if (!retryable) return;
+      } catch (error) {
+        this._logger.error(`Callback to ${url} failed (attempt ${attempt}):`, error);
+      }
+
+      if (attempt < WebhookDispatcher.CALLBACK_MAX_ATTEMPTS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, WebhookDispatcher.CALLBACK_RETRY_DELAY_MS * attempt),
         );
       }
-    } catch (error) {
-      this._logger.error(`Callback to ${url} failed:`, error);
     }
   }
 
