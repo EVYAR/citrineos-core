@@ -821,6 +821,27 @@ describe('WebhookDispatcher', () => {
       );
     });
 
+    it('retries a transient callback failure and succeeds without losing the charger result', async () => {
+      const callbackUrl = 'http://localhost:3000/callback';
+      cache.get.mockResolvedValueOnce(callbackUrl);
+      fetch
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          text: () => Promise.resolve('temporary'),
+        } as Response)
+        .mockResolvedValueOnce({ ok: true, status: 202 } as Response);
+
+      const delivery = webhookDispatcher.dispatchCallbackUrl(CORRELATION_ID, STATION_ID, {
+        status: 'Accepted',
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      await delivery;
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
     it('should not call fetch when no callback URL is cached', async () => {
       cache.get.mockResolvedValueOnce(null);
 
