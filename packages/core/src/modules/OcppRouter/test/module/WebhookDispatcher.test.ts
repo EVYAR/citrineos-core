@@ -804,7 +804,7 @@ describe('WebhookDispatcher', () => {
 
     it('should POST to callback URL when one exists in cache', async () => {
       const callbackUrl = 'http://localhost:3000/callback';
-      cache.get.mockResolvedValueOnce(callbackUrl);
+      cache.remove.mockResolvedValueOnce(callbackUrl);
 
       await webhookDispatcher.dispatchCallbackUrl(CORRELATION_ID, STATION_ID, {
         status: 'Accepted',
@@ -815,7 +815,7 @@ describe('WebhookDispatcher', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Accepted' }),
       });
-      expect(cache.get).toHaveBeenCalledWith(
+      expect(cache.remove).toHaveBeenCalledWith(
         CORRELATION_ID,
         AbstractModule.CALLBACK_URL_CACHE_PREFIX + STATION_ID,
       );
@@ -823,7 +823,7 @@ describe('WebhookDispatcher', () => {
 
     it('retries a transient callback failure and succeeds without losing the charger result', async () => {
       const callbackUrl = 'http://localhost:3000/callback';
-      cache.get.mockResolvedValueOnce(callbackUrl);
+      cache.remove.mockResolvedValueOnce(callbackUrl);
       fetch
         .mockResolvedValueOnce({
           ok: false,
@@ -843,13 +843,29 @@ describe('WebhookDispatcher', () => {
     });
 
     it('should not call fetch when no callback URL is cached', async () => {
-      cache.get.mockResolvedValueOnce(null);
+      cache.remove.mockResolvedValueOnce(null);
 
       await webhookDispatcher.dispatchCallbackUrl(CORRELATION_ID, STATION_ID, {
         status: 'Accepted',
       });
 
       expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('should atomically consume the callback so only one terminal outcome is delivered', async () => {
+      const callbackUrl = 'http://localhost:3000/callback';
+      cache.remove.mockResolvedValueOnce(callbackUrl).mockResolvedValueOnce(null);
+
+      await Promise.all([
+        webhookDispatcher.dispatchCallbackUrl(CORRELATION_ID, STATION_ID, {
+          outcome: 'TIMED_OUT',
+        }),
+        webhookDispatcher.dispatchCallbackUrl(CORRELATION_ID, STATION_ID, {
+          status: 'Accepted',
+        }),
+      ]);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
     });
   });
 
