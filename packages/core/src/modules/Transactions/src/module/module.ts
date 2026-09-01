@@ -456,13 +456,21 @@ export class TransactionsModule extends AbstractModule {
         if (
           transaction &&
           transaction.isActive &&
-          transaction.totalKwh &&
+          transaction.totalKwh != null &&
           this._sendCostUpdatedOnMeterValue
         ) {
           response.totalCost = await this._costCalculator.calculateTotalCost(
             tenantId,
             transaction.connectorId,
             transaction.totalKwh,
+            {
+              chargingDurationSeconds: transaction.timeSpentCharging ?? undefined,
+              sessionDurationSeconds: elapsedSeconds(
+                transaction.startTime,
+                message.payload.timestamp,
+              ),
+              occurredAt: new Date(message.payload.timestamp),
+            },
           );
         }
 
@@ -600,11 +608,22 @@ export class TransactionsModule extends AbstractModule {
         }
       }
 
-      if (message.payload.eventType === TransactionEventEnum.Ended && transaction.totalKwh) {
+      if (
+        message.payload.eventType === TransactionEventEnum.Ended &&
+        transaction.totalKwh != null
+      ) {
         response.totalCost = await this._costCalculator.calculateTotalCost(
           tenantId,
           transaction.connectorId,
           transaction.totalKwh,
+          {
+            chargingDurationSeconds: transaction.timeSpentCharging ?? undefined,
+            sessionDurationSeconds: elapsedSeconds(
+              transaction.startTime,
+              message.payload.timestamp,
+            ),
+            occurredAt: new Date(message.payload.timestamp),
+          },
         );
       }
 
@@ -1252,6 +1271,17 @@ export class TransactionsModule extends AbstractModule {
             tenantId,
             transaction.tariffId,
             totalKwh,
+            {
+              chargingDurationSeconds: elapsedSeconds(
+                transaction.startTransaction.timestamp,
+                request.timestamp,
+              ),
+              sessionDurationSeconds: elapsedSeconds(
+                transaction.startTransaction.timestamp,
+                request.timestamp,
+              ),
+              occurredAt: new Date(request.timestamp),
+            },
           );
           if (totalCost !== undefined) {
             transaction.totalCost = totalCost;
@@ -1700,6 +1730,14 @@ export class TransactionsModule extends AbstractModule {
       );
     }
   }
+}
+
+function elapsedSeconds(start?: string, end?: string): number | undefined {
+  if (!start || !end) return undefined;
+  const startMs = new Date(start).getTime();
+  const endMs = new Date(end).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return undefined;
+  return Math.floor((endMs - startMs) / 1_000);
 }
 
 export default TransactionsModule;

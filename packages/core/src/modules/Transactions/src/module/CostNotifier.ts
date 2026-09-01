@@ -83,6 +83,11 @@ export class CostNotifier extends Scheduler {
       tenantId,
       transaction.connectorId,
       transaction.totalKwh!,
+      {
+        chargingDurationSeconds: transaction.timeSpentCharging ?? undefined,
+        sessionDurationSeconds: elapsedSeconds(transaction.startTime, transaction.endTime),
+        occurredAt: transaction.endTime ? new Date(transaction.endTime) : new Date(),
+      },
     );
 
     await this._transactionEventRepository.updateTransactionTotalCostById(
@@ -143,4 +148,12 @@ export class CostNotifier extends Scheduler {
   private _key(ocppConnectionName: string, transactionId: string) {
     return `${ocppConnectionName}:${transactionId}`;
   }
+}
+
+function elapsedSeconds(start?: string, end?: string): number | undefined {
+  if (!start) return undefined;
+  const startMs = new Date(start).getTime();
+  const endMs = end ? new Date(end).getTime() : Date.now();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return undefined;
+  return Math.floor((endMs - startMs) / 1_000);
 }
