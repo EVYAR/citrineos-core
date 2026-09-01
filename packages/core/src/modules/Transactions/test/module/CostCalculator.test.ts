@@ -64,6 +64,90 @@ describe('CostCalculator', () => {
         costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
       ).resolves.toBeUndefined();
     });
+
+    it('uses legacy energy, time, fixed and payment fields and applies legacy tax', async () => {
+      tariffRepository.readByKey.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 2,
+          pricePerMin: 0.5,
+          pricePerSession: 3,
+          paymentFee: 1,
+          taxRate: 10,
+          authorizationAmount: 999,
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 4, {
+          chargingDurationSeconds: 600,
+          sessionDurationSeconds: 600,
+        }),
+      ).resolves.toBe(18.7);
+    });
+
+    it('prefers structured prices, applies component tax, and clamps to maxCost', async () => {
+      tariffRepository.readByKey.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 999,
+          pricePerMin: 999,
+          pricePerSession: 999,
+          energy: { prices: [{ priceKwh: 2 }], taxRates: [{ type: 'VAT', tax: 10 }] },
+          chargingTime: { prices: [{ priceMinute: 0.5 }] },
+          fixedFee: { prices: [{ priceFixed: 3 }] },
+          maxCost: { inclTax: 15 },
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 4, {
+          chargingDurationSeconds: 600,
+          sessionDurationSeconds: 600,
+        }),
+      ).resolves.toBe(15);
+    });
+
+    it('does not add idle fees unless a reliable idle duration is supplied', async () => {
+      tariffRepository.readByKey.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 0,
+          idleTime: { prices: [{ priceMinute: 2 }] },
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 0, {
+          sessionDurationSeconds: 600,
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 0, {
+          sessionDurationSeconds: 600,
+          idleDurationSeconds: 120,
+        }),
+      ).resolves.toBe(4);
+    });
+
+    it('applies tax stacks sequentially and duration conditions in seconds', async () => {
+      tariffRepository.readByKey.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 0,
+          chargingTime: {
+            prices: [{ priceMinute: 1, conditions: { minChargingTime: 60, maxChargingTime: 121 } }],
+            taxRates: [
+              { type: 'VAT', tax: 10, stack: 0 },
+              { type: 'LOCAL', tax: 10, stack: 1 },
+            ],
+          },
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 0, {
+          chargingDurationSeconds: 120,
+          sessionDurationSeconds: 120,
+        }),
+      ).resolves.toBe(2.42);
+    });
   });
 
   describe('calculateTotalCost', () => {
