@@ -56,13 +56,42 @@ export class CostCalculator {
     );
     if (tariff) {
       this._logger.debug(`Tariff ${tariff.id} found for connector ${connectorId}`);
-      return Money.of(tariff.pricePerKwh, tariff.currency)
-        .multiply(totalKwh)
-        .roundToCurrencyScale()
-        .toNumber();
+      return this.calculateEnergyCost(tariff, totalKwh);
     } else {
       this._logger.error(`Tariff not found for connector ${connectorId}`);
       return 0;
     }
+  }
+
+  /**
+   * Calculates cost from the tariff locked onto a transaction at start.
+   *
+   * Connector assignments are mutable, so looking the tariff up through the
+   * connector when a transaction ends can silently reprice an in-flight
+   * session. Callers finalizing a transaction should use this method with the
+   * transaction's persisted tariff id instead.
+   *
+   * `undefined` deliberately means that the locked tariff no longer exists;
+   * it must not be confused with an explicit zero-price tariff.
+   */
+  async calculateTotalCostByTariffId(
+    tenantId: number,
+    tariffId: number,
+    totalKwh: number,
+  ): Promise<number | undefined> {
+    const tariff = await this._tariffRepository.readByKey(tenantId, tariffId.toString());
+    if (!tariff) {
+      this._logger.error(`Locked tariff ${tariffId} not found`);
+      return undefined;
+    }
+    this._logger.debug(`Calculating total cost with locked tariff ${tariffId}`);
+    return this.calculateEnergyCost(tariff, totalKwh);
+  }
+
+  private calculateEnergyCost(tariff: Tariff, totalKwh: number): number {
+    return Money.of(tariff.pricePerKwh, tariff.currency)
+      .multiply(totalKwh)
+      .roundToCurrencyScale()
+      .toNumber();
   }
 }

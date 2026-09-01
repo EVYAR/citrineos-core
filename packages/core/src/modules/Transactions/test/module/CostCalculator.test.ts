@@ -19,6 +19,7 @@ describe('CostCalculator', () => {
   beforeEach(() => {
     tariffRepository = {
       findByConnectorId: vi.fn(),
+      readByKey: vi.fn(),
     } as unknown as Mocked<ITariffRepository>;
 
     transactionService = {
@@ -33,7 +34,36 @@ describe('CostCalculator', () => {
 
   afterEach(() => {
     tariffRepository.findByConnectorId.mockReset();
+    tariffRepository.readByKey.mockReset();
     transactionService.recalculateTotalKwh.mockReset();
+  });
+
+  describe('calculateTotalCostByTariffId', () => {
+    it('uses the immutable transaction tariff instead of the current connector assignment', async () => {
+      tariffRepository.readByKey.mockResolvedValue(aTariff({ pricePerKwh: 0.47 }));
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
+      ).resolves.toBe(9.86);
+      expect(tariffRepository.readByKey).toHaveBeenCalledWith(DEFAULT_TENANT_ID, '42');
+      expect(tariffRepository.findByConnectorId).not.toHaveBeenCalled();
+    });
+
+    it('returns zero for an explicit free tariff', async () => {
+      tariffRepository.readByKey.mockResolvedValue(aTariff({ pricePerKwh: 0 }));
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
+      ).resolves.toBe(0);
+    });
+
+    it('returns undefined when the locked tariff cannot be found', async () => {
+      tariffRepository.readByKey.mockResolvedValue(undefined);
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe('calculateTotalCost', () => {

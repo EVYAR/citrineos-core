@@ -1238,7 +1238,33 @@ export class TransactionsModule extends AbstractModule {
     }
 
     if (transaction.startTransaction) {
-      transaction.totalKwh = (request.meterStop - transaction.startTransaction.meterStart) / 1000; // Convert from Wh to kWh
+      const totalKwh = (request.meterStop - transaction.startTransaction.meterStart) / 1000; // Convert from Wh to kWh
+      transaction.totalKwh = totalKwh;
+
+      // OCPP 1.6 has no TransactionEventResponse total-cost path. Finalize
+      // cost here using the tariff captured on the transaction at start, not
+      // the connector's current (mutable) assignment. Keep null when the
+      // transaction was genuinely unpriced, while persisting 0 for an
+      // explicit zero-price/free tariff.
+      if (transaction.tariffId != null) {
+        try {
+          const totalCost = await this._costCalculator.calculateTotalCostByTariffId(
+            tenantId,
+            transaction.tariffId,
+            totalKwh,
+          );
+          if (totalCost !== undefined) {
+            transaction.totalCost = totalCost;
+          }
+        } catch (error) {
+          // Pricing is best effort and must never leave a physically stopped
+          // transaction marked active because a tariff read failed.
+          this._logger.error(
+            `Failed to calculate total cost for OCPP 1.6 transaction ${request.transactionId}`,
+            error,
+          );
+        }
+      }
     } else {
       this._logger.warn(
         `StartTransaction record not found at station ${ocppConnectionName} for transactionId ${request.transactionId}. 
