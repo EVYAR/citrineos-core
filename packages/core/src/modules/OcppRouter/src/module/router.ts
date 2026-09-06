@@ -20,7 +20,6 @@ import type {
 } from '@citrineos/base';
 import {
   AbstractMessageRouter,
-  AbstractModule,
   BOOT_STATUS,
   CacheNamespace,
   createIdentifier,
@@ -42,8 +41,6 @@ import {
   RetryMessageError,
 } from '@citrineos/base';
 import type { ILocationRepository } from '@dal/interfaces/repositories.js';
-import { sequelize } from '@dal/index.js';
-import { OidcTokenProvider } from '@util/authorization/index.js';
 import type { ILogObj } from 'tslog';
 import { Logger } from 'tslog';
 import { v4 as uuidv4 } from 'uuid';
@@ -63,7 +60,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   protected _handler: IMessageHandler;
   protected _networkHook: (identifier: string, message: string) => Promise<void>;
   protected _locationRepository: ILocationRepository;
-  protected readonly _oidcTokenProvider?: OidcTokenProvider;
+  private readonly _callResponseTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
    * Constructor for the class.
@@ -80,29 +77,35 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
    * @param {Logger<ILogObj>} [logger] - the logger object (optional)
    * @param {OCPPValidator} [ocppValidator] - the OCPPValidator instance, for message validation (optional)
    */
-  constructor(
-    config: BootstrapConfig & SystemConfig,
-    cache: ICache,
-    sender: IMessageSender,
-    handler: IMessageHandler,
-    dispatcher: WebhookDispatcher,
-    networkHook: (identifier: string, message: string) => Promise<void>,
-    logger?: Logger<ILogObj>,
-    ocppValidator?: OCPPValidator,
-    locationRepository?: ILocationRepository,
-  ) {
-    super(config, cache, handler, sender, networkHook, logger, ocppValidator);
+  constructor({
+    config,
+    cache,
+    routerSender,
+    routerHandler,
+    webhookDispatcher,
+    networkHook,
+    logger,
+    ocppValidator,
+    locationRepository,
+  }: {
+    config: BootstrapConfig & SystemConfig;
+    cache: ICache;
+    routerSender: IMessageSender;
+    routerHandler: IMessageHandler;
+    webhookDispatcher: WebhookDispatcher;
+    networkHook: (identifier: string, message: string) => Promise<void>;
+    logger: Logger<ILogObj>;
+    ocppValidator: OCPPValidator;
+    locationRepository: ILocationRepository;
+  }) {
+    super(config, cache, routerHandler, routerSender, networkHook, logger, ocppValidator);
 
     this._cache = cache;
-    this._sender = sender;
-    this._handler = handler;
-    this._webhookDispatcher = dispatcher;
+    this._sender = routerSender;
+    this._handler = routerHandler;
+    this._webhookDispatcher = webhookDispatcher;
     this._networkHook = networkHook;
-    this._locationRepository =
-      locationRepository || new sequelize.SequelizeLocationRepository(config, logger);
-    if (this._config.oidcClient) {
-      this._oidcTokenProvider = new OidcTokenProvider(this._config.oidcClient, this._logger);
-    }
+    this._locationRepository = locationRepository;
   }
 
   async doesChargingStationExistByStationId(
@@ -325,60 +328,85 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     protocol: OCPPVersionType,
     action: CallAction,
     payload: OcppRequest,
-    correlationId = uuidv4(),
+    correlationId: string = uuidv4(),
     _origin?: MessageOrigin,
   ): Promise<IMessageConfirmation> {
     const identifier = createIdentifier(tenantId, ocppConnectionName);
     const transactionNamespace = CacheNamespace.Transactions + identifier;
 
     const message: Call = [MessageTypeId.Call, correlationId, action, payload];
-    if (await this._sendCallIsAllowed(identifier, protocol, message)) {
-      if (!(await this._cache.existsAnyInNamespace(transactionNamespace))) {
-        const cacheTimestamp = new Date();
-        await this._cache.set(
-          correlationId,
-          `${action}@${cacheTimestamp.toISOString()}`,
-          transactionNamespace,
-          this._config.maxCallLengthSeconds,
-        );
-        const rawMessage = JSON.stringify(message);
-        const successTimestamp = await this._sendMessage(
-          identifier,
-          protocol,
-          action,
-          MessageState.Request,
-          rawMessage,
-          message,
-        );
-        if (successTimestamp != undefined) {
-          this._logger.debug(
-            `Call sent successfully with ${
-              successTimestamp.getTime() - cacheTimestamp.getTime()
-            } ms of lag between cache and send ${correlationId}`,
-            identifier,
-            message,
-          );
-        } else {
-          const removed = await this._cache.remove(correlationId, transactionNamespace);
-          this._logger.warn(
-            `Failed to send call, removed from cache: ${removed}`,
-            identifier,
-            message,
-          );
-        }
-        return { success: !!successTimestamp };
-      } else {
-        this._logger.info(
-          'Call already in progress, throwing retry exception',
-          identifier,
-          message,
-        );
-        throw new RetryMessageError('Call already in progress');
-      }
-    } else {
+    if (!(await this._sendCallIsAllowed(identifier, protocol, message))) {
       this._logger.info('RegistrationStatus Rejected, unable to send', identifier, message);
-      return { success: false };
+      const failure = await this._dispatchCommandFailureCallback(
+        correlationId,
+        ocppConnectionName,
+        action,
+        'DISPATCH_FAILED',
+        'REGISTRATION_REJECTED',
+        'The charging station registration status does not allow this command',
+      );
+      return { success: false, payload: failure };
     }
+
+    if (await this._cache.existsAnyInNamespace(transactionNamespace)) {
+      this._logger.info('Call already in progress, throwing retry exception', identifier, message);
+      await this._dispatchCommandFailureCallback(
+        correlationId,
+        ocppConnectionName,
+        action,
+        'DISPATCH_FAILED',
+        'CALL_ALREADY_IN_PROGRESS',
+        'Another OCPP call is already in progress for this charging station',
+      );
+      throw new RetryMessageError('Call already in progress');
+    }
+
+    const cacheTimestamp = new Date();
+    await this._cache.set(
+      correlationId,
+      action + '@' + cacheTimestamp.toISOString(),
+      transactionNamespace,
+      this._config.maxCallLengthSeconds,
+    );
+    const rawMessage = JSON.stringify(message);
+    const successTimestamp = await this._sendMessage(
+      identifier,
+      protocol,
+      action,
+      MessageState.Request,
+      rawMessage,
+      message,
+    );
+    if (successTimestamp != undefined) {
+      this._logger.debug(
+        'Call sent successfully with ' +
+          (successTimestamp.getTime() - cacheTimestamp.getTime()) +
+          ' ms of lag between cache and send ' +
+          correlationId,
+        identifier,
+        message,
+      );
+      this._scheduleCallResponseTimeout(
+        identifier,
+        ocppConnectionName,
+        correlationId,
+        action,
+        cacheTimestamp,
+      );
+      return { success: true };
+    }
+
+    const removed = await this._cache.remove(correlationId, transactionNamespace);
+    this._logger.warn('Failed to send call, removed from cache: ' + removed, identifier, message);
+    const failure = await this._dispatchCommandFailureCallback(
+      correlationId,
+      ocppConnectionName,
+      action,
+      'DISPATCH_FAILED',
+      'NETWORK_SEND_FAILED',
+      'The command could not be delivered to the charging station',
+    );
+    return { success: false, payload: failure };
   }
 
   /**
@@ -452,7 +480,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
    * @param ocppConnectionName - The connection name of the charging station
    * @param {number} tenantId - The identifier of the tenant.
    * @param {OCPPVersionType} protocol The OCPP protocol version of the message.
-   * @param {CallAction} _action - The action to be called.
+   * @param {CallAction} action - The action to be called.
    * @param {OcppError} error - The error of the call.
    * @param {MessageOrigin} _origin - The origin of the message.
    * @return {Promise<boolean>} - A promise that resolves to true if the message was sent successfully.
@@ -506,6 +534,8 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   }
 
   async shutdown(): Promise<void> {
+    for (const handle of this._callResponseTimeouts.values()) clearTimeout(handle);
+    this._callResponseTimeouts.clear();
     await this._sender.shutdown();
     await this._handler.shutdown();
   }
@@ -635,6 +665,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     const messageId = message[1];
 
     this._logger.debug('_onCallResult:', identifier, message, timestamp.toISOString(), protocol);
+    this._clearCallResponseTimeout(identifier, messageId);
 
     const cachedActionTimestamp = await this._cache.get<string>(
       messageId,
@@ -672,6 +703,15 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     );
 
     if (!isValid || errors) {
+      await this._dispatchCommandFailureCallback(
+        messageId,
+        getStationIdFromIdentifier(identifier),
+        mapToCallAction(protocol, action),
+        'CALL_ERROR',
+        'INVALID_CALL_RESULT',
+        'The charger returned a CALLRESULT that failed schema validation',
+        { errors },
+      );
       throw new OcppError(messageId, ErrorCode.FormatViolation, 'Invalid message format', {
         errors: errors,
       });
@@ -710,6 +750,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     const messageId = message[1];
 
     this._logger.debug('_onCallError:', identifier, message, timestamp.toISOString(), protocol);
+    this._clearCallResponseTimeout(identifier, messageId);
 
     const cachedActionTimestamp = await this._cache.get<string>(
       messageId,
@@ -821,6 +862,86 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     return sentTimestamp;
   }
 
+  private _callTimeoutKey(identifier: string, correlationId: string): string {
+    return identifier + ':' + correlationId;
+  }
+
+  private _clearCallResponseTimeout(identifier: string, correlationId: string): void {
+    const key = this._callTimeoutKey(identifier, correlationId);
+    const handle = this._callResponseTimeouts.get(key);
+    if (handle) clearTimeout(handle);
+    this._callResponseTimeouts.delete(key);
+  }
+
+  private _scheduleCallResponseTimeout(
+    identifier: string,
+    ocppConnectionName: string,
+    correlationId: string,
+    action: CallAction,
+    sentAt: Date,
+  ): void {
+    this._clearCallResponseTimeout(identifier, correlationId);
+    const timeoutMs = Math.max(
+      0,
+      this._config.maxCallLengthSeconds * 1000 - (Date.now() - sentAt.getTime()),
+    );
+    const key = this._callTimeoutKey(identifier, correlationId);
+    const handle = setTimeout(() => {
+      this._callResponseTimeouts.delete(key);
+      void this._handleCallResponseTimeout(
+        identifier,
+        ocppConnectionName,
+        correlationId,
+        action,
+      ).catch((error) => {
+        this._logger.error('Failed to publish charger response timeout', error);
+      });
+    }, timeoutMs);
+    handle.unref?.();
+    this._callResponseTimeouts.set(key, handle);
+  }
+
+  private async _handleCallResponseTimeout(
+    identifier: string,
+    ocppConnectionName: string,
+    correlationId: string,
+    action: CallAction,
+  ): Promise<void> {
+    const transactionNamespace = CacheNamespace.Transactions + identifier;
+    await this._cache.remove(correlationId, transactionNamespace).catch((error) => {
+      this._logger.error('Failed to remove timed-out call from cache', error);
+    });
+    await this._dispatchCommandFailureCallback(
+      correlationId,
+      ocppConnectionName,
+      action,
+      'TIMED_OUT',
+      'CHARGER_RESPONSE_TIMEOUT',
+      'The charger did not return CALLRESULT or CALLERROR before the command deadline',
+      { timeoutSeconds: this._config.maxCallLengthSeconds },
+    );
+  }
+
+  private async _dispatchCommandFailureCallback(
+    correlationId: string,
+    ocppConnectionName: string,
+    action: CallAction,
+    outcome: 'CALL_ERROR' | 'DISPATCH_FAILED' | 'TIMED_OUT',
+    code: string,
+    description: string,
+    details: object = {},
+  ): Promise<object> {
+    const payload = {
+      success: false,
+      outcome,
+      correlationId,
+      action,
+      error: { code, description, details },
+    };
+    await this._webhookDispatcher.dispatchCallbackUrl(correlationId, ocppConnectionName, payload);
+    return payload;
+  }
+
   private async _sendCallIsAllowed(
     identifier: string,
     protocol: OCPPVersionType,
@@ -892,6 +1013,10 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       timestamp,
     );
 
+    // Complete the external command before broker fan-out so the caller sees the
+    // terminal charger result even if internal event routing is degraded.
+    await this._webhookDispatcher.dispatchCallbackUrl(messageId, ocppConnectionName, payload);
+
     return this.emitMessage(_message, message);
   }
 
@@ -919,10 +1044,16 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       timestamp,
     );
 
-    // Fulfill callback for api, if needed
-    this._handleMessageApiCallback(_message).catch((err) => {
-      this._logger.error('_handleMessageApiCallback failed', err);
-    });
+    // CALLERROR is a distinct terminal outcome, not an unstructured Error object.
+    await this._dispatchCommandFailureCallback(
+      messageId,
+      ocppConnectionName,
+      action,
+      'CALL_ERROR',
+      String(message[2]),
+      message[3],
+      message[4],
+    );
 
     return this.emitMessage(_message, message);
   }
@@ -953,34 +1084,6 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     return confirmation;
   }
 
-  private async _handleMessageApiCallback(message: IMessage<OcppError>): Promise<void> {
-    const url: string | null = await this._cache.get(
-      message.context.correlationId,
-      AbstractModule.CALLBACK_URL_CACHE_PREFIX + message.context.ocppConnectionName,
-    );
-    if (url) {
-      const headers: { [key: string]: string } = {
-        'Content-Type': 'application/json',
-      };
-
-      if (this._oidcTokenProvider) {
-        try {
-          const token = await this._oidcTokenProvider.getToken();
-          headers['Authorization'] = `Bearer ${token}`;
-        } catch (error) {
-          this._logger.error('Failed to get OIDC token for callback:', error);
-          return;
-        }
-      }
-
-      await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(message.payload),
-      });
-    }
-  }
-
   private getActionFromIncompletelyParsedRpcMessage(
     rpcMessage: any,
     messageTypeId?: MessageTypeId,
@@ -999,3 +1102,5 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     return action;
   }
 }
+
+export default MessageRouterImpl;

@@ -6,6 +6,7 @@ import 'reflect-metadata';
 import type { ILogObj } from 'tslog';
 import { Logger } from 'tslog';
 import { v4 as uuidv4 } from 'uuid';
+import type { BootstrapConfig } from '@config/bootstrap.config.js';
 import type { SystemConfig } from '@config/types.js';
 import type { OcppRequest, OcppResponse } from '@ocpp/internal-types.js';
 import type { CallAction, OCPPVersionType } from '@ocpp/rpc/message.js';
@@ -26,6 +27,19 @@ import type { IModule } from '@interfaces/modules/Module.js';
 import type { IHandlerDefinition } from '@interfaces/modules/HandlerDefinition.js';
 import { AS_HANDLER_METADATA } from '@interfaces/modules/AsHandler.js';
 import { OCPPValidator } from './OCPPValidator.js';
+
+/**
+ * The dependencies every OCPP module receives through the container. Each concrete
+ * module extends this with its own repositories and internal services.
+ */
+export interface OcppModuleDependencies {
+  config: BootstrapConfig & SystemConfig;
+  cache: ICache;
+  sender: IMessageSender;
+  handler: IMessageHandler;
+  logger: Logger<ILogObj>;
+  ocppValidator: OCPPValidator;
+}
 
 export abstract class AbstractModule implements IModule {
   public static readonly CALLBACK_URL_CACHE_PREFIX: string = 'CALLBACK_URL_';
@@ -154,7 +168,6 @@ export abstract class AbstractModule implements IModule {
           );
         }
 
-        await this.handleMessageApiCallback(message as IMessage<OcppResponse>);
         await this._cache.set(
           message.context.correlationId,
           JSON.stringify(message.payload),
@@ -218,30 +231,6 @@ export abstract class AbstractModule implements IModule {
    * @param props The {@link HandlerProperties} for this {@link IMessage} containing implementation specific metadata. Metadata is not used in the base implementation.
    */
 
-  async handleMessageApiCallback(message: IMessage<OcppResponse>): Promise<void> {
-    const url: string | null = await this._cache.get(
-      message.context.correlationId,
-      AbstractModule.CALLBACK_URL_CACHE_PREFIX + message.context.ocppConnectionName,
-    );
-    if (url) {
-      this._logger.debug(
-        `Sending call result to callback URL: ${url} for correlationId: ${message.context.correlationId}`,
-      );
-      try {
-        await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(message.payload),
-        });
-      } catch (error) {
-        // TODO: Ideally the error log is also stored in the database in a failed invocations table to ensure these are visible outside of a log file.
-        this._logger.error('Failed sending call result: ', error);
-      }
-    }
-  }
-
   /**
    * Calls shutdown on the handler and sender.
    *
@@ -256,6 +245,26 @@ export abstract class AbstractModule implements IModule {
   /**
    * Default implementation
    */
+
+  private _commandFailureConfirmation(
+    correlationId: string,
+    action: CallAction,
+    outcome: 'CALLBACK_REGISTRATION_FAILED' | 'DISPATCH_FAILED',
+    code: string,
+    description: string,
+    details: object = {},
+  ): IMessageConfirmation {
+    return {
+      success: false,
+      payload: {
+        success: false,
+        outcome,
+        correlationId,
+        action,
+        error: { code, description, details },
+      },
+    };
+  }
 
   /**
    * Sends a call with the specified identifier, tenantId, protocol, action, payload, and origin.
@@ -297,60 +306,104 @@ export abstract class AbstractModule implements IModule {
     }
 
     if (callbackUrl) {
-      // TODO: Handle callErrors, failure to send to charger, timeout from charger, with different responses to callback
+      // The callback registration is part of dispatch correctness. Await it before
+      // sending so a fast charger CallResult cannot race an uncommitted cache write.
       this._logger.debug(
         `Setting callback URL: ${callbackUrl} for correlationId: ${_correlationId}`,
       );
-      this._cache
-        .set(
+      try {
+        const stored = await this._cache.set(
           _correlationId,
           callbackUrl,
           AbstractModule.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
           this._config.maxCachingSeconds,
-        )
-        .then((value) => {
-          if (value) {
-            this._logger.debug(`Successfully set cache for correlationId: ${_correlationId}`);
-          } else {
-            this._logger.warn(`Failed to set cache for correlationId: ${_correlationId}`);
-          }
-        })
-        .catch((error) => this._logger.error('Error setting cache: ', error));
+        );
+        if (!stored) {
+          this._logger.error(`Failed to set callback cache for correlationId: ${_correlationId}`);
+          return this._commandFailureConfirmation(
+            _correlationId,
+            action,
+            'CALLBACK_REGISTRATION_FAILED',
+            'CALLBACK_CACHE_REJECTED',
+            'Unable to register the command callback before dispatch',
+          );
+        }
+      } catch (error) {
+        this._logger.error(
+          `Error setting callback cache for correlationId: ${_correlationId}`,
+          error,
+        );
+        return this._commandFailureConfirmation(
+          _correlationId,
+          action,
+          'CALLBACK_REGISTRATION_FAILED',
+          'CALLBACK_CACHE_ERROR',
+          'Unable to register the command callback before dispatch',
+          { cause: error instanceof Error ? error.message : String(error) },
+        );
+      }
     }
     // TODO: Future - Compound key with tenantId
-    return this._cache.get<string>(identifier, CacheNamespace.Connections).then((connection) => {
-      if (connection) {
-        const websocketConnection: IWebsocketConnection = JSON.parse(connection);
-        if (websocketConnection.protocol !== protocol) {
-          this._logger.error(
-            `Failed sending call. Requested protocol: '${protocol}', connection protocol: '${websocketConnection.protocol}' for identifier: `,
+    return this._cache
+      .get<string>(identifier, CacheNamespace.Connections)
+      .then(async (connection) => {
+        if (connection) {
+          const websocketConnection: IWebsocketConnection = JSON.parse(connection);
+          if (websocketConnection.protocol !== protocol) {
+            this._logger.error(
+              `Failed sending call. Requested protocol: '${protocol}', connection protocol: '${websocketConnection.protocol}' for identifier: `,
+              identifier,
+            );
+            if (callbackUrl) {
+              await this._cache.remove(
+                _correlationId,
+                AbstractModule.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
+              );
+            }
+            return Promise.resolve(
+              this._commandFailureConfirmation(
+                _correlationId,
+                action,
+                'DISPATCH_FAILED',
+                'PROTOCOL_MISMATCH',
+                `Requested protocol: '${protocol}', connection protocol: '${websocketConnection.protocol}' for identifier: '${identifier}'`,
+              ),
+            );
+          }
+          return this._sender.sendRequest(
+            RequestBuilder.buildCall(
+              ocppConnectionName,
+              _correlationId,
+              tenantId,
+              action,
+              payload,
+              this._eventGroup,
+              origin,
+              protocol,
+            ),
+          );
+        } else {
+          // Forward the request so the router owns the terminal dispatch decision and
+          // can deliver the correlated DISPATCH_FAILED callback. Its network hook
+          // is the authoritative connection check.
+          this._logger.warn(
+            'No module-side connection cache entry; forwarding call to the router: ',
             identifier,
           );
-          return Promise.resolve({
-            success: false,
-            payload: `Requested protocol: '${protocol}', connection protocol: '${websocketConnection.protocol}' for identifier: '${identifier}'`,
-          });
+          return this._sender.sendRequest(
+            RequestBuilder.buildCall(
+              ocppConnectionName,
+              _correlationId,
+              tenantId,
+              action,
+              payload,
+              this._eventGroup,
+              origin,
+              protocol,
+            ),
+          );
         }
-        return this._sender.sendRequest(
-          RequestBuilder.buildCall(
-            ocppConnectionName,
-            _correlationId,
-            tenantId,
-            action,
-            payload,
-            this._eventGroup,
-            origin,
-            protocol,
-          ),
-        );
-      } else {
-        this._logger.error('Failed sending call. No connection found for identifier: ', identifier);
-        return Promise.resolve({
-          success: false,
-          payload: 'No connection found for identifier: ' + identifier,
-        });
-      }
-    });
+      });
   }
 
   /**

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+services:
+  ocpp-db:
+    image: postgis/postgis:16-3.5
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-citrine}
+      POSTGRES_USER: ${POSTGRES_USER:-citrine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ocpp_db_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=${POSTGRES_USER:-citrine}"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+volumes:
+  ocpp_db_data:

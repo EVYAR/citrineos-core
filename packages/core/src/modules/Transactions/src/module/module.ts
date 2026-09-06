@@ -2,19 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 import type {
-  BootstrapConfig,
   CallAction,
   HandlerProperties,
-  IAuthorizer,
-  ICache,
-  IFileStorage,
   IMessage,
-  IMessageHandler,
-  IMessageSender,
   MeterValueDto,
+  OcppModuleDependencies,
   OCPP2_request_types,
   OCPP2_response_types,
-  SystemConfig,
 } from '@citrineos/base';
 import {
   AbstractModule,
@@ -22,7 +16,6 @@ import {
   AttributeEnum,
   AuthorizationStatusEnum,
   CacheNamespace,
-  CrudRepository,
   ErrorCode,
   EventGroup,
   MessageOrigin,
@@ -31,7 +24,6 @@ import {
   OCPP_2_VER_LIST,
   OCPP_CallAction,
   OcppError,
-  OCPPValidator,
   OCPPVersion,
   TariffSetStatusEnum,
   TransactionEventEnum,
@@ -43,30 +35,40 @@ import type {
   IDeviceModelRepository,
   ILocationRepository,
   IOCPPMessageRepository,
-  IReservationRepository,
   ITariffRepository,
   ITransactionEventRepository,
 } from '@dal/interfaces/repositories.js';
-import { SequelizeOCPPMessageRepository } from '@dal/layers/sequelize/index.js';
 import * as OCPP1_6_Mapper from '@dal/layers/sequelize/mapper/1.6/index.js';
 import { Authorization } from '@dal/layers/sequelize/model/Authorization/index.js';
 import { ChargingSchedule } from '@dal/layers/sequelize/model/ChargingProfile/index.js';
-import { Component, VariableAttribute } from '@dal/layers/sequelize/model/DeviceModel/index.js';
+import { VariableAttribute } from '@dal/layers/sequelize/model/DeviceModel/index.js';
 import { Tariff } from '@dal/layers/sequelize/model/Tariff/Tariffs.js';
 import {
   StartTransaction,
   Transaction,
 } from '@dal/layers/sequelize/model/TransactionEvent/index.js';
-import { SequelizeRepository } from '@dal/layers/sequelize/repository/Base.js';
-import { RealTimeAuthorizer } from '@util/authorizer/RealTimeAuthorizer.js';
-import { SignedMeterValuesUtil } from '@util/security/SignedMeterValuesUtil.js';
+import type { SignedMeterValuesUtil } from '@util/security/SignedMeterValuesUtil.js';
 import { Op } from 'sequelize';
-import type { ILogObj } from 'tslog';
-import { Logger } from 'tslog';
-import { CostCalculator } from './CostCalculator.js';
-import { CostNotifier } from './CostNotifier.js';
-import { StatusNotificationService } from './StatusNotificationService.js';
-import { TransactionService } from './TransactionService.js';
+
+import type { CostCalculator } from './CostCalculator.js';
+import type { CostNotifier } from './CostNotifier.js';
+import type { StatusNotificationService } from './StatusNotificationService.js';
+import type { TransactionService } from './TransactionService.js';
+
+export interface TransactionsModuleDependencies extends OcppModuleDependencies {
+  transactionEventRepository: ITransactionEventRepository;
+  authorizationRepository: IAuthorizationRepository;
+  deviceModelRepository: IDeviceModelRepository;
+  locationRepository: ILocationRepository;
+  tariffRepository: ITariffRepository;
+  ocppMessageRepository: IOCPPMessageRepository;
+  chargingProfileRepository: IChargingProfileRepository;
+  transactionService: TransactionService;
+  statusNotificationService: StatusNotificationService;
+  costCalculator: CostCalculator;
+  costNotifier: CostNotifier;
+  signedMeterValuesUtil: SignedMeterValuesUtil;
+}
 
 /**
  * Component that handles transaction related messages.
@@ -78,20 +80,13 @@ export class TransactionsModule extends AbstractModule {
   protected _transactionEventRepository: ITransactionEventRepository;
   protected _authorizeRepository: IAuthorizationRepository;
   protected _deviceModelRepository: IDeviceModelRepository;
-  protected _componentRepository: CrudRepository<Component>;
   protected _locationRepository: ILocationRepository;
   protected _tariffRepository: ITariffRepository;
-  protected _reservationRepository: IReservationRepository;
   protected _ocppMessageRepository: IOCPPMessageRepository;
   protected _chargingProfileRepository: IChargingProfileRepository;
 
   protected _transactionService: TransactionService;
   protected _statusNotificationService: StatusNotificationService;
-
-  protected _fileStorage: IFileStorage;
-
-  private readonly _authorizers: IAuthorizer[];
-  private readonly _realTimeAuthorizer: IAuthorizer;
 
   private readonly _signedMeterValuesUtil: SignedMeterValuesUtil;
   private _costNotifier: CostNotifier;
@@ -100,161 +95,47 @@ export class TransactionsModule extends AbstractModule {
   private readonly _sendCostUpdatedOnMeterValue: boolean | undefined;
   private readonly _costUpdatedInterval: number | undefined;
 
-  /**
-   * This is the constructor function that initializes the {@link TransactionsModule}.
-   *
-   * @param {BootstrapConfig & SystemConfig} config - The `config` contains configuration settings for the module.
-   *
-   * @param {ICache} [cache] - The cache instance which is shared among the modules & Central System to pass information such as blacklisted actions or boot status.
-   *
-   * @param {IFileStorage} [fileStorage] - The `fileStorage` allows access to the configured file storage.
-   *
-   * @param {IMessageSender} [sender] - The `sender` parameter is an optional parameter that represents an instance of the {@link IMessageSender} interface.
-   * It is used to send messages from the central system to external systems or devices. If no `sender` is provided, a default {@link RabbitMqSender} instance is created and used.
-   *
-   * @param {IMessageHandler} [handler] - The `handler` parameter is an optional parameter that represents an instance of the {@link IMessageHandler} interface.
-   * It is used to handle incoming messages and dispatch them to the appropriate methods or functions. If no `handler` is provided, a default {@link RabbitMqReceiver} instance is created and used.
-   *
-   * @param {Logger<ILogObj>} [logger] - The `logger` parameter is an optional parameter that represents an instance of {@link Logger<ILogObj>}.
-   * It is used to propagate system-wide logger settings and will serve as the parent logger for any sub-component logging. If no `logger` is provided, a default {@link Logger<ILogObj>} instance is created and used.
-   *
-   * @param {ITransactionEventRepository} [transactionEventRepository] - An optional parameter of type {@link ITransactionEventRepository} which represents a repository for accessing and manipulating transaction event data.
-   * If no `transactionEventRepository` is provided, a default {@link sequelize:transactionEventRepository} instance
-   * is created and used.
-   *
-   * @param {IAuthorizationRepository} [authorizeRepository] - An optional parameter of type {@link IAuthorizationRepository} which represents a repository for accessing and manipulating authorization data.
-   * If no `authorizeRepository` is provided, a default {@link sequelize:authorizeRepository} instance is
-   * created and used.
-   *
-   * @param {IDeviceModelRepository} [deviceModelRepository] - An optional parameter of type {@link IDeviceModelRepository} which represents a repository for accessing and manipulating variable attribute data.
-   * If no `deviceModelRepository` is provided, a default {@link sequelize:deviceModelRepository} instance is
-   * created and used.
-   *
-   * @param {CrudRepository<Component>} [componentRepository] - An optional parameter of type {@link CrudRepository<Component>} which represents a repository for accessing and manipulating component data.
-   * If no `componentRepository` is provided, a default {@link sequelize:componentRepository} instance is
-   * created and used.
-   *
-   * @param {ILocationRepository} [locationRepository] - An optional parameter of type {@link ILocationRepository} which represents a repository for accessing and manipulating location and charging station data.
-   * If no `locationRepository` is provided, a default {@link sequelize:locationRepository} instance is
-   * created and used.
-   *
-   * @param {CrudRepository<Component>} [componentRepository] - An optional parameter of type {@link CrudRepository<Component>} which represents a repository for accessing and manipulating component data.
-   * If no `componentRepository` is provided, a default {@link sequelize:componentRepository} instance is
-   * created and used.
-   *
-   * @param {ILocationRepository} [locationRepository] - An optional parameter of type {@link ILocationRepository} which represents a repository for accessing and manipulating location and charging station data.
-   * If no `locationRepository` is provided, a default {@link sequelize:locationRepository} instance is
-   * created and used.
-   *
-   * @param {ITariffRepository} [tariffRepository] - An optional parameter of type {@link ITariffRepository} which
-   * represents a repository for accessing and manipulating tariff data.
-   * If no `tariffRepository` is provided, a default {@link sequelize:tariffRepository} instance is
-   * created and used.
-   *
-   * @param {IReservationRepository} [reservationRepository] - An optional parameter of type {@link IReservationRepository}
-   * which represents a repository for accessing and manipulating reservation data.
-   * If no `reservationRepository` is provided, a default {@link sequelize:reservationRepository} instance is created and used.
-   *
-   * @param {IOCPPMessageRepository} [ocppMessageRepository] - An optional parameter of type {@link IOCPPMessageRepository}
-   * which represents a repository for accessing and manipulating OCPP Message data.
-   * If no `ocppMessageRepository` is provided, a default {@link sequelize:ocppMessageRepository} instance is created and used.
-   *
-   * @param {IAuthorizer[]} [authorizers] - An optional parameter of type {@link IAuthorizer[]} which represents
-   * a list of authorizers that can be used to authorize requests.
-   *
-   * @param {IAuthorizer} [realTimeAuthorizer] - An optional parameter of type {@link IAuthorizer} which represents
-   * a real-time authorizer that can be used to authorize real-time requests.
-   */
-  constructor(
-    config: BootstrapConfig & SystemConfig,
-    cache: ICache,
-    fileStorage: IFileStorage,
-    sender: IMessageSender,
-    handler: IMessageHandler,
-    logger?: Logger<ILogObj>,
-    ocppValidator?: OCPPValidator,
-    transactionEventRepository?: ITransactionEventRepository,
-    authorizeRepository?: IAuthorizationRepository,
-    deviceModelRepository?: IDeviceModelRepository,
-    componentRepository?: CrudRepository<Component>,
-    locationRepository?: ILocationRepository,
-    tariffRepository?: ITariffRepository,
-    reservationRepository?: IReservationRepository,
-    ocppMessageRepository?: IOCPPMessageRepository,
-    realTimeAuthorizer?: IAuthorizer,
-    authorizers?: IAuthorizer[],
-    chargingProfileRepository?: IChargingProfileRepository,
-  ) {
+  constructor({
+    config,
+    cache,
+    sender,
+    handler,
+    logger,
+    ocppValidator,
+    transactionEventRepository,
+    authorizationRepository,
+    deviceModelRepository,
+    locationRepository,
+    tariffRepository,
+    ocppMessageRepository,
+    chargingProfileRepository,
+    transactionService,
+    statusNotificationService,
+    costCalculator,
+    costNotifier,
+    signedMeterValuesUtil,
+  }: TransactionsModuleDependencies) {
     super(config, cache, handler, sender, EventGroup.Transactions, logger, ocppValidator);
 
     this._requests = config.modules.transactions.requests;
     this._responses = config.modules.transactions.responses;
 
-    this._fileStorage = fileStorage;
+    this._transactionEventRepository = transactionEventRepository;
+    this._authorizeRepository = authorizationRepository;
+    this._deviceModelRepository = deviceModelRepository;
+    this._locationRepository = locationRepository;
+    this._tariffRepository = tariffRepository;
+    this._ocppMessageRepository = ocppMessageRepository;
+    this._chargingProfileRepository = chargingProfileRepository;
 
-    this._transactionEventRepository =
-      transactionEventRepository ||
-      new sequelize.SequelizeTransactionEventRepository(config, logger);
-    this._authorizeRepository =
-      authorizeRepository || new sequelize.SequelizeAuthorizationRepository(config, logger);
-    this._deviceModelRepository =
-      deviceModelRepository || new sequelize.SequelizeDeviceModelRepository(config, logger);
-    this._componentRepository =
-      componentRepository ||
-      new SequelizeRepository<Component>(config, Component.MODEL_NAME, logger);
-    this._locationRepository =
-      locationRepository || new sequelize.SequelizeLocationRepository(config, logger);
-    this._tariffRepository =
-      tariffRepository || new sequelize.SequelizeTariffRepository(config, logger);
-    this._reservationRepository =
-      reservationRepository || new sequelize.SequelizeReservationRepository(config, logger);
-    this._ocppMessageRepository =
-      ocppMessageRepository || new SequelizeOCPPMessageRepository(config, this._logger);
-    this._chargingProfileRepository =
-      chargingProfileRepository ||
-      new sequelize.SequelizeChargingProfileRepository(config, this._logger);
-
-    this._authorizers = authorizers || [];
-    this._realTimeAuthorizer =
-      realTimeAuthorizer ||
-      new RealTimeAuthorizer(this._locationRepository, this.config, this._logger);
-
-    this._signedMeterValuesUtil = new SignedMeterValuesUtil(fileStorage, config, this._logger);
+    this._transactionService = transactionService;
+    this._statusNotificationService = statusNotificationService;
+    this._costCalculator = costCalculator;
+    this._costNotifier = costNotifier;
+    this._signedMeterValuesUtil = signedMeterValuesUtil;
 
     this._sendCostUpdatedOnMeterValue = config.modules.transactions.sendCostUpdatedOnMeterValue;
     this._costUpdatedInterval = config.modules.transactions.costUpdatedInterval;
-
-    this._transactionService = new TransactionService(
-      this._transactionEventRepository,
-      this._authorizeRepository,
-      this._locationRepository,
-      this._reservationRepository,
-      this._ocppMessageRepository,
-      this._realTimeAuthorizer,
-      this._authorizers,
-      this._logger,
-    );
-
-    this._statusNotificationService = new StatusNotificationService(
-      this._componentRepository,
-      this._deviceModelRepository,
-      this._locationRepository,
-      this._cache,
-      this._logger,
-    );
-
-    this._costCalculator = new CostCalculator(
-      this._tariffRepository,
-      this._transactionService,
-      this._logger,
-    );
-
-    this._costNotifier = new CostNotifier(
-      this,
-      this._transactionEventRepository,
-      this._costCalculator,
-      this._logger,
-    );
   }
 
   get transactionEventRepository(): ITransactionEventRepository {
@@ -297,7 +178,7 @@ export class TransactionsModule extends AbstractModule {
     let response: OCPP2_response_types.TransactionEventResponse | undefined = undefined;
     let transaction: Transaction | undefined = undefined;
     if (transactionEvent.idToken) {
-      if (message.protocol === OCPPVersion.OCPP2_1) {
+      if (isOcpp21) {
         response = await this._transactionService.authorizeOcpp21IdToken(
           tenantId,
           transactionEvent,
@@ -311,6 +192,22 @@ export class TransactionsModule extends AbstractModule {
         );
       }
     }
+    if (transactionEvent.eventType !== TransactionEventEnum.Started) {
+      const existingTransaction =
+        await this._transactionEventRepository.readTransactionByStationIdAndTransactionId(
+          tenantId,
+          ocppConnectionName,
+          transactionId,
+        );
+      if (existingTransaction && !existingTransaction.isActive) {
+        this._logger.warn(
+          `Received ${transactionEvent.eventType} for already-ended transaction ${transactionId} on ${ocppConnectionName}. Ignoring.`,
+        );
+        await this.sendCallResultWithMessage(message, response ?? {});
+        return;
+      }
+    }
+
     try {
       transaction =
         await this._transactionEventRepository.createOrUpdateTransactionByTransactionEventAndStationId(
@@ -530,6 +427,7 @@ export class TransactionsModule extends AbstractModule {
           transactionId,
           message.context.tenantId,
           this._costUpdatedInterval,
+          message.protocol,
         );
       }
     } else {
@@ -558,13 +456,21 @@ export class TransactionsModule extends AbstractModule {
         if (
           transaction &&
           transaction.isActive &&
-          transaction.totalKwh &&
+          transaction.totalKwh != null &&
           this._sendCostUpdatedOnMeterValue
         ) {
           response.totalCost = await this._costCalculator.calculateTotalCost(
             tenantId,
             transaction.connectorId,
             transaction.totalKwh,
+            {
+              chargingDurationSeconds: transaction.timeSpentCharging ?? undefined,
+              sessionDurationSeconds: elapsedSeconds(
+                transaction.startTime,
+                message.payload.timestamp,
+              ),
+              occurredAt: new Date(message.payload.timestamp),
+            },
           );
         }
 
@@ -702,11 +608,22 @@ export class TransactionsModule extends AbstractModule {
         }
       }
 
-      if (message.payload.eventType === TransactionEventEnum.Ended && transaction.totalKwh) {
+      if (
+        message.payload.eventType === TransactionEventEnum.Ended &&
+        transaction.totalKwh != null
+      ) {
         response.totalCost = await this._costCalculator.calculateTotalCost(
           tenantId,
           transaction.connectorId,
           transaction.totalKwh,
+          {
+            chargingDurationSeconds: transaction.timeSpentCharging ?? undefined,
+            sessionDurationSeconds: elapsedSeconds(
+              transaction.startTime,
+              message.payload.timestamp,
+            ),
+            occurredAt: new Date(message.payload.timestamp),
+          },
         );
       }
 
@@ -853,6 +770,7 @@ export class TransactionsModule extends AbstractModule {
         await this._costNotifier.calculateCostAndNotify(
           activeTransaction,
           message.context.tenantId,
+          message.protocol,
         );
       }
     } else {
@@ -890,7 +808,7 @@ export class TransactionsModule extends AbstractModule {
   ): Promise<void> {
     this._logger.debug('StatusNotification received:', message, props);
 
-    this._statusNotificationService
+    await this._statusNotificationService
       .processStatusNotification(
         message.context.tenantId,
         message.context.ocppConnectionName,
@@ -1339,7 +1257,44 @@ export class TransactionsModule extends AbstractModule {
     }
 
     if (transaction.startTransaction) {
-      transaction.totalKwh = (request.meterStop - transaction.startTransaction.meterStart) / 1000; // Convert from Wh to kWh
+      const totalKwh = (request.meterStop - transaction.startTransaction.meterStart) / 1000; // Convert from Wh to kWh
+      transaction.totalKwh = totalKwh;
+
+      // OCPP 1.6 has no TransactionEventResponse total-cost path. Finalize
+      // cost here using the tariff captured on the transaction at start, not
+      // the connector's current (mutable) assignment. Keep null when the
+      // transaction was genuinely unpriced, while persisting 0 for an
+      // explicit zero-price/free tariff.
+      if (transaction.tariffId != null) {
+        try {
+          const totalCost = await this._costCalculator.calculateTotalCostByTariffId(
+            tenantId,
+            transaction.tariffId,
+            totalKwh,
+            {
+              chargingDurationSeconds: elapsedSeconds(
+                transaction.startTransaction.timestamp,
+                request.timestamp,
+              ),
+              sessionDurationSeconds: elapsedSeconds(
+                transaction.startTransaction.timestamp,
+                request.timestamp,
+              ),
+              occurredAt: new Date(request.timestamp),
+            },
+          );
+          if (totalCost !== undefined) {
+            transaction.totalCost = totalCost;
+          }
+        } catch (error) {
+          // Pricing is best effort and must never leave a physically stopped
+          // transaction marked active because a tariff read failed.
+          this._logger.error(
+            `Failed to calculate total cost for OCPP 1.6 transaction ${request.transactionId}`,
+            error,
+          );
+        }
+      }
     } else {
       this._logger.warn(
         `StartTransaction record not found at station ${ocppConnectionName} for transactionId ${request.transactionId}. 
@@ -1776,3 +1731,13 @@ export class TransactionsModule extends AbstractModule {
     }
   }
 }
+
+function elapsedSeconds(start?: string, end?: string): number | undefined {
+  if (!start || !end) return undefined;
+  const startMs = new Date(start).getTime();
+  const endMs = new Date(end).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return undefined;
+  return Math.floor((endMs - startMs) / 1_000);
+}
+
+export default TransactionsModule;
