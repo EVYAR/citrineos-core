@@ -81,4 +81,39 @@ describe('RealTimeAuthorizer', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body).not.toHaveProperty('locationId');
   });
+
+  it('calls realtime authorization at station scope when EVSE and connector are unknown', async () => {
+    const repo = buildMockLocationRepository({ locationId: 12, evses: [{ id: 1 }, { id: 2 }] });
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: repo,
+      config: {} as SystemConfig,
+    });
+    const authorization = buildAuthorization();
+    authorization.tenantPartnerId = null;
+
+    const result = await authorizer.authorize(authorization, buildContext());
+
+    expect(result).toBe(AuthorizationStatusEnum.Accepted);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({
+      tenantPartnerId: null,
+      ocppConnectionName: 'CP-001',
+      idToken: 'F00B4C',
+    });
+    expect(body).not.toHaveProperty('evseId');
+    expect(body).not.toHaveProperty('connectorId');
+  });
+
+  it('fails closed on a malformed realtime authorization response', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ timestamp: 'now' }) });
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: buildMockLocationRepository({ locationId: null, evses: [] }),
+      config: {} as SystemConfig,
+    });
+
+    await expect(
+      authorizer.authorize(buildAuthorization(), buildContext(), evse, connector),
+    ).resolves.toBe(AuthorizationStatusEnum.Unknown);
+  });
 });

@@ -19,13 +19,13 @@ import { Logger } from 'tslog';
 import { OidcTokenProvider } from '../authorization/index.js';
 
 export interface RealTimeAuthorizationRequestBody {
-  tenantPartnerId: number;
+  tenantPartnerId?: number | null;
   idToken: string;
   idTokenType: IdTokenEnumType;
   locationId?: string;
   ocppConnectionName: string;
-  evseId: number;
-  connectorId: number;
+  evseId?: number;
+  connectorId?: number;
 }
 
 export interface RealTimeAuthorizationResponse {
@@ -108,17 +108,12 @@ export class RealTimeAuthorizer implements IAuthorizer {
         connectorId = chargingStation.evses[0].connectors![0].id!;
       }
 
-      if (evseId === undefined || connectorId === undefined) {
-        this._logger.error(
-          `Cannot determine evseId and connectorId for Realtime Auth of authorization ${authorization.id}`,
-        );
-        return authorization.status;
-      } else if (authorization.realTimeAuthLastAttempt) {
+      if (authorization.realTimeAuthLastAttempt) {
         const realTimeAuthLastAttempt = authorization.realTimeAuthLastAttempt;
         // Check if last attempt was at the same station and connector within the timeout period
         if (
           context.ocppConnectionName === realTimeAuthLastAttempt.ocppConnectionName &&
-          connectorId! === realTimeAuthLastAttempt.connectorId
+          connectorId === realTimeAuthLastAttempt.connectorId
         ) {
           const lastAttempt = new Date(realTimeAuthLastAttempt.timestamp);
           const timeout =
@@ -135,13 +130,13 @@ export class RealTimeAuthorizer implements IAuthorizer {
       }
 
       const payload: RealTimeAuthorizationRequestBody = {
-        tenantPartnerId: authorization.tenantPartnerId!, // Required if authorization has RealTimeAuth
+        tenantPartnerId: authorization.tenantPartnerId,
         idToken: authorization.idToken,
         idTokenType: authorization.idTokenType!,
         locationId: chargingStation?.locationId?.toString(),
         ocppConnectionName: context.ocppConnectionName,
-        evseId: evseId,
-        connectorId: connectorId,
+        ...(evseId !== undefined ? { evseId } : {}),
+        ...(connectorId !== undefined ? { connectorId } : {}),
       };
 
       this._logger.debug(
@@ -168,13 +163,18 @@ export class RealTimeAuthorizer implements IAuthorizer {
         body: JSON.stringify(payload),
       });
 
+      if ('ok' in response && !response.ok) {
+        throw new Error(`Realtime Auth returned HTTP ${response.status}`);
+      }
+
       const responseJson = await response.json();
 
       const realTimeAuth: RealTimeAuthorizationResponse =
         responseJson as RealTimeAuthorizationResponse;
-      this._logger.debug(`Real time auth response: ${realTimeAuth.data.allowed}`);
-      if (realTimeAuth) {
-        switch (realTimeAuth.data.allowed) {
+      const allowed = realTimeAuth?.data?.allowed;
+      this._logger.debug(`Real time auth response: ${allowed ?? 'MALFORMED'}`);
+      if (allowed) {
+        switch (allowed) {
           case 'ALLOWED':
             result = AuthorizationStatusEnum.Accepted;
             break;
@@ -208,7 +208,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
       result,
       ocppConnectionName: context.ocppConnectionName,
       evseId: evseId,
-      connectorId: connectorId!,
+      ...(connectorId !== undefined ? { connectorId } : {}),
     };
     authorization.save().catch((error) => {
       this._logger.error(
