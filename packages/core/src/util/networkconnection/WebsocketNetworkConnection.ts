@@ -40,6 +40,7 @@ import type { ErrorEvent, MessageEvent } from 'ws';
 import { WebSocket, WebSocketServer } from 'ws';
 import { UpgradeAuthenticationError } from './authenticator/errors/AuthenticationError.js';
 import type { IUpgradeError } from './authenticator/errors/IUpgradeError.js';
+import { LocalStorage } from '@/util/index.js';
 import { TlsCredentialManager } from './TlsCertificateManager.js';
 
 export class WebsocketNetworkConnection implements INetworkConnection {
@@ -69,29 +70,34 @@ export class WebsocketNetworkConnection implements INetworkConnection {
   ) => Promise<boolean>;
   private _getMaxChargingStationsForTenant?: (tenantId: number) => Promise<number | null>;
 
-  constructor(
-    config: SystemConfig,
-    cache: ICache,
-    authenticator: IAuthenticator,
-    router: IMessageRouter,
-    fileStorage: IFileStorage,
-    logger?: Logger<ILogObj>,
-    doesChargingStationExistByStationId?: (
-      tenantId: number,
-      ocppConnectionName: string,
-    ) => Promise<boolean>,
-    getMaxChargingStationsForTenant?: (tenantId: number) => Promise<number | null>,
-    connectionManager?: IConnectionManager,
-  ) {
+  constructor({
+    config,
+    cache,
+    authenticator,
+    router,
+    fileStorage,
+    logger,
+    doesChargingStationExistByStationId,
+    getMaxChargingStationsForTenant,
+    connectionManager,
+  }: {
+    config: SystemConfig;
+    cache: ICache;
+    authenticator: IAuthenticator;
+    router: IMessageRouter;
+    fileStorage: IFileStorage;
+    logger: Logger<ILogObj>;
+    doesChargingStationExistByStationId: (tenantId: number, ocppConnectionName: string) => Promise<boolean>;
+    getMaxChargingStationsForTenant: (tenantId: number) => Promise<number | null>;
+    connectionManager: IConnectionManager;
+  }) {
     this._getMaxChargingStationsForTenant = getMaxChargingStationsForTenant;
     this._cache = cache;
     this._config = config;
     this._doesChargingStationExistByStationId = doesChargingStationExistByStationId;
     this._connectionManager = connectionManager;
     this._fileStorage = fileStorage;
-    this._logger = logger
-      ? logger.getSubLogger({ name: this.constructor.name })
-      : new Logger<ILogObj>({ name: this.constructor.name });
+    this._logger = logger.getSubLogger({ name: this.constructor.name });
     this._authenticator = authenticator;
     router.networkHook = this.sendMessage.bind(this);
     this._router = router;
@@ -781,6 +787,18 @@ export class WebsocketNetworkConnection implements INetworkConnection {
   private async _generateServerOptions(
     config: WebsocketServerConfig,
   ): Promise<https.ServerOptions> {
+    let ca: string | undefined;
+    if (config.securityProfile > 2 && config.rootCACertificateFilePath) {
+      // Same existence-check-with-fallback pattern as TlsCredentialManager: prefer the
+      // configured file storage, but fall back to reading the path directly off disk when
+      // the file isn't present there (e.g. S3 configured but not seeded with this asset).
+      const existsInFileStorage = await this._fileStorage.exists(config.rootCACertificateFilePath);
+      const storage: IFileStorage = existsInFileStorage
+        ? this._fileStorage
+        : new LocalStorage('', '');
+      ca = (await storage.getFile(config.rootCACertificateFilePath))!;
+    }
+
     const serverOptions: https.ServerOptions = {
       SNICallback:
         config.securityProfile > 1
@@ -790,10 +808,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
               cb(null, ctx);
             }
           : undefined,
-      ca:
-        config.securityProfile > 2 && config.rootCACertificateFilePath
-          ? (await this._fileStorage.getFile(config.rootCACertificateFilePath))!
-          : undefined,
+      ca,
       requestCert: config.securityProfile > 2,
       rejectUnauthorized: config.securityProfile > 2,
     };
@@ -857,3 +872,5 @@ export class WebsocketNetworkConnection implements INetworkConnection {
     });
   }
 }
+
+export default WebsocketNetworkConnection;

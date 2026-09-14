@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
     outputs:
       swagger_valid: ${{ steps.validate-swagger.outputs.swagger_valid }}
 
@@ -25,7 +25,7 @@ jobs:
 
       - name: Build and Run Docker Compose
         run: |
-          docker compose -f ${{ github.workspace }}/apps/Server/docker-compose.yml up -d
+          docker compose -f ${{ github.workspace }}/docker-compose.yml -f ${{ github.workspace }}/docker-compose.local.yml up -d --build
 
       - name: Generate Swagger JSON
         run: |
@@ -48,12 +48,12 @@ jobs:
           path: swagger.json
 
       - name: Clean up Docker
-        run: docker compose -f ${{ github.workspace }}/apps/Server/docker-compose.yml down
+        run: docker compose -f ${{ github.workspace }}/docker-compose.yml -f ${{ github.workspace }}/docker-compose.local.yml down
 
   publish-swagger:
     needs: build
     if: needs.build.outputs.swagger_valid == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, evjex]
 
     steps:
       - name: Download Swagger Artifact

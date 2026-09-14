@@ -30,6 +30,7 @@ export default defineConfig({
       '@interfaces': fileURLToPath(new URL('./packages/base/src/interfaces', import.meta.url)),
       '@base-util': fileURLToPath(new URL('./packages/base/src/util', import.meta.url)),
       '@citrineos/core': fileURLToPath(new URL('./packages/core/index.ts', import.meta.url)),
+      '@citrineos/base': fileURLToPath(new URL('./packages/base/index.ts', import.meta.url)),
     },
   },
 });

@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+ARG HASURA_IMAGE=git.ev-yar.ir/evyar/hasura-graphql-engine:v2.40.3.cli-migrations-v3
+FROM ${HASURA_IMAGE}
+
+# Bundle metadata into the image so Dokploy Dockerfile mode works
+# without compose bind mounts.
+COPY ./hasura-metadata /hasura-metadata

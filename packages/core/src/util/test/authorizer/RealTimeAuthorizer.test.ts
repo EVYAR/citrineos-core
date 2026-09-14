@@ -13,6 +13,7 @@ import type { Authorization } from '@dal/layers/sequelize/index.js';
 import type { ILocationRepository } from '@dal/interfaces/repositories.js';
 import { beforeEach, describe, expect, it, type Mocked, vi } from 'vitest';
 import { RealTimeAuthorizer } from '../../authorizer/RealTimeAuthorizer.js';
+import { createTestContainer, getTestInstance } from '../../../test/testContainer.js';
 
 function buildMockLocationRepository(chargingStation: unknown): Mocked<ILocationRepository> {
   return {
@@ -47,6 +48,7 @@ const evse = { id: 10 } as EvseDto;
 const connector = { id: 100 } as ConnectorDto;
 
 describe('RealTimeAuthorizer', () => {
+  const { container } = createTestContainer();
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -62,7 +64,10 @@ describe('RealTimeAuthorizer', () => {
   it('does not throw when ChargingStation has no Location (locationId is null)', async () => {
     const chargingStation = { locationId: null, evses: [] };
     const repo = buildMockLocationRepository(chargingStation);
-    const authorizer = new RealTimeAuthorizer(repo, {} as SystemConfig);
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: repo,
+      config: {} as SystemConfig,
+    });
 
     const result = await authorizer.authorize(
       buildAuthorization(),
@@ -75,5 +80,40 @@ describe('RealTimeAuthorizer', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body).not.toHaveProperty('locationId');
+  });
+
+  it('calls realtime authorization at station scope when EVSE and connector are unknown', async () => {
+    const repo = buildMockLocationRepository({ locationId: 12, evses: [{ id: 1 }, { id: 2 }] });
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: repo,
+      config: {} as SystemConfig,
+    });
+    const authorization = buildAuthorization();
+    authorization.tenantPartnerId = null;
+
+    const result = await authorizer.authorize(authorization, buildContext());
+
+    expect(result).toBe(AuthorizationStatusEnum.Accepted);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({
+      tenantPartnerId: null,
+      ocppConnectionName: 'CP-001',
+      idToken: 'F00B4C',
+    });
+    expect(body).not.toHaveProperty('evseId');
+    expect(body).not.toHaveProperty('connectorId');
+  });
+
+  it('fails closed on a malformed realtime authorization response', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ timestamp: 'now' }) });
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: buildMockLocationRepository({ locationId: null, evses: [] }),
+      config: {} as SystemConfig,
+    });
+
+    await expect(
+      authorizer.authorize(buildAuthorization(), buildContext(), evse, connector),
+    ).resolves.toBe(AuthorizationStatusEnum.Unknown);
   });
 });
