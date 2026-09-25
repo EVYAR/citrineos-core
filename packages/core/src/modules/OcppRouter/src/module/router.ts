@@ -61,6 +61,11 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   protected _networkHook: (identifier: string, message: string) => Promise<void>;
   protected _locationRepository: ILocationRepository;
   private readonly _callResponseTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Serializes `setChargingStationIsOnlineAndOCPPVersion` writes per
+   * connection identifier -- see `_withConnectionLock` below.
+   */
+  private readonly _connectionRegistrationLocks = new Map<string, Promise<unknown>>();
 
   /**
    * Constructor for the class.
@@ -118,7 +123,6 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     );
   }
 
-  // TODO: Below method should lock these tables so that a rapid connect-disconnect cannot result in race condition.
   async registerConnection(
     tenantId: number,
     ocppConnectionName: string,
@@ -141,11 +145,17 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       origin: MessageOrigin.ChargingStationManagementSystem.toString(),
     });
 
-    const onlineCharger = this._locationRepository.setChargingStationIsOnlineAndOCPPVersion(
-      tenantId,
-      ocppConnectionName,
-      true,
-      protocol,
+    // Locked (see _withConnectionLock) so a rapid disconnect-then-reconnect
+    // can't let this write race the matching deregisterConnection's write
+    // for the same identifier and land out of order -- was previously a
+    // bare, unlocked call (see this method's former TODO).
+    const onlineCharger = this._withConnectionLock(connectionIdentifier, () =>
+      this._locationRepository.setChargingStationIsOnlineAndOCPPVersion(
+        tenantId,
+        ocppConnectionName,
+        true,
+        protocol,
+      ),
     );
 
     return Promise.all([
@@ -166,6 +176,8 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       this._logger.error('_webhookDispatcher deregister failed', err);
     });
 
+    const connectionIdentifier = createIdentifier(tenantId, ocppConnectionName);
+
     let protocol: OCPPVersion | null = null;
     try {
       const chargingStation = await this._locationRepository.readChargingStationByStationId(
@@ -181,17 +193,54 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       );
     }
 
-    await this._locationRepository.setChargingStationIsOnlineAndOCPPVersion(
-      tenantId,
-      ocppConnectionName,
-      false,
-      protocol,
+    // Locked (see _withConnectionLock) -- same reasoning as registerConnection's.
+    await this._withConnectionLock(connectionIdentifier, () =>
+      this._locationRepository.setChargingStationIsOnlineAndOCPPVersion(
+        tenantId,
+        ocppConnectionName,
+        false,
+        protocol,
+      ),
     );
 
-    const connectionIdentifier = createIdentifier(tenantId, ocppConnectionName);
     // TODO: ensure that all queue implementations in 02_Util only unsubscribe 1 queue per call
     // ...which will require refactoring this method to unsubscribe request and response queues separately
     return await this._handler.unsubscribe(connectionIdentifier);
+  }
+
+  /**
+   * Queues `fn` behind whatever's already queued for `identifier`, so
+   * concurrent `setChargingStationIsOnlineAndOCPPVersion` calls for the
+   * same connection identifier (one from `registerConnection`, one from
+   * `deregisterConnection`) always apply their read-then-write in the
+   * order they were invoked, never interleaved. Without this, a rapid
+   * disconnect-then-reconnect could let the old disconnect's `isOnline:
+   * false` write land AFTER the new connection's `isOnline: true` write
+   * (two independent async DB round trips with no ordering guarantee
+   * between them), permanently stranding a genuinely-connected station as
+   * offline -- confirmed happening in production.
+   *
+   * In-process only: doesn't protect against the old connection's close
+   * being handled on a different server instance than the new connection's
+   * open (a multi-instance deployment sharing one `ChargingStations` table
+   * behind a load balancer). That would need a distributed lock via the
+   * shared `ICache`, which `ICache` doesn't currently expose a compare-and-
+   * swap primitive for -- out of scope for this fix; this closes the
+   * common single-instance case and is a strict improvement over the
+   * previous fully-unlocked state either way.
+   */
+  private _withConnectionLock<T>(identifier: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this._connectionRegistrationLocks.get(identifier) ?? Promise.resolve();
+    const settled = previous.catch(() => undefined);
+    const result = settled.then(fn);
+    const tracked = result.catch(() => undefined);
+    this._connectionRegistrationLocks.set(identifier, tracked);
+    void tracked.finally(() => {
+      if (this._connectionRegistrationLocks.get(identifier) === tracked) {
+        this._connectionRegistrationLocks.delete(identifier);
+      }
+    });
+    return result;
   }
 
   async onMessage(

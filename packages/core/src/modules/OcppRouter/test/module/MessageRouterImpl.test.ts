@@ -274,6 +274,51 @@ describe('MessageRouterImpl', () => {
     });
   });
 
+  // ─── connection registration locking (rapid disconnect/reconnect race) ────
+
+  describe('registerConnection / deregisterConnection ordering', () => {
+    it('applies a slow, earlier-invoked deregister write before a fast, later-invoked register write for the same identifier, never the reverse', async () => {
+      const writeOrder: Array<'online' | 'offline'> = [];
+      let releaseSlowDeregisterWrite: () => void;
+      const slowDeregisterWrite = new Promise<void>((resolve) => {
+        releaseSlowDeregisterWrite = resolve;
+      });
+
+      locationRepository.setChargingStationIsOnlineAndOCPPVersion.mockImplementation(
+        async (_tenantId, _stationId, isOnline) => {
+          if (!isOnline) {
+            // Simulates the old connection's disconnect write still being
+            // in flight (e.g. a slow DB round trip) when the new
+            // connection's write is ready to fire.
+            await slowDeregisterWrite;
+          }
+          writeOrder.push(isOnline ? 'online' : 'offline');
+          return undefined;
+        },
+      );
+
+      // Old connection's close is handled first, as it genuinely is in
+      // production (a brand-new TCP/WS handshake for the reconnect takes
+      // far longer than the microtask hop this await represents).
+      const deregisterPromise = router.deregisterConnection(TENANT_ID, STATION_ID);
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // New connection's open is then handled -- its write is fast, but
+      // must still queue behind the earlier-invoked (if slower) write.
+      const registerPromise = router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+      releaseSlowDeregisterWrite!();
+      await Promise.all([deregisterPromise, registerPromise]);
+
+      // Without _withConnectionLock serializing these, register's fast
+      // write would land first and the slow deregister write would land
+      // AFTER it, leaving the station stuck offline despite the newer
+      // connection being the true current state -- exactly the bug this
+      // regression test guards against.
+      expect(writeOrder).toEqual(['offline', 'online']);
+    });
+  });
+
   // ─── onMessage ─────────────────────────────────────────────────────────────
 
   describe('onMessage', () => {
