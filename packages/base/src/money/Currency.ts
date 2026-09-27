@@ -6,7 +6,7 @@ import { assert } from '../assertion/assertion.js';
 /**
  * ISO-4217 currency codes.
  */
-const CURRENCY_CODES = ['USD', 'EUR', 'CAD', 'GBP'] as const;
+const CURRENCY_CODES = ['USD', 'EUR', 'CAD', 'GBP', 'IRR'] as const;
 
 export type CurrencyCode = (typeof CURRENCY_CODES)[number];
 
@@ -54,6 +54,7 @@ export class Currency {
     EUR: new Currency('EUR', 2),
     CAD: new Currency('CAD', 2),
     GBP: new Currency('GBP', 2),
+    IRR: new Currency('IRR', 2),
   };
 
   private readonly _code: CurrencyCode;

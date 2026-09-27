@@ -21,6 +21,7 @@ export class SequelizeOCPPMessageRepository
         where: {
           tenantId,
           correlationId: message.correlationId,
+          ocppConnectionName: message.ocppConnectionName,
           requestMessageId: null,
         },
       });

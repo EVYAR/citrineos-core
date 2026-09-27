@@ -220,6 +220,12 @@ describe('money', () => {
     ])('should round down to currency scale', (money, roundedMoney) => {
       expect(money.roundToCurrencyScale()).toEqual(roundedMoney);
     });
+
+    it('supports ISO 4217 Iranian rial amounts', () => {
+      expect(Money.of('1234.567', 'IRR').roundToCurrencyScale()).toEqual(
+        Money.of('1234.56', 'IRR'),
+      );
+    });
   });
 
   describe('multiply', () => {
