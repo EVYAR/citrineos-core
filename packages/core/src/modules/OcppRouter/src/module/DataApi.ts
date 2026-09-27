@@ -99,8 +99,9 @@ export class AdminApi extends AbstractModuleApi<IMessageRouter> implements IAdmi
   // N.B.: When adding subscriptions, chargers may be connected to a different instance of Citrine.
   // If this is the case, new subscriptions will not take effect until the charger reconnects.
   /**
-   * Creates a {@link Subscription}.
-   * Will always create a new entity and return its id.
+   * Creates a {@link Subscription}, or returns the matching existing row.
+   * This makes periodic self-healing callers safe and prevents one OCPP
+   * message from being fanned out repeatedly to the same callback.
    *
    * @param {FastifyRequest<{ Body: Subscription }>} request - The request object, containing the body which is parsed as a {@link Subscription}.
    * @return {Promise<number>} The id of the created subscription.
@@ -126,6 +127,20 @@ export class AdminApi extends AbstractModuleApi<IMessageRouter> implements IAdmi
         'Must specify at least one of onConnect, onClose, onMessage, sentMessage to true.',
       );
     }
+    const existing = await this._subscriptionRepository.readAllByStationId(
+      tenantId,
+      request.body.ocppConnectionName,
+    );
+    const matching = existing.find(
+      (subscription) =>
+        subscription.url === request.body.url &&
+        subscription.onClose === request.body.onClose &&
+        subscription.onConnect === request.body.onConnect &&
+        subscription.onMessage === request.body.onMessage &&
+        subscription.sentMessage === request.body.sentMessage &&
+        (subscription.messageRegexFilter ?? null) === (request.body.messageRegexFilter ?? null),
+    );
+    if (matching) return matching.id;
     return this._subscriptionRepository
       .create(tenantId, request.body as Subscription)
       .then((subscription) => subscription?.id);
