@@ -20,6 +20,7 @@ describe('currency', () => {
       ['EUR', Currency.of('EUR')],
       ['CAD', Currency.of('CAD')],
       ['GBP', Currency.of('GBP')],
+      ['IRR', Currency.of('IRR')],
     ] as Array<[string, Currency]>)(
       'should return currency for currency code',
       (currencyCode, expectedCurrency) => {
@@ -34,6 +35,7 @@ describe('currency', () => {
       [Currency.of('EUR'), 'EUR'],
       [Currency.of('CAD'), 'CAD'],
       [Currency.of('GBP'), 'GBP'],
+      [Currency.of('IRR'), 'IRR'],
     ] as Array<[Currency, string]>)('should return currency code', (currency, expectedCode) => {
       expect(currency.code).toEqual(expectedCode);
     });
@@ -45,6 +47,7 @@ describe('currency', () => {
       [Currency.of('EUR'), 2],
       [Currency.of('CAD'), 2],
       [Currency.of('GBP'), 2],
+      [Currency.of('IRR'), 2],
     ] as Array<[Currency, number]>)('should return currency scale', (currency, expectedScale) => {
       expect(currency.scale).toEqual(expectedScale);
     });
