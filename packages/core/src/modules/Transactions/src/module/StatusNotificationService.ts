@@ -193,6 +193,12 @@ export class StatusNotificationService {
       const matchingConnector = matchingEvse?.connectors?.find(
         (connector) => connector.connectorId === statusNotificationRequest.connectorId,
       );
+      // OCPP 1.6 has one implicit EVSE per connector (EvseType id = connectorId, see
+      // commissionEvseForOcpp16Connector). The StatusNotification must carry that same evseId even
+      // on the connector's first notification, which is the one that triggers the commissioning.
+      // Otherwise LatestStatusNotification (keyed by evseId + connectorId) keeps a permanent
+      // second pointer with a null evseId that is never replaced and shows a stale status.
+      let statusEvseTypeId: number | undefined = matchingEvse?.evseTypeId;
 
       // We upsert the Connector BEFORE saving the StatusNotification because
       // StatusNotifications.connectorId has an FK to Connectors.connectorId.
@@ -253,6 +259,7 @@ export class StatusNotificationService {
           );
           connector.evseId = commissioned.evseId;
           connector.evseTypeConnectorId = commissioned.evseTypeConnectorId;
+          statusEvseTypeId = statusNotificationRequest.connectorId;
         } else {
           // matchingConnector is found via the same predicate as matchingEvse,
           // so it is guaranteed to be defined when matchingEvse is.
@@ -271,8 +278,8 @@ export class StatusNotificationService {
         ocppConnectionName: ocppConnectionName,
         connectorStatus: statusNotificationRequest.status,
       };
-      if (matchingEvse) {
-        statusNotificationInput.evseId = matchingEvse.evseTypeId;
+      if (statusEvseTypeId !== undefined) {
+        statusNotificationInput.evseId = statusEvseTypeId;
       }
       const statusNotification = StatusNotification.build(statusNotificationInput);
       await this._locationRepository.addStatusNotificationToChargingStation(
