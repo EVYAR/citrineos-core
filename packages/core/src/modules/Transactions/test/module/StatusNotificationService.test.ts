@@ -379,9 +379,10 @@ describe('StatusNotificationService', () => {
       expect(locationRepository.addStatusNotificationToChargingStation).toHaveBeenCalled();
     });
 
-    it('should not set evseId on StatusNotification record when no matching evse is found, then auto-commission for the Connector record', async () => {
-      // The StatusNotification record itself is saved without evseId (audit trail),
-      // and the Connector record gets FKs from a freshly-commissioned evse.
+    it('should set the commissioned evseId (evseTypeId = connectorId) on the StatusNotification record when no matching evse is found, then auto-commission for the Connector record', async () => {
+      // OCPP 1.6 maps each connector to its own evse (evseTypeId = connectorId). The very first
+      // notification must carry that evseId too, otherwise LatestStatusNotification ends up with
+      // a stale second pointer (evseId null) next to the later one (evseId = connectorId).
       locationRepository.readChargingStationByStationId.mockResolvedValue(
         aChargingStation((cs) => {
           cs.evses = [aEvse()];
@@ -393,7 +394,7 @@ describe('StatusNotificationService', () => {
       });
 
       const buildSpy = vi.spyOn(StatusNotification, 'build').mockImplementation((input: any) => {
-        expect(input.evseId).toBeUndefined();
+        expect(input.evseId).toBe(404);
         return aStatusNotification();
       });
 
