@@ -3,7 +3,7 @@
 #  SPDX-License-Identifier: Apache-2.0
 
 ARG NODE_IMAGE=git.ev-yar.ir/evyar/node:24.16.0-alpine
-ARG NPM_REGISTRY=http://89.42.199.156:4873/
+ARG NPM_REGISTRY=https://npm.ev-yar.ir/
 
 FROM ${NODE_IMAGE} AS build
 WORKDIR /usr/local/apps/citrineos
