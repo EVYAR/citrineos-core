@@ -258,6 +258,35 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(notifier.flush).toHaveBeenCalledTimes(1);
   });
 
+  it('an explicit target remains failed closed if location lookup fails before target resolution', async () => {
+    const broken = repo();
+    broken.readChargingStationByStationId.mockRejectedValue(
+      new Error('location storage unavailable'),
+    );
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: broken,
+      config: config(),
+      chargingCalloutStore: store,
+      declineNotifier: notifier as unknown as ChargingCalloutDeclineNotifier,
+    });
+    expect(
+      await authorizer.authorize(
+        authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }),
+        context(),
+        evse,
+        connector,
+      ),
+    ).toBe(AuthorizationStatusEnum.Invalid);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('an incomplete explicit EVSE cannot fall through to an unfenced station-scope approval', async () => {
+    expect(await build().authorize(authorization(), context(), evse)).toBe(
+      AuthorizationStatusEnum.Invalid,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('ordinary authorization retains its configured offline behavior when durable charging callouts are disabled', async () => {
     const cfg = config();
     cfg.realTimeAuthChargingCallouts!.enabled = false;

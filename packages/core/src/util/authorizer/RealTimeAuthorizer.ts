@@ -127,7 +127,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
     let ocppConnectorId: number | undefined = undefined;
     let result: AuthorizationStatusEnumType = AuthorizationStatusEnum.Invalid;
     let chargingCalloutRef: string | undefined;
-    let requiresLiveTarget = false;
+    let requiresLiveTarget = Boolean(this._calloutStore && (evse || connector));
     try {
       const chargingStation = await this._locationRepository.readChargingStationByStationId(
         context.tenantId,
@@ -161,12 +161,18 @@ export class RealTimeAuthorizer implements IAuthorizer {
 
       // A connector start must claim/check its durable fence and current package authority.
       // A recent Authorize answer cannot stand in for this explicit physical-start decision.
-      requiresLiveTarget = Boolean(
+      requiresLiveTarget ||= Boolean(
         this._calloutStore &&
           targetSource === 'EXPLICIT' &&
           connectorId !== undefined &&
           authorization.id !== undefined,
       );
+      if (
+        requiresLiveTarget &&
+        (targetSource !== 'EXPLICIT' || connectorId === undefined || authorization.id === undefined)
+      ) {
+        throw new Error('Explicit charging target cannot be durably fenced');
+      }
       if (authorization.realTimeAuthLastAttempt && !requiresLiveTarget) {
         const realTimeAuthLastAttempt = authorization.realTimeAuthLastAttempt;
         // Check if last attempt was at the same station and connector within the timeout period
