@@ -126,6 +126,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
     let ocppConnectorId: number | undefined = undefined;
     let result: AuthorizationStatusEnumType = AuthorizationStatusEnum.Invalid;
     let chargingCalloutRef: string | undefined;
+    let requiresLiveTarget = false;
     try {
       const chargingStation = await this._locationRepository.readChargingStationByStationId(
         context.tenantId,
@@ -157,7 +158,15 @@ export class RealTimeAuthorizer implements IAuthorizer {
         targetSource = 'INFERRED_SINGLE_CONNECTOR';
       }
 
-      if (authorization.realTimeAuthLastAttempt) {
+      // A connector start must claim/check its durable fence and current package authority.
+      // A recent Authorize answer cannot stand in for this explicit physical-start decision.
+      requiresLiveTarget = Boolean(
+        this._calloutStore &&
+        targetSource === 'EXPLICIT' &&
+        connectorId !== undefined &&
+        authorization.id !== undefined,
+      );
+      if (authorization.realTimeAuthLastAttempt && !requiresLiveTarget) {
         const realTimeAuthLastAttempt = authorization.realTimeAuthLastAttempt;
         // Check if last attempt was at the same station and connector within the timeout period
         if (
@@ -270,7 +279,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
       }
     } catch (error) {
       this._logger.error(`Real-Time Auth failed: ${error}`);
-      if (authorization.realTimeAuth === AuthorizationWhitelistEnum.AllowedOffline) {
+      if (authorization.realTimeAuth === AuthorizationWhitelistEnum.AllowedOffline && !requiresLiveTarget) {
         result = AuthorizationStatusEnum.Accepted;
       }
     }

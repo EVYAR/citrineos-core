@@ -56,6 +56,19 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(notifier.flush).not.toHaveBeenCalled(); // an accepted start never emits a decline
   });
 
+  it.each([
+    [AuthorizationStatusEnum.Accepted, 'BLOCKED', AuthorizationStatusEnum.Blocked, 'DECLINED_BEFORE_POWER'],
+    [AuthorizationStatusEnum.Blocked, 'ALLOWED', AuthorizationStatusEnum.Accepted, 'AUTHORIZED'],
+  ] as const)('revalidates an explicit target despite cached %s when ordinary replay is enabled', async (cached, decision, expected, state) => {
+    fetchMock.mockResolvedValue(allowed(decision));
+    const auth = authorization({ realTimeAuthTimeout: 15, realTimeAuthLastAttempt: {
+      timestamp: new Date().toISOString(), result: cached, ocppConnectionName: 'CP-001', connectorId: 100,
+    } });
+    expect(await build(config({ realTimeAuthReplayLastAttempt: true })).authorize(auth, context(), evse, connector)).toBe(expected);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onlyRow().state).toBe(state);
+  });
+
   it('commits DECLINED_BEFORE_POWER with durable evidence BEFORE answering when the callout times out', async () => {
     fetchMock.mockRejectedValue(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
     const result = await build().authorize(authorization(), context(), evse, connector);
@@ -85,6 +98,18 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(store.rows.size).toBe(1);
+  });
+
+  it('a cached acceptance cannot bypass an already declined explicit-target fence', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('timeout'));
+    const authorizer = build(config({ realTimeAuthReplayLastAttempt: true }));
+    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    const stale = authorization({ realTimeAuthTimeout: 15, realTimeAuthLastAttempt: {
+      timestamp: new Date().toISOString(), result: AuthorizationStatusEnum.Accepted, ocppConnectionName: 'CP-001', connectorId: 100,
+    } });
+    expect(await authorizer.authorize(stale, context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
   });
 
   it('the fence expires: after fenceSeconds a fresh request gets a new ref', async () => {
@@ -117,12 +142,26 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
   });
 
-  it('AllowedOffline accepts on a timeout and then records an authorization, never a decline', async () => {
+  it('an explicit limited charging target cannot get implicit offline approval on timeout', async () => {
     fetchMock.mockRejectedValue(new Error('timeout'));
     const result = await build().authorize(authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }), context(), evse, connector);
-    expect(result).toBe(AuthorizationStatusEnum.Accepted);
-    expect(onlyRow().state).toBe('AUTHORIZED');
-    expect(notifier.flush).not.toHaveBeenCalled();
+    expect(result).toBe(AuthorizationStatusEnum.Invalid);
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+    expect(notifier.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('ordinary authorization retains its configured offline behavior when durable charging callouts are disabled', async () => {
+    const cfg = config();
+    cfg.realTimeAuthChargingCallouts!.enabled = false;
+    fetchMock.mockRejectedValue(new Error('timeout'));
+    expect(await build(cfg).authorize(authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }), context(), evse, connector)).toBe(AuthorizationStatusEnum.Accepted);
+    expect(store.rows.size).toBe(0);
+  });
+
+  it('durable fence storage failure cannot fall back to offline approval', async () => {
+    vi.spyOn(store, 'begin').mockRejectedValue(new Error('store unavailable'));
+    expect(await build().authorize(authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('only EXPLICIT targets get a ref: an inferred single connector is not a start target', async () => {
