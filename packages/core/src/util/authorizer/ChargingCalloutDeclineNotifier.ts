@@ -35,7 +35,10 @@ export class ChargingCalloutDeclineNotifier {
   /** Retry loop for deployments: restarts and failed deliveries are recovered from the durable rows. */
   start(intervalMs = 15_000): void {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.flush().catch((e) => this.logger.error(`decline flush failed: ${e}`)), intervalMs);
+    this.timer = setInterval(
+      () => void this.flush().catch((e) => this.logger.error(`decline flush failed: ${e}`)),
+      intervalMs,
+    );
     this.timer.unref?.(); // first pass after one interval: at boot the schema may not be synced yet
   }
 
@@ -44,9 +47,16 @@ export class ChargingCalloutDeclineNotifier {
     this.timer = undefined;
   }
 
+  async shutdown(): Promise<void> {
+    this.stop();
+    await this.flushing;
+  }
+
   /** One pass over due declines; concurrent calls share one pass. Returns the number delivered. */
   flush(limit = 25): Promise<number> {
-    this.flushing ??= this.run(limit).finally(() => { this.flushing = null; });
+    this.flushing ??= this.run(limit).finally(() => {
+      this.flushing = null;
+    });
     return this.flushing;
   }
 
@@ -60,23 +70,38 @@ export class ChargingCalloutDeclineNotifier {
 
   private async deliver(row: ChargingCalloutRow): Promise<boolean> {
     const tenant = this.config.tenantMap[String(row.tenantId)];
-    if (!this.config.adapterBaseUrl || !this.config.webhookToken || !tenant || !row.coreEvidenceRef) {
+    if (
+      !this.config.adapterBaseUrl ||
+      !this.config.webhookToken ||
+      !tenant ||
+      !row.coreEvidenceRef
+    ) {
       await this.fail(row, !tenant ? 'NO_TENANT_MAPPING' : 'DECLINE_TRANSPORT_NOT_CONFIGURED');
       return false;
     }
-    const url = new URL(`/v1/charging/admission-callouts/${encodeURIComponent(row.id)}/decline`, this.config.adapterBaseUrl);
+    const url = new URL(
+      `/v1/charging/admission-callouts/${encodeURIComponent(row.id)}/decline`,
+      this.config.adapterBaseUrl,
+    );
     url.searchParams.set('token', this.config.webhookToken);
     try {
       const res = await this.fetchImpl(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ schemaVersion: '1.0.0', tenantId: tenant, coreEvidenceRef: row.coreEvidenceRef }),
+        body: JSON.stringify({
+          schemaVersion: '1.0.0',
+          tenantId: tenant,
+          coreEvidenceRef: row.coreEvidenceRef,
+        }),
         signal: AbortSignal.timeout(this.config.declineRequestTimeoutMs),
       });
       if (res.status === 200) {
         const acknowledgment: unknown = await res.json();
-        if (!acknowledgment || typeof acknowledgment !== 'object' ||
-            (acknowledgment as { fenced?: unknown }).fenced !== true) {
+        if (
+          !acknowledgment ||
+          typeof acknowledgment !== 'object' ||
+          (acknowledgment as { fenced?: unknown }).fenced !== true
+        ) {
           await this.fail(row, 'ADAPTER_DECLINE_NOT_FENCED');
           return false;
         }
@@ -85,7 +110,10 @@ export class ChargingCalloutDeclineNotifier {
       }
       await this.fail(row, `ADAPTER_HTTP_${res.status}`);
     } catch (error) {
-      await this.fail(row, `ADAPTER_UNREACHABLE: ${error instanceof Error ? error.message : String(error)}`);
+      await this.fail(
+        row,
+        `ADAPTER_UNREACHABLE: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     return false;
   }
@@ -93,8 +121,18 @@ export class ChargingCalloutDeclineNotifier {
   private async fail(row: ChargingCalloutRow, reason: string): Promise<void> {
     const attempts = row.declineAttempts + 1;
     const abandoned = attempts >= this.config.declineMaxAttempts;
-    const delay = Math.min(this.config.declineRetryBaseMs * 2 ** Math.min(attempts, 20), this.config.declineRetryMaxMs);
-    this.logger.warn(`decline receipt ${row.id} not delivered (${reason}), attempt ${attempts}${abandoned ? ', abandoned' : ''}`);
-    await this.store.recordDeclineFailure(row.id, reason, abandoned ? null : new Date(this.clock().getTime() + delay), abandoned);
+    const delay = Math.min(
+      this.config.declineRetryBaseMs * 2 ** Math.min(attempts, 20),
+      this.config.declineRetryMaxMs,
+    );
+    this.logger.warn(
+      `decline receipt ${row.id} not delivered (${reason}), attempt ${attempts}${abandoned ? ', abandoned' : ''}`,
+    );
+    await this.store.recordDeclineFailure(
+      row.id,
+      reason,
+      abandoned ? null : new Date(this.clock().getTime() + delay),
+      abandoned,
+    );
   }
 }

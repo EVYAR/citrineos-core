@@ -15,6 +15,7 @@ it('stops router/module receivers before closing Rabbit and clears the completed
   const server = Object.create(CitrineOSServer.prototype) as CitrineOSServer;
   Object.assign(server, {
     _logger: { info: vi.fn() },
+    _container: { hasRegistration: () => true, resolve: () => ({ shutdown: close('authorizer') }) },
     _config: { shutdownGracePeriodSeconds: 30 },
     _healthCheckService: { shutdown: vi.fn() },
     _server: {
@@ -31,6 +32,15 @@ it('stops router/module receivers before closing Rabbit and clears the completed
     _sequelizeInstance: { connectionManager: { close: close('database') } },
   });
   await server.shutdown();
-  expect(calls).toEqual(['http', 'network', 'router', 'module', 'channels', 'rabbit', 'database']);
+  expect(calls).toEqual([
+    'http',
+    'network',
+    'router',
+    'module',
+    'channels',
+    'rabbit',
+    'authorizer',
+    'database',
+  ]);
   expect(vi.getTimerCount()).toBe(0);
 });

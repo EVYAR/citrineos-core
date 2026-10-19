@@ -251,6 +251,10 @@ export class CitrineOSServer {
     await this._channelManager?.closeAll();
     await this._connectionManager?.close();
 
+    if (this._container?.hasRegistration('realTimeAuthorizer')) {
+      await this._container.resolve<{ shutdown(): Promise<void> }>('realTimeAuthorizer').shutdown();
+    }
+
     this._logger.info('Closing PostgreSQL connections...');
     await this._sequelizeInstance.connectionManager.close();
 

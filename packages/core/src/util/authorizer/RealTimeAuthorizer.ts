@@ -98,6 +98,10 @@ export class RealTimeAuthorizer implements IAuthorizer {
     }
   }
 
+  async shutdown(): Promise<void> {
+    await this._declineNotifier?.shutdown();
+  }
+
   async authorize(
     authorization: Authorization,
     context: IMessageContext,

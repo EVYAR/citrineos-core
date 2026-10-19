@@ -9,6 +9,7 @@ import { type ILogObj, Logger } from 'tslog';
 export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.Connection> {
   private connection: amqp.Connection | null = null;
   private isConnecting = false;
+  private closing = false;
   private reconnectAttempts = 0;
   private reconnectDelay = 1000; // Start with 1 second
   private reconnectTimer: NodeJS.Timeout | null = null;
@@ -31,6 +32,7 @@ export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.Co
   }
 
   async connect(): Promise<amqp.Connection> {
+    if (this.closing) throw new Error('RabbitMQ connection manager is closed');
     if (this.connection) {
       return this.connection;
     }
@@ -46,7 +48,12 @@ export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.Co
     this.isConnecting = true;
 
     try {
-      this.connection = await amqp.connect(this.url);
+      const connection = await amqp.connect(this.url);
+      if (this.closing) {
+        await connection.close();
+        throw new Error('RabbitMQ connection manager closed during connect');
+      }
+      this.connection = connection;
       this.reconnectAttempts = 0;
       this.reconnectDelay = 1000;
       this.isConnecting = false;
@@ -60,6 +67,7 @@ export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.Co
       this.connection.on('close', () => {
         this._logger.warn('RabbitMQ connection closed');
         this.connection = null;
+        if (this.closing) return;
         this.state = 'disconnected';
         this.emit('disconnected');
         this.handleReconnect().catch((err) => {
@@ -81,7 +89,7 @@ export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.Co
   }
 
   private async handleReconnect(): Promise<void> {
-    if (this.state === 'closed') {
+    if (this.closing || this.state === 'closed') {
       this._logger.info('Connection is closed, will not attempt to reconnect.');
       return;
     }
@@ -113,6 +121,7 @@ export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.Co
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     this.state = 'closed';
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
