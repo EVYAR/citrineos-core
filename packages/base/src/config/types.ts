@@ -318,6 +318,11 @@ export const systemConfigInputSchema = z.object({
   rbacRulesFileName: z.string().default('rbac-rules.json').optional(),
   rbacRulesDir: z.string().optional(),
   realTimeAuthDefaultTimeoutSeconds: z.number().int().min(1).default(15).optional(),
+  // Hard bound on the synchronous real-time authorization callout (ms). The callout used to have no timeout.
+  realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(3000).optional(),
+  // false = never answer a start from the last real-time attempt; every callout is made. Required when an
+  // external admission authority (e.g. eMSP package admission) must see each start.
+  realTimeAuthReplayLastAttempt: z.boolean().default(true).optional(),
   notReadyThresholdSeconds: z.number().int().min(1).default(60).optional(),
 });
 
@@ -645,6 +650,8 @@ export const systemConfigSchema = z
     rbacRulesDir: z.string().optional(),
     oidcClient: oidcClientConfigSchema,
     realTimeAuthDefaultTimeoutSeconds: z.number().int().min(1).default(15),
+    realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(3000),
+    realTimeAuthReplayLastAttempt: z.boolean().default(true),
     notReadyThresholdSeconds: z.number().int().min(1).default(60),
   })
   .refine((obj) => obj.maxCachingSeconds >= obj.maxCallLengthSeconds, {

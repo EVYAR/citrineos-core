@@ -24,8 +24,19 @@ export interface RealTimeAuthorizationRequestBody {
   idTokenType: IdTokenEnumType;
   locationId?: string;
   ocppConnectionName: string;
+  /** Core database ids (kept for compatibility). */
   evseId?: number;
   connectorId?: number;
+  /**
+   * How `evseId`/`connectorId` were obtained. EXPLICIT: the message named the connector/EVSE (OCPP 1.6
+   * StartTransaction, OCPP 2.x TransactionEvent Started). INFERRED_SINGLE_CONNECTOR: the station has exactly one
+   * connector and none was named (a bare Authorize); that is a guess and must not be treated as a start target.
+   * NONE: no target. Absent on older Core versions.
+   */
+  targetSource?: 'EXPLICIT' | 'INFERRED_SINGLE_CONNECTOR' | 'NONE';
+  /** OCPP protocol identifiers of the EXPLICIT target (1.6: evse = connector = connectorId). */
+  ocppEvseId?: number;
+  ocppConnectorId?: number;
 }
 
 export interface RealTimeAuthorizationResponse {
@@ -83,6 +94,9 @@ export class RealTimeAuthorizer implements IAuthorizer {
 
     let evseId = undefined;
     let connectorId = undefined;
+    let targetSource: RealTimeAuthorizationRequestBody['targetSource'] = 'NONE';
+    let ocppEvseId: number | undefined = undefined;
+    let ocppConnectorId: number | undefined = undefined;
     let result: AuthorizationStatusEnumType = AuthorizationStatusEnum.Invalid;
     try {
       const chargingStation = await this._locationRepository.readChargingStationByStationId(
@@ -95,9 +109,15 @@ export class RealTimeAuthorizer implements IAuthorizer {
       if (evse && connector) {
         evseId = evse.id!;
         connectorId = connector.id!;
+        targetSource = 'EXPLICIT';
+        ocppConnectorId = connector.connectorId;
+        ocppEvseId = evse.evseTypeId ?? connector.connectorId;
       } else if (evse && !connector && evse.connectors?.length === 1) {
         evseId = evse.id!;
         connectorId = evse.connectors[0].id!;
+        targetSource = 'EXPLICIT';
+        ocppConnectorId = evse.connectors[0].connectorId;
+        ocppEvseId = evse.evseTypeId ?? evse.connectors[0].connectorId;
       } else if (
         chargingStation &&
         chargingStation.evses &&
@@ -106,12 +126,14 @@ export class RealTimeAuthorizer implements IAuthorizer {
       ) {
         evseId = chargingStation.evses[0].id!;
         connectorId = chargingStation.evses[0].connectors![0].id!;
+        targetSource = 'INFERRED_SINGLE_CONNECTOR';
       }
 
       if (authorization.realTimeAuthLastAttempt) {
         const realTimeAuthLastAttempt = authorization.realTimeAuthLastAttempt;
         // Check if last attempt was at the same station and connector within the timeout period
         if (
+          (this._config.realTimeAuthReplayLastAttempt ?? true) &&
           context.ocppConnectionName === realTimeAuthLastAttempt.ocppConnectionName &&
           connectorId === realTimeAuthLastAttempt.connectorId
         ) {
@@ -137,6 +159,9 @@ export class RealTimeAuthorizer implements IAuthorizer {
         ocppConnectionName: context.ocppConnectionName,
         ...(evseId !== undefined ? { evseId } : {}),
         ...(connectorId !== undefined ? { connectorId } : {}),
+        targetSource,
+        ...(ocppEvseId !== undefined ? { ocppEvseId } : {}),
+        ...(ocppConnectorId !== undefined ? { ocppConnectorId } : {}),
       };
 
       this._logger.debug(
@@ -161,6 +186,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
         method: 'POST',
         headers,
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(this._config.realTimeAuthRequestTimeoutMs ?? 3000),
       });
 
       if ('ok' in response && !response.ok) {
