@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
+import type { CreateOptions } from 'sequelize';
 import type { ChargingStationSequenceTypeEnumType, TenantDto } from '@citrineos/base';
 import { DEFAULT_TENANT_ID } from '@citrineos/base';
 import {
@@ -65,11 +66,15 @@ export class ChargingStationSequence extends Model {
   declare tenant?: TenantDto;
 
   @BeforeCreate
-  static async resolveStationId(instance: ChargingStationSequence): Promise<void> {
+  static async resolveStationId(
+    instance: ChargingStationSequence,
+    options: CreateOptions = {},
+  ): Promise<void> {
     if (instance.stationId == null && instance.ocppConnectionName && instance.tenantId != null) {
       const station = await ChargingStation.findOne({
         where: { ocppConnectionName: instance.ocppConnectionName, tenantId: instance.tenantId },
         attributes: ['id'],
+        transaction: options.transaction,
       });
       if (station) {
         instance.stationId = station.id;

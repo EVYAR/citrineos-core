@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import type { Transaction as SequelizeTransaction } from 'sequelize';
 import type {
   BootConfig,
   CallAction,
@@ -536,6 +537,7 @@ export interface IChargingStationSequenceRepository
     tenantId: number,
     ocppConnectionName: string,
     type: ChargingStationSequenceTypeEnumType,
+    transaction?: SequelizeTransaction,
   ): Promise<number>;
 }
 

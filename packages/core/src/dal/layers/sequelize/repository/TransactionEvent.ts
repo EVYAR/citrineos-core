@@ -674,7 +674,7 @@ export class SequelizeTransactionEventRepository
           ocppConnectionName: ocppConnectionName,
         },
         include: [Tariff],
-        sequelizeTransaction,
+        transaction: sequelizeTransaction,
       });
       if (!connector) {
         this.logger.error(`Unable to find connector ${request.connectorId}.`);
@@ -699,6 +699,7 @@ export class SequelizeTransactionEventRepository
         tenantId,
         ocppConnectionName,
         ChargingStationSequenceTypeEnum.transactionId,
+        sequelizeTransaction,
       );
       // Store transaction in db
       let newTransaction = Transaction.build({
@@ -716,6 +717,7 @@ export class SequelizeTransactionEventRepository
 
       const [chargingStation] = await this.station.readAllByQuery(tenantId, {
         where: { ocppConnectionName: ocppConnectionName, tenantId },
+        transaction: sequelizeTransaction,
       });
       if (chargingStation) {
         if (chargingStation.locationId) {

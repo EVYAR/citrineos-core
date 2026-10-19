@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
+import type { Transaction as SequelizeTransaction } from 'sequelize';
 import type { ChargingStationSequenceTypeEnumType } from '@citrineos/base';
 import type { IChargingStationSequenceRepository } from '../../../interfaces/repositories.js';
 import { ChargingStationSequence } from '../model/ChargingStationSequence/ChargingStationSequence.js';
@@ -42,8 +43,9 @@ export class SequelizeChargingStationSequenceRepository
     tenantId: number,
     ocppConnectionName: string,
     type: ChargingStationSequenceTypeEnumType,
+    existingTransaction?: SequelizeTransaction,
   ): Promise<number> {
-    return await this.s.transaction(async (transaction) => {
+    const next = async (transaction: SequelizeTransaction) => {
       const [storedSequence, sequenceCreated] = await this.readOrCreateByQuery(tenantId, {
         where: {
           tenantId: tenantId,
@@ -62,7 +64,8 @@ export class SequelizeChargingStationSequenceRepository
       }
 
       return this._ensureNumber(storedSequence.get('value'));
-    });
+    };
+    return existingTransaction ? next(existingTransaction) : this.s.transaction(next);
   }
 }
 

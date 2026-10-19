@@ -54,6 +54,25 @@ describe('SequelizeChargingStationSequenceRepository', () => {
   });
 
   describe('getNextSequenceValue', () => {
+    it('uses a supplied transaction without acquiring another connection', async () => {
+      const sequence = { get: vi.fn().mockReturnValue('1') };
+      const read = vi
+        .spyOn(repository as any, 'readOrCreateByQuery')
+        .mockResolvedValue([sequence, true]);
+      const result = await repository.getNextSequenceValue(
+        tenantId,
+        ocppConnectionName,
+        sequenceType,
+        mockTransaction as never,
+      );
+      expect(result).toBe(1);
+      expect(mockSequelize.transaction).not.toHaveBeenCalled();
+      expect(read).toHaveBeenCalledWith(
+        tenantId,
+        expect.objectContaining({ transaction: mockTransaction }),
+      );
+    });
+
     it('should return SEQUENCE_START when sequence is created (new sequence)', async () => {
       const mockSequence = {
         get: vi.fn<() => any>().mockReturnValue('1' as any),
