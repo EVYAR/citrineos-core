@@ -2,16 +2,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 // Store contract. Runs against the in-memory store always, and against Postgres when CORE_CALLOUT_PG_URL names a DISPOSABLE
-// database (the table is created with the model and dropped at the end). Guarded run:
+// database (the actual migration creates/drops its new table; existing tables are refused). Guarded run:
 //   CORE_CALLOUT_PG_URL=postgres://user:pw@host:5432/cgp_core_callout_test run-locked.sh ... vitest run ChargingCalloutStore.contract
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Sequelize } from 'sequelize-typescript';
 import { ChargingAdmissionCallout } from '../../../dal/layers/sequelize/model/ChargingAdmissionCallout.js';
 import { InMemoryChargingCalloutStore, type ChargingCalloutStore } from '../../authorizer/ChargingCalloutLedger.js';
 import { SequelizeChargingCalloutStore } from '../../authorizer/SequelizeChargingCalloutStore.js';
+import { up as migrateUp, down as migrateDown } from '../../../../../../apps/ocpp-server/migrations/20261019230000-create-charging-admission-callouts.js';
 
 const PG = process.env.CORE_CALLOUT_PG_URL;
 let sequelize: Sequelize | undefined;
+let migrationApplied = false;
 const key = (n = 0) => ({ tenantId: 1, ocppConnectionName: `CP-${n}`, authorizationId: 42, connectorId: 100 });
 
 function suite(name: string, make: () => Promise<ChargingCalloutStore>) {
@@ -83,12 +85,30 @@ suite('in-memory', async () => new InMemoryChargingCalloutStore());
 
 if (PG) {
   beforeAll(async () => {
+    const target = new URL(PG);
+    if (!/^\/cgp_core_callout_test(?:_[a-z0-9]+)?$/.test(target.pathname) || target.username !== 'cgp') {
+      throw new Error('Core callout contract requires an explicit disposable cgp task database');
+    }
     sequelize = new Sequelize(PG, { logging: false, models: [ChargingAdmissionCallout] });
-    await ChargingAdmissionCallout.sync({ force: true });
+    const [existing] = await sequelize.query(`SELECT to_regclass('"ChargingAdmissionCallouts"') AS relation`);
+    if ((existing[0] as { relation: string | null }).relation !== null) {
+      throw new Error('Refusing to replace an existing Core callout table');
+    }
+    await migrateUp(sequelize.getQueryInterface());
+    migrationApplied = true;
+    const [indexes] = await sequelize.query(`SELECT indexname FROM pg_indexes WHERE tablename = 'ChargingAdmissionCallouts'`);
+    expect(indexes.map(row => (row as { indexname: string }).indexname)).toEqual(expect.arrayContaining([
+      'ChargingAdmissionCallouts_request_idx', 'ChargingAdmissionCallouts_undelivered_idx',
+    ]));
   });
   afterAll(async () => {
-    await ChargingAdmissionCallout.drop();
-    await sequelize?.close();
+    try {
+      if (migrationApplied && sequelize) {
+        await migrateDown(sequelize.getQueryInterface());
+        const [rows] = await sequelize.query(`SELECT to_regclass('"ChargingAdmissionCallouts"') AS relation`);
+        expect((rows[0] as { relation: string | null }).relation).toBeNull();
+      }
+    } finally { await sequelize?.close(); }
   });
   suite('postgres (SequelizeChargingCalloutStore)', async () => {
     await ChargingAdmissionCallout.destroy({ where: {} });
