@@ -61,6 +61,7 @@ import {
   CertificateAuthorityService,
   InternalSmartCharging,
   RealTimeAuthorizer,
+  SequelizeChargingCalloutStore,
   IdGenerator,
 } from '@citrineos/core';
 
@@ -326,6 +327,7 @@ function registerServices(container: AwilixContainer): void {
     idGenerator: asClass(IdGenerator).singleton(),
     certificateAuthorityService: asClass(CertificateAuthorityService).singleton(),
     smartChargingService: asClass(InternalSmartCharging).singleton(),
+    chargingCalloutStore: asClass(SequelizeChargingCalloutStore).singleton(),
     realTimeAuthorizer: asClass(RealTimeAuthorizer).singleton(),
     authorizers: asValue([]),
     apiAuthProvider: asFunction(({ config, logger }): IApiAuthProvider => {

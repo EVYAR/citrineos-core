@@ -12,6 +12,7 @@ import { Boot } from './model/Boot.js';
 import { AsyncJobStatus } from './model/AsyncJob/AsyncJobStatus.js';
 import { Certificate } from './model/Certificate/Certificate.js';
 import { ChangeConfiguration } from './model/ChangeConfiguration.js';
+import { ChargingAdmissionCallout } from './model/ChargingAdmissionCallout.js';
 import { ChargingNeeds } from './model/ChargingProfile/ChargingNeeds.js';
 import { ChargingProfile } from './model/ChargingProfile/ChargingProfile.js';
 import { ChargingSchedule } from './model/ChargingProfile/ChargingSchedule.js';
@@ -141,6 +142,7 @@ export class DefaultSequelizeInstance {
       username: this.config.database.username,
       password: this.config.database.password,
       models: [
+        ChargingAdmissionCallout,
         AsyncJobStatus,
         Authorization,
         Boot,

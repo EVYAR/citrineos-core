@@ -1,0 +1,97 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Logger, ILogObj } from 'tslog';
+import { ChargingCalloutDeclineNotifier, type DeclineNotifierConfig } from '../../authorizer/ChargingCalloutDeclineNotifier.js';
+import { InMemoryChargingCalloutStore } from '../../authorizer/ChargingCalloutLedger.js';
+
+const TENANT = '00000000-0000-4000-8000-0000000000e2';
+const logger = { warn: vi.fn(), error: vi.fn() } as unknown as Logger<ILogObj>;
+const cfg = (over: Partial<DeclineNotifierConfig> = {}): DeclineNotifierConfig => ({ adapterBaseUrl: 'http://adapter.test', webhookToken: 'w'.repeat(32), tenantMap: { '1': TENANT }, declineRetryBaseMs: 1000, declineRetryMaxMs: 60000, declineMaxAttempts: 3, declineRequestTimeoutMs: 3000, ...over });
+const key = { tenantId: 1, ocppConnectionName: 'CP-001', authorizationId: 42, connectorId: 100 };
+
+describe('ChargingCalloutDeclineNotifier', () => {
+  let store: InMemoryChargingCalloutStore;
+  let now: Date;
+  beforeEach(() => { store = new InMemoryChargingCalloutStore(); now = new Date('2026-10-19T10:00:00Z'); });
+  const declined = async (k = key) => {
+    const b = await store.begin(k, now, 6000, 30000);
+    if (b.kind !== 'CALLOUT') throw new Error('expected callout');
+    await store.markDeclined(b.ref, 'core-decision:abc', now);
+    return b.ref;
+  };
+  const make = (fetchImpl: typeof fetch, c = cfg()) => new ChargingCalloutDeclineNotifier(store, c, logger, fetchImpl, () => now);
+
+  it('posts the exact receipt the adapter validates, with the webhook credential, and marks it delivered', async () => {
+    const ref = await declined();
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 200 });
+    expect(await make(fetchImpl as never).flush()).toBe(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toBe(`http://adapter.test/v1/charging/admission-callouts/${ref}/decline?token=${'w'.repeat(32)}`);
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ schemaVersion: '1.0.0', tenantId: TENANT, coreEvidenceRef: 'core-decision:abc' }); // no driver/package fields
+    expect((await store.get(ref))!.declineDeliveredAt).toEqual(now);
+    expect(await make(fetchImpl as never).flush()).toBe(0); // delivered rows are not resent
+  });
+
+  it('never sends a receipt for a request that is pending or authorized', async () => {
+    const pending = await store.begin(key, now, 6000, 30000);
+    const other = await store.begin({ ...key, connectorId: 101 }, now, 6000, 30000);
+    if (other.kind === 'CALLOUT') await store.markAuthorized(other.ref, now);
+    expect(pending.kind).toBe('CALLOUT');
+    const fetchImpl = vi.fn();
+    expect(await make(fetchImpl as never).flush()).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not send without a canonical tenant mapping and keeps retrying later (slot stays held)', async () => {
+    const ref = await declined();
+    const fetchImpl = vi.fn();
+    await make(fetchImpl as never, cfg({ tenantMap: {} })).flush();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const row = (await store.get(ref))!;
+    expect(row).toMatchObject({ lastDeclineError: 'NO_TENANT_MAPPING', declineAttempts: 1, declineDeliveredAt: null, declineAbandoned: false });
+    expect(row.nextDeclineAt!.getTime()).toBeGreaterThan(now.getTime());
+  });
+
+  it('retries a non-200 with backoff and abandons after the attempt budget, never inventing delivery', async () => {
+    const ref = await declined();
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 404 });
+    const notifier = make(fetchImpl as never);
+    await notifier.flush();
+    expect(await store.dueDeclines(now, 10)).toHaveLength(0); // backing off
+    for (let i = 0; i < 2; i += 1) {
+      now = new Date(now.getTime() + 120_000);
+      await notifier.flush();
+    }
+    const row = (await store.get(ref))!;
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(row).toMatchObject({ declineAttempts: 3, declineAbandoned: true, declineDeliveredAt: null, lastDeclineError: 'ADAPTER_HTTP_404' });
+    now = new Date(now.getTime() + 600_000);
+    await notifier.flush();
+    expect(fetchImpl).toHaveBeenCalledTimes(3); // abandoned: no more sends
+  });
+
+  it('survives a restart: a new notifier instance delivers a decline committed earlier', async () => {
+    const ref = await declined();
+    const fetchImpl = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED')).mockResolvedValue({ status: 200 });
+    await make(fetchImpl as never).flush();
+    expect((await store.get(ref))!.lastDeclineError).toContain('ADAPTER_UNREACHABLE');
+    now = new Date(now.getTime() + 120_000);
+    expect(await make(fetchImpl as never).flush()).toBe(1); // fresh instance, same durable rows
+  });
+
+  it('concurrent flushes share one pass (one POST per receipt)', async () => {
+    await declined();
+    let finish!: () => void;
+    const fetchImpl = vi.fn().mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ status: 200 }); }));
+    const notifier = make(fetchImpl as never);
+    const a = notifier.flush();
+    const b = notifier.flush();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    finish();
+    await Promise.all([a, b]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

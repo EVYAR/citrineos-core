@@ -6,6 +6,8 @@
 export { BaseModelWithTenant } from './BaseModelWithTenant.js';
 export { Boot } from './Boot.js';
 export { ChangeConfiguration } from './ChangeConfiguration.js';
+export { ChargingAdmissionCallout } from './ChargingAdmissionCallout.js';
+export type { ChargingCalloutState } from './ChargingAdmissionCallout.js';
 export { OCPPMessage } from './OCPPMessage.js';
 export { Reservation } from './Reservation.js';
 export { SecurityEvent } from './SecurityEvent.js';
