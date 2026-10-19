@@ -36,8 +36,7 @@ export class ChargingCalloutDeclineNotifier {
   start(intervalMs = 15_000): void {
     if (this.timer) return;
     this.timer = setInterval(() => void this.flush().catch((e) => this.logger.error(`decline flush failed: ${e}`)), intervalMs);
-    this.timer.unref?.();
-    void this.flush().catch((e) => this.logger.error(`decline flush failed: ${e}`));
+    this.timer.unref?.(); // first pass after one interval: at boot the schema may not be synced yet
   }
 
   stop(): void {
@@ -75,6 +74,12 @@ export class ChargingCalloutDeclineNotifier {
         signal: AbortSignal.timeout(this.config.declineRequestTimeoutMs),
       });
       if (res.status === 200) {
+        const acknowledgment: unknown = await res.json();
+        if (!acknowledgment || typeof acknowledgment !== 'object' ||
+            (acknowledgment as { fenced?: unknown }).fenced !== true) {
+          await this.fail(row, 'ADAPTER_DECLINE_NOT_FENCED');
+          return false;
+        }
         await this.store.markDeclineDelivered(row.id, this.clock());
         return true;
       }

@@ -25,7 +25,7 @@ describe('ChargingCalloutDeclineNotifier', () => {
 
   it('posts the exact receipt the adapter validates, with the webhook credential, and marks it delivered', async () => {
     const ref = await declined();
-    const fetchImpl = vi.fn().mockResolvedValue({ status: 200 });
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 200, json: async () => ({ fenced: true }) });
     expect(await make(fetchImpl as never).flush()).toBe(1);
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(String(url)).toBe(`http://adapter.test/v1/charging/admission-callouts/${ref}/decline?token=${'w'.repeat(32)}`);
@@ -33,6 +33,20 @@ describe('ChargingCalloutDeclineNotifier', () => {
     expect(JSON.parse(init.body)).toEqual({ schemaVersion: '1.0.0', tenantId: TENANT, coreEvidenceRef: 'core-decision:abc' }); // no driver/package fields
     expect((await store.get(ref))!.declineDeliveredAt).toEqual(now);
     expect(await make(fetchImpl as never).flush()).toBe(0); // delivered rows are not resent
+  });
+
+  it.each([false, undefined, 'true'])('keeps the durable receipt pending when fenced is %s', async (fenced) => {
+    const ref = await declined();
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 200, json: async () => ({ fenced }) });
+    expect(await make(fetchImpl as never).flush()).toBe(0);
+    expect((await store.get(ref))!).toMatchObject({ declineDeliveredAt: null, declineAttempts: 1, lastDeclineError: 'ADAPTER_DECLINE_NOT_FENCED' });
+  });
+
+  it('retries invalid JSON instead of acknowledging an empty successful HTTP response', async () => {
+    const ref = await declined();
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 200, json: async () => { throw new SyntaxError('Unexpected end of JSON'); } });
+    expect(await make(fetchImpl as never).flush()).toBe(0);
+    expect((await store.get(ref))!).toMatchObject({ declineDeliveredAt: null, declineAttempts: 1 });
   });
 
   it('never sends a receipt for a request that is pending or authorized', async () => {
@@ -75,17 +89,36 @@ describe('ChargingCalloutDeclineNotifier', () => {
 
   it('survives a restart: a new notifier instance delivers a decline committed earlier', async () => {
     const ref = await declined();
-    const fetchImpl = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED')).mockResolvedValue({ status: 200 });
+    const fetchImpl = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED')).mockResolvedValue({ status: 200, json: async () => ({ fenced: true }) });
     await make(fetchImpl as never).flush();
     expect((await store.get(ref))!.lastDeclineError).toContain('ADAPTER_UNREACHABLE');
     now = new Date(now.getTime() + 120_000);
     expect(await make(fetchImpl as never).flush()).toBe(1); // fresh instance, same durable rows
   });
 
+  it('starts recovery after the interval and stops the retry timer without querying an unready boot schema', async () => {
+    vi.useFakeTimers();
+    const due = vi.spyOn(store, 'dueDeclines');
+    const notifier = make(vi.fn() as never);
+    try {
+      notifier.start(1000);
+      notifier.start(1000);
+      expect(due).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(due).toHaveBeenCalledTimes(1);
+      notifier.stop();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(due).toHaveBeenCalledTimes(1);
+    } finally {
+      notifier.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('concurrent flushes share one pass (one POST per receipt)', async () => {
     await declined();
     let finish!: () => void;
-    const fetchImpl = vi.fn().mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ status: 200 }); }));
+    const fetchImpl = vi.fn().mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ status: 200, json: async () => ({ fenced: true }) }); }));
     const notifier = make(fetchImpl as never);
     const a = notifier.flush();
     const b = notifier.flush();
