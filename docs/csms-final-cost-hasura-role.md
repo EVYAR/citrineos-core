@@ -1,0 +1,7 @@
+# CSMS final transaction cost permission
+
+The canonical Hasura metadata declares the internal `csms_final_cost` role on `public.Transactions`. It can update only `totalCost` and `updatedAt`. Both the update filter and resulting-row check require `tenantId = x-hasura-tenant-id`. Its select permission exposes only `id`, `tenantId`, `ocppConnectionName` (the exact mutation anchors) and `totalCost` (returning evidence). It cannot insert or delete rows, change transaction identity/meters, or update other columns. The existing general `user` role remains read-only for Transactions.
+
+The Adapter's internal service-token protected final-cost endpoint resolves the canonical station's active tenant mapping. Only its fixed final-cost mutation selects this role, with matching Core tenant header and explicit tenant/database-ID/connection predicates. Independent cost reads continue using the general read role. A missing target row or denied mutation is an error and leaves the durable CSMS effect pending for reconciliation; no success is inferred from HTTP 200 alone.
+
+Deploy the canonical Core metadata and Adapter together through the existing metadata deployment/bootstrap process. Merely passing the Hasura admin secret while explicitly selecting `user` does not grant the missing mutation root. Do not remove the role header or grant broad Transactions updates to general users as a workaround.

@@ -78,3 +78,27 @@ select_permissions:
           _eq: x-hasura-tenant-id
       allow_aggregations: true
     comment: ""
+  - role: csms_final_cost
+    permission:
+      columns:
+        - id
+        - tenantId
+        - ocppConnectionName
+        - totalCost
+      filter:
+        tenantId:
+          _eq: x-hasura-tenant-id
+    comment: "Internal CSMS final-cost writeback returning evidence only"
+update_permissions:
+  - role: csms_final_cost
+    permission:
+      columns:
+        - totalCost
+        - updatedAt
+      filter:
+        tenantId:
+          _eq: x-hasura-tenant-id
+      check:
+        tenantId:
+          _eq: x-hasura-tenant-id
+    comment: "Internal CSMS final-cost writeback; cannot alter transaction identity or usage"
