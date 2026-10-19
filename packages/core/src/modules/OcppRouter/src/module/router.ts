@@ -13,6 +13,7 @@ import type {
   IMessageHandler,
   IMessageRouter,
   IMessageSender,
+  IWebsocketConnection,
   OcppRequest,
   OcppResponse,
   OCPPVersionType,
@@ -40,6 +41,7 @@ import {
   RequestBuilder,
   RetryMessageError,
 } from '@citrineos/base';
+import { ChargingStation } from '@dal/layers/sequelize/model/Location/ChargingStation.js';
 import type { ILocationRepository } from '@dal/interfaces/repositories.js';
 import type { ILogObj } from 'tslog';
 import { Logger } from 'tslog';
@@ -128,6 +130,27 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     ocppConnectionName: string,
     protocol: OCPPVersion,
   ): Promise<boolean> {
+    // The accepted connection must have a station FK before its first OCPP message is persisted.
+    // Only the trusted network profile in the claimed cache slot may permit unknown stations.
+    const connectionJson = await this._cache.get<string>(
+      createIdentifier(tenantId, ocppConnectionName),
+      CacheNamespace.Connections,
+    );
+    const connection: IWebsocketConnection | null = connectionJson
+      ? JSON.parse(connectionJson)
+      : null;
+    if (
+      connection?.allowUnknownChargingStations &&
+      !(await this._locationRepository.doesChargingStationExistByStationId(
+        tenantId,
+        ocppConnectionName,
+      ))
+    ) {
+      await this._locationRepository.createOrUpdateChargingStation(
+        tenantId,
+        ChargingStation.build({ tenantId, ocppConnectionName }),
+      );
+    }
     const dispatcherRegistration = this._webhookDispatcher.register(tenantId, ocppConnectionName);
 
     const connectionIdentifier = createIdentifier(tenantId, ocppConnectionName);
@@ -585,6 +608,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   async shutdown(): Promise<void> {
     for (const handle of this._callResponseTimeouts.values()) clearTimeout(handle);
     this._callResponseTimeouts.clear();
+    await this._webhookDispatcher.shutdown();
     await this._sender.shutdown();
     await this._handler.shutdown();
   }

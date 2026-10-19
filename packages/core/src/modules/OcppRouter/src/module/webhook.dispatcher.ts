@@ -31,6 +31,8 @@ export class WebhookDispatcher {
   protected static readonly CALLBACK_MAX_ATTEMPTS = 3;
   protected static readonly CALLBACK_RETRY_DELAY_MS = 200;
 
+  private readonly _refreshTimer: NodeJS.Timeout;
+  private _refreshing?: Promise<void>;
   protected _logger: Logger<ILogObj>;
   protected _ocppMessageRepository: IOCPPMessageRepository;
   protected _subscriptionRepository: ISubscriptionRepository;
@@ -69,9 +71,19 @@ export class WebhookDispatcher {
       this._oidcTokenProvider = new OidcTokenProvider(config.oidcClient, this._logger);
     }
 
-    setInterval(async () => {
-      await this._refreshSubscriptions();
+    this._refreshTimer = setInterval(() => {
+      if (this._refreshing) return;
+      this._refreshing = this._refreshSubscriptions()
+        .catch((error) => this._logger.error('Subscription refresh failed', error))
+        .finally(() => {
+          this._refreshing = undefined;
+        });
     }, WebhookDispatcher.SUBSCRIPTION_REFRESH_INTERVAL_MS);
+  }
+
+  async shutdown(): Promise<void> {
+    clearInterval(this._refreshTimer);
+    await this._refreshing;
   }
 
   async register(tenantId: number, ocppConnectionName: string) {
@@ -311,10 +323,12 @@ export class WebhookDispatcher {
       return;
     }
     this._logger.debug(`Refreshing subscriptions for ${this._identifiers.size} identifiers`);
-    this._identifiers.forEach((identifier) =>
-      this._loadSubscriptionsForConnection(
-        getTenantIdFromIdentifier(identifier),
-        getStationIdFromIdentifier(identifier),
+    await Promise.all(
+      [...this._identifiers].map((identifier) =>
+        this._loadSubscriptionsForConnection(
+          getTenantIdFromIdentifier(identifier),
+          getStationIdFromIdentifier(identifier),
+        ),
       ),
     );
   }

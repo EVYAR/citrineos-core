@@ -167,7 +167,7 @@ export class MemoryCache implements ICache {
         namespaceKey,
         setTimeout(() => {
           this._cache.delete(namespaceKey);
-        }, expireSeconds * 1000),
+        }, expireSeconds * 1000).unref(),
       );
     }
     this.resolveOnChange(namespaceKey, value);
@@ -194,7 +194,7 @@ export class MemoryCache implements ICache {
         namespaceKey,
         setTimeout(() => {
           this._cache.delete(namespaceKey);
-        }, expireSeconds * 1000),
+        }, expireSeconds * 1000).unref(),
       );
     }
     this.resolveOnChange(namespaceKey, value);
@@ -214,7 +214,7 @@ export class MemoryCache implements ICache {
       namespaceKey,
       setTimeout(() => {
         this._cache.delete(namespaceKey);
-      }, expireSeconds * 1000),
+      }, expireSeconds * 1000).unref(),
     );
     return true;
   }

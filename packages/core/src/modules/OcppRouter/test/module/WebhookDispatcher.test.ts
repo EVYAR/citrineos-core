@@ -73,6 +73,33 @@ describe('WebhookDispatcher', () => {
     vi.clearAllTimers();
   });
 
+  it('clears the refresh interval on shutdown', async () => {
+    expect(vi.getTimerCount()).toBe(1);
+    await webhookDispatcher.shutdown();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('awaits an active subscription read before shutdown completes', async () => {
+    subscriptionRepository.readAllByStationId.mockResolvedValue([]);
+    await webhookDispatcher.register(1, 'fixture');
+    let complete!: (value: Subscription[]) => void;
+    subscriptionRepository.readAllByStationId.mockReturnValue(
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(180000);
+    let stopped = false;
+    const shutdown = webhookDispatcher.shutdown().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    complete([]);
+    await shutdown;
+    expect(stopped).toBe(true);
+  });
+
   describe('register', () => {
     it('should load subscriptions', async () => {
       const subscription = aSubscription();
