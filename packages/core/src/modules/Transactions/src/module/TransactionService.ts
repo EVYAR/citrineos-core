@@ -137,10 +137,15 @@ export class TransactionService {
       return response;
     } else {
       if (
-        authorization.concurrentTransaction === true &&
+        authorization.concurrentTransaction !== true &&
         transactionEvent.eventType === OCPP2_0_1.TransactionEventEnumType.Started
       ) {
-        const hasConcurrent = await this._hasConcurrentTransactions(tenantId, authorization.id);
+        const hasConcurrent = await this._hasConcurrentTransactions(
+          tenantId,
+          authorization.id,
+          messageContext.ocppConnectionName,
+          transactionEvent.transactionInfo.transactionId,
+        );
         if (hasConcurrent) {
           response.idTokenInfo = {
             status: OCPP2_0_1.AuthorizationStatusEnumType.ConcurrentTx,
@@ -212,10 +217,15 @@ export class TransactionService {
       return response;
     } else {
       if (
-        authorization.concurrentTransaction === true &&
+        authorization.concurrentTransaction !== true &&
         transactionEvent.eventType === OCPP2_1.TransactionEventEnumType.Started
       ) {
-        const hasConcurrent = await this._hasConcurrentTransactions(tenantId, authorization.id);
+        const hasConcurrent = await this._hasConcurrentTransactions(
+          tenantId,
+          authorization.id,
+          messageContext.ocppConnectionName,
+          transactionEvent.transactionInfo.transactionId,
+        );
         if (hasConcurrent) {
           response.idTokenInfo = {
             status: OCPP2_1.AuthorizationStatusEnumType.ConcurrentTx,
@@ -513,9 +523,17 @@ export class TransactionService {
     return result;
   }
 
+  /**
+   * `authorization.concurrentTransaction === true` means the credential MAY run concurrent
+   * transactions; the default (false/undefined) means one active transaction per credential.
+   * The polarity is identical for every OCPP version. A repeated Started event for a transaction
+   * that is already persisted (same station + transactionId) must not conflict with itself.
+   */
   private async _hasConcurrentTransactions(
     tenantId: number,
     authorizationId: number,
+    ocppConnectionName?: string,
+    transactionId?: string,
   ): Promise<boolean> {
     const activeTransactions =
       await this._transactionEventRepository.readAllActiveTransactionsByAuthorizationId(
@@ -523,7 +541,15 @@ export class TransactionService {
         authorizationId,
       );
 
-    return activeTransactions.length > 0;
+    if (activeTransactions.length === 0 || !ocppConnectionName || !transactionId) {
+      return activeTransactions.length > 0;
+    }
+    const own = await this._transactionEventRepository.readTransactionByStationIdAndTransactionId(
+      tenantId,
+      ocppConnectionName,
+      transactionId,
+    );
+    return activeTransactions.some((t) => t.id !== own?.id);
   }
 
   private _mapAuthorizationDtoToIdTokenInfo(

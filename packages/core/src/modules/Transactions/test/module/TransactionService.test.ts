@@ -44,6 +44,7 @@ describe('TransactionService', () => {
 
     transactionEventRepository = {
       readAllActiveTransactionsByAuthorizationId: vi.fn(),
+      readTransactionByStationIdAndTransactionId: vi.fn().mockResolvedValue(undefined),
     } as unknown as Mocked<ITransactionEventRepository>;
 
     locationRepository = {
@@ -135,35 +136,9 @@ describe('TransactionService', () => {
     expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.Invalid);
   });
 
-  it('should not return ConcurrentTx status when there are concurrent transactions and concurrentTx is false', async () => {
+  it('should return ConcurrentTx status when there are concurrent transactions and concurrentTx is false (default: one active transaction per credential)', async () => {
     const authorization = anAuthorization((auth) => {
-      auth.status = AuthorizationStatusEnum.Accepted;
-    });
-    authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
-    transactionEventRepository.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([
-      aTransaction(),
-      aTransaction(),
-    ]);
-    authorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
-    realTimeAuthorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
-
-    const transactionEventRequest = aTransactionEventRequest((item) => {
-      item.idToken = anIdToken();
-      item.eventType = OCPP2_0_1.TransactionEventEnumType.Started;
-    });
-    const messageContext = aMessageContext();
-    const response = await transactionService.authorizeOcpp201IdToken(
-      DEFAULT_TENANT_ID,
-      transactionEventRequest,
-      messageContext,
-    );
-
-    expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.Accepted);
-  });
-
-  it('should return ConcurrentTx status when there are concurrent transactions and concurrentTx is true', async () => {
-    const authorization = anAuthorization((auth) => {
-      auth.concurrentTransaction = true;
+      auth.concurrentTransaction = false;
       auth.status = AuthorizationStatusEnum.Accepted;
     });
     authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
@@ -188,6 +163,33 @@ describe('TransactionService', () => {
     expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.ConcurrentTx);
   });
 
+  it('should allow concurrent transactions when concurrentTransaction is true', async () => {
+    const authorization = anAuthorization((auth) => {
+      auth.concurrentTransaction = true;
+      auth.status = AuthorizationStatusEnum.Accepted;
+    });
+    authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
+    transactionEventRepository.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([
+      aTransaction(),
+      aTransaction(),
+    ]);
+    authorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
+    realTimeAuthorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
+
+    const transactionEventRequest = aTransactionEventRequest((item) => {
+      item.idToken = anIdToken();
+      item.eventType = OCPP2_0_1.TransactionEventEnumType.Started;
+    });
+    const messageContext = aMessageContext();
+    const response = await transactionService.authorizeOcpp201IdToken(
+      DEFAULT_TENANT_ID,
+      transactionEventRequest,
+      messageContext,
+    );
+
+    expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.Accepted);
+  });
+
   it('should apply authorizers when status is Accepted and transaction is started', async () => {
     const authorization = anAuthorization((auth) => {
       auth.status = AuthorizationStatusEnum.Accepted;
@@ -210,6 +212,83 @@ describe('TransactionService', () => {
 
     expect(authorizer.authorize).toHaveBeenCalled();
     expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.Accepted);
+  });
+
+  describe('concurrentTransaction polarity is identical across OCPP versions', () => {
+    const accepted = () => {
+      authorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
+      realTimeAuthorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
+    };
+
+    it.each([
+      ['undefined', undefined, true],
+      ['false', false, true],
+      ['true', true, false],
+    ])('OCPP 1.6 with concurrentTransaction=%s blocks a second transaction: %s', async (_n, flag, blocked) => {
+      const authorization = anAuthorization((a) => {
+        a.status = AuthorizationStatusEnum.Accepted;
+        a.concurrentTransaction = flag;
+      });
+      authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
+      transactionEventRepository.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([aTransaction()]);
+      accepted();
+      const response = await transactionService.authorizeOcpp16IdToken(aMessageContext(), authorization.idToken, 1);
+      expect(response.idTagInfo.status === OCPP1_6.StartTransactionResponseStatus.ConcurrentTx).toBe(blocked);
+    });
+
+    it.each([
+      ['undefined', undefined, true],
+      ['false', false, true],
+      ['true', true, false],
+    ])('OCPP 2.0.1 with concurrentTransaction=%s blocks a second transaction: %s', async (_n, flag, blocked) => {
+      const authorization = anAuthorization((a) => {
+        a.status = AuthorizationStatusEnum.Accepted;
+        a.concurrentTransaction = flag;
+      });
+      authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
+      transactionEventRepository.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([aTransaction()]);
+      accepted();
+      const request = aTransactionEventRequest((i) => {
+        i.idToken = anIdToken();
+        i.eventType = OCPP2_0_1.TransactionEventEnumType.Started;
+      });
+      const response = await transactionService.authorizeOcpp201IdToken(DEFAULT_TENANT_ID, request, aMessageContext());
+      expect(response.idTokenInfo?.status === OCPP2_0_1.AuthorizationStatusEnumType.ConcurrentTx).toBe(blocked);
+    });
+
+    it('does not let a transaction conflict with itself when Started is retransmitted', async () => {
+      const authorization = anAuthorization((a) => {
+        a.status = AuthorizationStatusEnum.Accepted;
+      });
+      const own = aTransaction();
+      authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
+      transactionEventRepository.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([own]);
+      transactionEventRepository.readTransactionByStationIdAndTransactionId.mockResolvedValue(own);
+      accepted();
+      const request = aTransactionEventRequest((i) => {
+        i.idToken = anIdToken();
+        i.eventType = OCPP2_0_1.TransactionEventEnumType.Started;
+      });
+      const response = await transactionService.authorizeOcpp201IdToken(DEFAULT_TENANT_ID, request, aMessageContext());
+      expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.Accepted);
+    });
+
+    it('still blocks when a different active transaction exists besides the retransmitted one', async () => {
+      const authorization = anAuthorization((a) => {
+        a.status = AuthorizationStatusEnum.Accepted;
+      });
+      const own = aTransaction();
+      authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
+      transactionEventRepository.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([own, aTransaction()]);
+      transactionEventRepository.readTransactionByStationIdAndTransactionId.mockResolvedValue(own);
+      accepted();
+      const request = aTransactionEventRequest((i) => {
+        i.idToken = anIdToken();
+        i.eventType = OCPP2_0_1.TransactionEventEnumType.Started;
+      });
+      const response = await transactionService.authorizeOcpp201IdToken(DEFAULT_TENANT_ID, request, aMessageContext());
+      expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.ConcurrentTx);
+    });
   });
 
   describe('Tests for authorizeOcpp16IdToken', () => {
