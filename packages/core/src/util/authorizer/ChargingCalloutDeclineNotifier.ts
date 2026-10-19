@@ -23,6 +23,7 @@ export interface DeclineNotifierConfig {
 export class ChargingCalloutDeclineNotifier {
   private flushing: Promise<number> | null = null;
   private timer?: NodeJS.Timeout;
+  private readonly shutdownController = new AbortController();
 
   constructor(
     private readonly store: ChargingCalloutStore,
@@ -34,7 +35,7 @@ export class ChargingCalloutDeclineNotifier {
 
   /** Retry loop for deployments: restarts and failed deliveries are recovered from the durable rows. */
   start(intervalMs = 15_000): void {
-    if (this.timer) return;
+    if (this.timer || this.shutdownController.signal.aborted) return;
     this.timer = setInterval(
       () => void this.flush().catch((e) => this.logger.error(`decline flush failed: ${e}`)),
       intervalMs,
@@ -49,11 +50,13 @@ export class ChargingCalloutDeclineNotifier {
 
   async shutdown(): Promise<void> {
     this.stop();
+    this.shutdownController.abort(new Error('Decline notifier shutting down'));
     await this.flushing;
   }
 
   /** One pass over due declines; concurrent calls share one pass. Returns the number delivered. */
   flush(limit = 25): Promise<number> {
+    if (this.shutdownController.signal.aborted) return Promise.resolve(0);
     this.flushing ??= this.run(limit).finally(() => {
       this.flushing = null;
     });
@@ -63,6 +66,7 @@ export class ChargingCalloutDeclineNotifier {
   private async run(limit: number): Promise<number> {
     let delivered = 0;
     for (const row of await this.store.dueDeclines(this.clock(), limit)) {
+      if (this.shutdownController.signal.aborted) break;
       if (await this.deliver(row)) delivered += 1;
     }
     return delivered;
@@ -93,7 +97,10 @@ export class ChargingCalloutDeclineNotifier {
           tenantId: tenant,
           coreEvidenceRef: row.coreEvidenceRef,
         }),
-        signal: AbortSignal.timeout(this.config.declineRequestTimeoutMs),
+        signal: AbortSignal.any([
+          this.shutdownController.signal,
+          AbortSignal.timeout(this.config.declineRequestTimeoutMs),
+        ]),
       });
       if (res.status === 200) {
         const acknowledgment: unknown = await res.json();
@@ -110,6 +117,9 @@ export class ChargingCalloutDeclineNotifier {
       }
       await this.fail(row, `ADAPTER_HTTP_${res.status}`);
     } catch (error) {
+      // Shutdown is not a failed delivery attempt. Keep the durable receipt due
+      // for the next process, without consuming retries or releasing any slot.
+      if (this.shutdownController.signal.aborted) return false;
       await this.fail(
         row,
         `ADAPTER_UNREACHABLE: ${error instanceof Error ? error.message : String(error)}`,

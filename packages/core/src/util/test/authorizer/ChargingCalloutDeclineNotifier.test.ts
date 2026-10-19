@@ -39,6 +39,38 @@ describe('ChargingCalloutDeclineNotifier', () => {
   const make = (fetchImpl: typeof fetch, c = cfg()) =>
     new ChargingCalloutDeclineNotifier(store, c, logger, fetchImpl, () => now);
 
+  it('cancels shutdown delivery without spending retries or abandoning durable receipts', async () => {
+    const first = await declined();
+    const second = await declined({ ...key, connectorId: 101 });
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const fetchImpl = vi.fn(
+      (_url: unknown, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true });
+          entered();
+        }),
+    );
+    const notifier = make(fetchImpl as never);
+    const flushing = notifier.flush();
+    await started;
+    await Promise.race([
+      notifier.shutdown(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('shutdown stalled on delivery')), 200),
+      ),
+    ]);
+    expect(await flushing).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    for (const ref of [first, second]) {
+      expect(await store.get(ref)).toMatchObject({ declineDeliveredAt: null, declineAttempts: 0 });
+    }
+    expect(await notifier.flush()).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('posts the exact receipt the adapter validates, with the webhook credential, and marks it delivered', async () => {
     const ref = await declined();
     const fetchImpl = vi
