@@ -34,10 +34,10 @@ export class SequelizeChangeConfigurationRepository
       if (created) {
         changeConfiguration = savedConfig;
       } else {
-        changeConfiguration = await savedConfig.update(
-          { ...configuration },
-          { transaction: sequelizeTransaction },
-        );
+        savedConfig.set({ ...configuration });
+        // A repeated charger report is a fresh observation even when the value is unchanged.
+        savedConfig.changed('updatedAt', true);
+        changeConfiguration = await savedConfig.save({ transaction: sequelizeTransaction });
         this.emit('updated', [changeConfiguration]);
       }
     });
