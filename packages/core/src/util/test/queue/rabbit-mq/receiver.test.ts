@@ -156,6 +156,14 @@ describe('RabbitMqReceiver', () => {
     });
 
     describe('shutdown()', () => {
+      it('does not restore subscriptions after shutdown when a connection event arrives late', async () => {
+        await receiver.subscribe('ModuleA', [OCPP_CallAction.BootNotification], {});
+        await receiver.shutdown();
+        vi.mocked(mockChannel.consume).mockClear();
+        await (receiver as unknown as { _onReconnect(): Promise<void> })._onReconnect();
+        expect(mockChannel.consume).not.toHaveBeenCalled();
+      });
+
       it('should cancel every tracked consumer across all identifiers', async () => {
         (mockChannel.consume as any)
           .mockResolvedValueOnce({ consumerTag: 'tag-A' })

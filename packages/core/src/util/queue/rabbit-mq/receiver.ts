@@ -35,6 +35,8 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
 
   protected _channelManager: RabbitMQChannelManager;
   protected exchange: string;
+  private _stopped = false;
+  private readonly _reconnectTasks = new Set<Promise<void>>();
   protected readonly _isRouterMode: boolean;
 
   protected _consumerTags = new Map<string, string[]>();
@@ -74,10 +76,15 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     }
 
     this._channelManager.getConnectionManager().on('connected', async () => {
+      if (this._stopped) return;
+      const task = this._onReconnect();
+      this._reconnectTasks.add(task);
       try {
-        await this._onReconnect();
+        await task;
       } catch (err) {
         this._logger.error('Failed to reinitialize after reconnect:', err);
+      } finally {
+        this._reconnectTasks.delete(task);
       }
     });
   }
@@ -108,6 +115,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
    */
   async initializeInstanceQueue(queueName: string): Promise<void> {
     const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+    if (this._stopped) return;
     await channel.assertExchange(this.exchange, 'headers', { durable: false });
     await channel.assertQueue(queueName, {
       durable: true,
@@ -124,6 +132,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
   }
 
   protected async _onReconnect(): Promise<void> {
+    if (this._stopped) return;
     if (this._isRouterMode) {
       await this._reinitializeInstanceQueue();
     } else {
@@ -165,6 +174,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
 
     const queueName = this._instanceQueueName!;
     const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+    if (this._stopped) return;
 
     await channel.assertExchange(this.exchange, 'headers', { durable: false });
     await channel.assertQueue(queueName, {
@@ -281,6 +291,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     filter = filter ? { 'x-match': 'all', ...filter } : { 'x-match': 'all' };
 
     const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+    if (this._stopped) return false;
     if (!channel) {
       throw new Error('RabbitMQ is down: cannot subscribe.');
     }
@@ -379,6 +390,9 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
   }
 
   async shutdown(): Promise<void> {
+    this._stopped = true;
+    await Promise.allSettled([...this._reconnectTasks]);
+    this._moduleSubscriptions.clear();
     // ROUTER MODE: cancel all tracked consumers on the shared queue
     if (this._isRouterMode) {
       try {
