@@ -92,7 +92,8 @@ export class RealTimeAuthorizer implements IAuthorizer {
     if (callouts?.enabled && chargingCalloutStore) {
       this._calloutStore = chargingCalloutStore;
       this._declineNotifier =
-        declineNotifier ?? new ChargingCalloutDeclineNotifier(chargingCalloutStore, callouts, this._logger);
+        declineNotifier ??
+        new ChargingCalloutDeclineNotifier(chargingCalloutStore, callouts, this._logger);
       this._declineNotifier.start();
     }
   }
@@ -162,9 +163,9 @@ export class RealTimeAuthorizer implements IAuthorizer {
       // A recent Authorize answer cannot stand in for this explicit physical-start decision.
       requiresLiveTarget = Boolean(
         this._calloutStore &&
-        targetSource === 'EXPLICIT' &&
-        connectorId !== undefined &&
-        authorization.id !== undefined,
+          targetSource === 'EXPLICIT' &&
+          connectorId !== undefined &&
+          authorization.id !== undefined,
       );
       if (authorization.realTimeAuthLastAttempt && !requiresLiveTarget) {
         const realTimeAuthLastAttempt = authorization.realTimeAuthLastAttempt;
@@ -190,16 +191,28 @@ export class RealTimeAuthorizer implements IAuthorizer {
 
       // CGP-0012: target-specific callouts are pinned to a durable Core ref. A request Core already declined before power
       // stays fenced: it is answered declined without a new callout, so a late response can never authorize it.
-      if (this._calloutStore && targetSource === 'EXPLICIT' && connectorId !== undefined && authorization.id !== undefined) {
+      if (
+        this._calloutStore &&
+        targetSource === 'EXPLICIT' &&
+        connectorId !== undefined &&
+        authorization.id !== undefined
+      ) {
         const callouts = this._config.realTimeAuthChargingCallouts!;
         const begun = await this._calloutStore.begin(
-          { tenantId: context.tenantId, ocppConnectionName: context.ocppConnectionName, authorizationId: authorization.id, connectorId },
+          {
+            tenantId: context.tenantId,
+            ocppConnectionName: context.ocppConnectionName,
+            authorizationId: authorization.id,
+            connectorId,
+          },
           new Date(),
           (this._config.realTimeAuthRequestTimeoutMs ?? 3000) * 2,
           callouts.fenceSeconds * 1000,
         );
         if (begun.kind === 'FENCED_DECLINED') {
-          this._logger.warn(`Realtime Auth fenced: callout ${begun.ref} was already declined before power`);
+          this._logger.warn(
+            `Realtime Auth fenced: callout ${begun.ref} was already declined before power`,
+          );
           return AuthorizationStatusEnum.Invalid;
         }
         chargingCalloutRef = begun.ref;
@@ -279,7 +292,10 @@ export class RealTimeAuthorizer implements IAuthorizer {
       }
     } catch (error) {
       this._logger.error(`Real-Time Auth failed: ${error}`);
-      if (authorization.realTimeAuth === AuthorizationWhitelistEnum.AllowedOffline && !requiresLiveTarget) {
+      if (
+        authorization.realTimeAuth === AuthorizationWhitelistEnum.AllowedOffline &&
+        !requiresLiveTarget
+      ) {
         result = AuthorizationStatusEnum.Accepted;
       }
     }
@@ -323,15 +339,21 @@ export class RealTimeAuthorizer implements IAuthorizer {
       } catch (error) {
         this._logger.error(`Could not record authorization of callout ${ref}: ${error}`);
       }
-      this._logger.warn(`Callout ${ref} was no longer pending: a late acceptance cannot authorize power`);
+      this._logger.warn(
+        `Callout ${ref} was no longer pending: a late acceptance cannot authorize power`,
+      );
       return AuthorizationStatusEnum.Invalid;
     }
     try {
       if (await store.markDeclined(ref, newCoreEvidenceRef(), now)) {
-        void this._declineNotifier?.flush().catch((error) => this._logger.error(`decline flush failed: ${error}`));
+        void this._declineNotifier
+          ?.flush()
+          .catch((error) => this._logger.error(`decline flush failed: ${error}`));
       }
     } catch (error) {
-      this._logger.error(`Could not durably decline callout ${ref}; no receipt will be emitted: ${error}`);
+      this._logger.error(
+        `Could not durably decline callout ${ref}; no receipt will be emitted: ${error}`,
+      );
     }
     return result;
   }

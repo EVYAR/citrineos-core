@@ -20,13 +20,49 @@ import { createTestContainer, getTestInstance } from '../../../test/testContaine
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const evse = { id: 10, evseTypeId: 1 } as EvseDto;
 const connector = { id: 100, connectorId: 1 } as ConnectorDto;
-const context = (): IMessageContext => ({ tenantId: 1, ocppConnectionName: 'CP-001', correlationId: 'c', timestamp: new Date().toISOString() }) as IMessageContext;
+const context = (): IMessageContext =>
+  ({
+    tenantId: 1,
+    ocppConnectionName: 'CP-001',
+    correlationId: 'c',
+    timestamp: new Date().toISOString(),
+  }) as IMessageContext;
 const authorization = (over: Record<string, unknown> = {}): Authorization =>
-  ({ id: 42, realTimeAuthUrl: 'http://adapter.test/v1/authorize', realTimeAuth: AuthorizationWhitelistEnum.Never, status: AuthorizationStatusEnum.Accepted, tenantPartnerId: 7, idToken: 'F00B4C', idTokenType: 'ISO14443', realTimeAuthLastAttempt: undefined, save: vi.fn().mockResolvedValue(undefined), ...over }) as unknown as Authorization;
-const repo = (): Mocked<ILocationRepository> => ({ readChargingStationByStationId: vi.fn().mockResolvedValue({ locationId: 5, evses: [] }) }) as unknown as Mocked<ILocationRepository>;
-const allowed = (value: string) => ({ ok: true, status: 200, json: async () => ({ timestamp: new Date().toISOString(), data: { allowed: value } }) });
+  ({
+    id: 42,
+    realTimeAuthUrl: 'http://adapter.test/v1/authorize',
+    realTimeAuth: AuthorizationWhitelistEnum.Never,
+    status: AuthorizationStatusEnum.Accepted,
+    tenantPartnerId: 7,
+    idToken: 'F00B4C',
+    idTokenType: 'ISO14443',
+    realTimeAuthLastAttempt: undefined,
+    save: vi.fn().mockResolvedValue(undefined),
+    ...over,
+  }) as unknown as Authorization;
+const repo = (): Mocked<ILocationRepository> =>
+  ({
+    readChargingStationByStationId: vi.fn().mockResolvedValue({ locationId: 5, evses: [] }),
+  }) as unknown as Mocked<ILocationRepository>;
+const allowed = (value: string) => ({
+  ok: true,
+  status: 200,
+  json: async () => ({ timestamp: new Date().toISOString(), data: { allowed: value } }),
+});
 const config = (extra: Partial<SystemConfig> = {}): SystemConfig =>
-  ({ realTimeAuthRequestTimeoutMs: 3000, realTimeAuthChargingCallouts: { enabled: true, tenantMap: { '1': '00000000-0000-4000-8000-0000000000e2' }, fenceSeconds: 30, declineRetryBaseMs: 1000, declineRetryMaxMs: 300000, declineMaxAttempts: 50, declineRequestTimeoutMs: 3000 }, ...extra }) as unknown as SystemConfig;
+  ({
+    realTimeAuthRequestTimeoutMs: 3000,
+    realTimeAuthChargingCallouts: {
+      enabled: true,
+      tenantMap: { '1': '00000000-0000-4000-8000-0000000000e2' },
+      fenceSeconds: 30,
+      declineRetryBaseMs: 1000,
+      declineRetryMaxMs: 300000,
+      declineMaxAttempts: 50,
+      declineRequestTimeoutMs: 3000,
+    },
+    ...extra,
+  }) as unknown as SystemConfig;
 
 describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
   const { container } = createTestContainer();
@@ -35,7 +71,12 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   const build = (cfg: SystemConfig = config()) =>
-    getTestInstance(container, RealTimeAuthorizer, { locationRepository: repo(), config: cfg, chargingCalloutStore: store, declineNotifier: notifier as unknown as ChargingCalloutDeclineNotifier });
+    getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: repo(),
+      config: cfg,
+      chargingCalloutStore: store,
+      declineNotifier: notifier as unknown as ChargingCalloutDeclineNotifier,
+    });
   const onlyRow = () => [...store.rows.values()][0]!;
 
   beforeEach(() => {
@@ -52,25 +93,56 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(body.chargingCalloutRef).toMatch(UUID);
     expect(body.chargingCalloutRef).toBe(onlyRow().id);
     expect(body.targetSource).toBe('EXPLICIT');
-    expect(onlyRow()).toMatchObject({ state: 'AUTHORIZED', tenantId: 1, ocppConnectionName: 'CP-001', authorizationId: 42, connectorId: 100 });
+    expect(onlyRow()).toMatchObject({
+      state: 'AUTHORIZED',
+      tenantId: 1,
+      ocppConnectionName: 'CP-001',
+      authorizationId: 42,
+      connectorId: 100,
+    });
     expect(notifier.flush).not.toHaveBeenCalled(); // an accepted start never emits a decline
   });
 
   it.each([
-    [AuthorizationStatusEnum.Accepted, 'BLOCKED', AuthorizationStatusEnum.Blocked, 'DECLINED_BEFORE_POWER'],
+    [
+      AuthorizationStatusEnum.Accepted,
+      'BLOCKED',
+      AuthorizationStatusEnum.Blocked,
+      'DECLINED_BEFORE_POWER',
+    ],
     [AuthorizationStatusEnum.Blocked, 'ALLOWED', AuthorizationStatusEnum.Accepted, 'AUTHORIZED'],
-  ] as const)('revalidates an explicit target despite cached %s when ordinary replay is enabled', async (cached, decision, expected, state) => {
-    fetchMock.mockResolvedValue(allowed(decision));
-    const auth = authorization({ realTimeAuthTimeout: 15, realTimeAuthLastAttempt: {
-      timestamp: new Date().toISOString(), result: cached, ocppConnectionName: 'CP-001', connectorId: 100,
-    } });
-    expect(await build(config({ realTimeAuthReplayLastAttempt: true })).authorize(auth, context(), evse, connector)).toBe(expected);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(onlyRow().state).toBe(state);
-  });
+  ] as const)(
+    'revalidates an explicit target despite cached %s when ordinary replay is enabled',
+    async (cached, decision, expected, state) => {
+      fetchMock.mockResolvedValue(allowed(decision));
+      const auth = authorization({
+        realTimeAuthTimeout: 15,
+        realTimeAuthLastAttempt: {
+          timestamp: new Date().toISOString(),
+          result: cached,
+          ocppConnectionName: 'CP-001',
+          connectorId: 100,
+        },
+      });
+      expect(
+        await build(config({ realTimeAuthReplayLastAttempt: true })).authorize(
+          auth,
+          context(),
+          evse,
+          connector,
+        ),
+      ).toBe(expected);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(onlyRow().state).toBe(state);
+    },
+  );
 
   it('commits DECLINED_BEFORE_POWER with durable evidence BEFORE answering when the callout times out', async () => {
-    fetchMock.mockRejectedValue(Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }));
+    fetchMock.mockRejectedValue(
+      Object.assign(new Error('The operation was aborted due to timeout'), {
+        name: 'TimeoutError',
+      }),
+    );
     const result = await build().authorize(authorization(), context(), evse, connector);
     expect(result).toBe(AuthorizationStatusEnum.Invalid);
     expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER'); // already durable when authorize() returned
@@ -80,7 +152,12 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
 
   it('a late acceptance cannot power: the request is fenced while its callout is still in flight', async () => {
     let release!: () => void;
-    fetchMock.mockImplementation(() => new Promise((resolve) => { release = () => resolve(allowed('ALLOWED')); }));
+    fetchMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(allowed('ALLOWED'));
+        }),
+    );
     const pending = build().authorize(authorization(), context(), evse, connector);
     await vi.waitFor(() => expect(store.rows.size).toBe(1));
     // another path (timeout fence) durably declined this exact request first
@@ -93,9 +170,13 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
   it('after a decline the same request is fenced: Invalid immediately, no new callout', async () => {
     fetchMock.mockRejectedValueOnce(new Error('timeout'));
     const authorizer = build();
-    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(
+      AuthorizationStatusEnum.Invalid,
+    );
     fetchMock.mockResolvedValue(allowed('ALLOWED')); // the authority would now say yes - it must never be asked
-    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(
+      AuthorizationStatusEnum.Invalid,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(store.rows.size).toBe(1);
   });
@@ -103,11 +184,21 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
   it('a cached acceptance cannot bypass an already declined explicit-target fence', async () => {
     fetchMock.mockRejectedValueOnce(new Error('timeout'));
     const authorizer = build(config({ realTimeAuthReplayLastAttempt: true }));
-    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
-    const stale = authorization({ realTimeAuthTimeout: 15, realTimeAuthLastAttempt: {
-      timestamp: new Date().toISOString(), result: AuthorizationStatusEnum.Accepted, ocppConnectionName: 'CP-001', connectorId: 100,
-    } });
-    expect(await authorizer.authorize(stale, context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(
+      AuthorizationStatusEnum.Invalid,
+    );
+    const stale = authorization({
+      realTimeAuthTimeout: 15,
+      realTimeAuthLastAttempt: {
+        timestamp: new Date().toISOString(),
+        result: AuthorizationStatusEnum.Accepted,
+        ocppConnectionName: 'CP-001',
+        connectorId: 100,
+      },
+    });
+    expect(await authorizer.authorize(stale, context(), evse, connector)).toBe(
+      AuthorizationStatusEnum.Invalid,
+    );
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
   });
@@ -117,34 +208,51 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     const authorizer = build();
     await authorizer.authorize(authorization(), context(), evse, connector);
     onlyRow().decidedAt = new Date(Date.now() - 31_000);
-    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Accepted);
+    expect(await authorizer.authorize(authorization(), context(), evse, connector)).toBe(
+      AuthorizationStatusEnum.Accepted,
+    );
     expect(store.rows.size).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('reuses the still-pending ref of the same request on a retry', async () => {
-    const begun = await store.begin({ tenantId: 1, ocppConnectionName: 'CP-001', authorizationId: 42, connectorId: 100 }, new Date(), 6000, 30000);
+    const begun = await store.begin(
+      { tenantId: 1, ocppConnectionName: 'CP-001', authorizationId: 42, connectorId: 100 },
+      new Date(),
+      6000,
+      30000,
+    );
     await build().authorize(authorization(), context(), evse, connector);
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body).chargingCalloutRef).toBe(begun.ref);
     expect(store.rows.size).toBe(1);
   });
 
-  it.each(['BLOCKED', 'NO_CREDIT', 'NOT_ALLOWED', 'EXPIRED', 'SOMETHING_NEW'])('commits a durable decline for the answer %s', async (answer) => {
-    fetchMock.mockResolvedValue(allowed(answer));
-    const result = await build().authorize(authorization(), context(), evse, connector);
-    expect(result).not.toBe(AuthorizationStatusEnum.Accepted);
-    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
-  });
+  it.each(['BLOCKED', 'NO_CREDIT', 'NOT_ALLOWED', 'EXPIRED', 'SOMETHING_NEW'])(
+    'commits a durable decline for the answer %s',
+    async (answer) => {
+      fetchMock.mockResolvedValue(allowed(answer));
+      const result = await build().authorize(authorization(), context(), evse, connector);
+      expect(result).not.toBe(AuthorizationStatusEnum.Accepted);
+      expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+    },
+  );
 
   it('a malformed answer is a decline, not an acceptance', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ nope: true }) });
-    expect(await build().authorize(authorization(), context(), evse, connector)).not.toBe(AuthorizationStatusEnum.Accepted);
+    expect(await build().authorize(authorization(), context(), evse, connector)).not.toBe(
+      AuthorizationStatusEnum.Accepted,
+    );
     expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
   });
 
   it('an explicit limited charging target cannot get implicit offline approval on timeout', async () => {
     fetchMock.mockRejectedValue(new Error('timeout'));
-    const result = await build().authorize(authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }), context(), evse, connector);
+    const result = await build().authorize(
+      authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }),
+      context(),
+      evse,
+      connector,
+    );
     expect(result).toBe(AuthorizationStatusEnum.Invalid);
     expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
     expect(notifier.flush).toHaveBeenCalledTimes(1);
@@ -154,13 +262,27 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     const cfg = config();
     cfg.realTimeAuthChargingCallouts!.enabled = false;
     fetchMock.mockRejectedValue(new Error('timeout'));
-    expect(await build(cfg).authorize(authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }), context(), evse, connector)).toBe(AuthorizationStatusEnum.Accepted);
+    expect(
+      await build(cfg).authorize(
+        authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }),
+        context(),
+        evse,
+        connector,
+      ),
+    ).toBe(AuthorizationStatusEnum.Accepted);
     expect(store.rows.size).toBe(0);
   });
 
   it('durable fence storage failure cannot fall back to offline approval', async () => {
     vi.spyOn(store, 'begin').mockRejectedValue(new Error('store unavailable'));
-    expect(await build().authorize(authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(
+      await build().authorize(
+        authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }),
+        context(),
+        evse,
+        connector,
+      ),
+    ).toBe(AuthorizationStatusEnum.Invalid);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -168,7 +290,12 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     const singleStation = { locationId: 5, evses: [{ id: 10, connectors: [{ id: 100 }] }] };
     const r = repo();
     r.readChargingStationByStationId.mockResolvedValue(singleStation as never);
-    const authorizer = getTestInstance(container, RealTimeAuthorizer, { locationRepository: r, config: config(), chargingCalloutStore: store, declineNotifier: notifier as unknown as ChargingCalloutDeclineNotifier });
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: r,
+      config: config(),
+      chargingCalloutStore: store,
+      declineNotifier: notifier as unknown as ChargingCalloutDeclineNotifier,
+    });
     await authorizer.authorize(authorization(), context());
     const body = JSON.parse(fetchMock.mock.calls[0]![1].body);
     expect(body.targetSource).toBe('INFERRED_SINGLE_CONNECTOR');
@@ -177,7 +304,9 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
   });
 
   it('is inert when the feature is disabled: no ref, no ledger rows', async () => {
-    const cfg = config({ realTimeAuthChargingCallouts: { enabled: false, tenantMap: {} } } as never);
+    const cfg = config({
+      realTimeAuthChargingCallouts: { enabled: false, tenantMap: {} },
+    } as never);
     await build(cfg).authorize(authorization(), context(), evse, connector);
     expect(JSON.parse(fetchMock.mock.calls[0]![1].body).chargingCalloutRef).toBeUndefined();
     expect(store.rows.size).toBe(0);
@@ -193,6 +322,8 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
 
   it('refuses an acceptance it cannot record (ledger unavailable)', async () => {
     vi.spyOn(store, 'markAuthorized').mockRejectedValue(new Error('db down'));
-    expect(await build().authorize(authorization(), context(), evse, connector)).toBe(AuthorizationStatusEnum.Invalid);
+    expect(await build().authorize(authorization(), context(), evse, connector)).toBe(
+      AuthorizationStatusEnum.Invalid,
+    );
   });
 });
