@@ -74,7 +74,9 @@ export class WebhookDispatcher {
     this._refreshTimer = setInterval(() => {
       if (this._refreshing) return;
       this._refreshing = this._refreshSubscriptions()
-        .catch((error) => this._logger.error('Subscription refresh failed', error))
+        .catch((error) => {
+          this._logger.error('Subscription refresh failed', error);
+        })
         .finally(() => {
           this._refreshing = undefined;
         });
