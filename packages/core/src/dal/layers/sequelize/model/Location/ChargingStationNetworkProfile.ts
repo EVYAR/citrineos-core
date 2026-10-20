@@ -1,3 +1,4 @@
+import type { CreateOptions } from 'sequelize';
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -91,11 +92,15 @@ export class ChargingStationNetworkProfile
   declare tenant?: TenantDto;
 
   @BeforeCreate
-  static async resolveStationId(instance: ChargingStationNetworkProfile): Promise<void> {
+  static async resolveStationId(
+    instance: ChargingStationNetworkProfile,
+    options: CreateOptions = {},
+  ): Promise<void> {
     if (instance.stationId == null && instance.ocppConnectionName && instance.tenantId != null) {
       const station = await ChargingStation.findOne({
         where: { ocppConnectionName: instance.ocppConnectionName, tenantId: instance.tenantId },
         attributes: ['id'],
+        transaction: options.transaction,
       });
       if (station) {
         instance.stationId = station.id;
