@@ -161,6 +161,12 @@ export class SequelizeLocationRepository
           ocppConnectionName: station, ingressMessageId: receipt.id }, { transaction });
         const commissioned = await Connector.findAll({ where: { tenantId, stationId: owner.id }, transaction });
         for (const target of commissioned) {
+          // Connector 0 is the station broadcast address, never a second
+          // physical target of its own original connector-0 observation.
+          if (target.connectorId === 0) continue;
+          if (!Number.isInteger(target.connectorId) || target.connectorId < 0) {
+            throw new Error('STATUS_INGRESS_BROADCAST_TOPOLOGY_MISSING');
+          }
           const evse = await Evse.findOne({ where: { id: target.evseId, tenantId, stationId: owner.id }, transaction });
           if (!evse) throw new Error('STATUS_INGRESS_BROADCAST_TOPOLOGY_MISSING');
           targets.push({ status: { ...status.get(), connectorId: target.connectorId,
