@@ -135,16 +135,17 @@ describe('atomic status projection transaction contract', () => {
     const f = fixture();
     await f.apply(103, 'Charging', 'socket', [], 1);
     await f.apply(101, 'Finishing', 'socket', [], 2);
-    vi.spyOn(Connector, 'findAll').mockResolvedValue([1, 2].map((connectorId) => ({
+    vi.spyOn(Connector, 'findAll').mockResolvedValue([0, 1, 2].map((connectorId) => ({
       connectorId, evseId: connectorId, get: () => ({ connectorId, evseId: connectorId }),
     })) as any);
-    vi.spyOn(Evse, 'findOne').mockImplementation(async (options: any) => ({ evseTypeId: options.where.id }) as any);
+    const topology = vi.spyOn(Evse, 'findOne').mockImplementation(async (options: any) => ({ evseTypeId: options.where.id }) as any);
     expect(await f.apply(102, 'Available', 'socket', [], 0, true)).toBe(true);
     const current = f.current().pointers.map((row) => row.statusNotification);
     expect(current).toHaveLength(2);
     expect(current.find((row) => row.connectorId === 1).ingressMessageId).toBe(103);
     expect(current.find((row) => row.connectorId === 2).ingressMessageId).toBe(102);
     expect(f.history.filter((row) => row.ingressMessageId === 102).map((row) => row.connectorId)).toEqual([0, 1, 2]);
+    expect(topology).toHaveBeenCalledTimes(2);
     expect(await f.apply(102, 'Available', 'socket', [], 0, true)).toBe(false);
     expect(f.history.filter((row) => row.ingressMessageId === 102)).toHaveLength(3);
   });
