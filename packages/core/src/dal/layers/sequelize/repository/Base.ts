@@ -181,11 +181,16 @@ export class SequelizeRepository<T extends Model<any, any>> extends CrudReposito
 
     if (rows.length === 0) return [];
 
+    // The read, per-row hooks/write and reload belong to the caller's same
+    // transaction. Dropping it here both escapes rollback and can deadlock a
+    // bounded pool when concurrent callers each retain their original checkout.
+    const transaction = (query as FindOptions).transaction;
+    const options = transaction === undefined ? {} : { transaction };
     for (const row of rows) {
-      await row.update(value);
+      await row.update(value, options);
     }
 
-    return Promise.all(rows.map((r) => r.reload()));
+    return Promise.all(rows.map((r) => r.reload(options)));
   }
 
   protected async _deleteByKey(
