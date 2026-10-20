@@ -141,7 +141,7 @@ export class SequelizeLocationRepository
       const receipt = await OCPPMessage.findOne({ where: {
         id: ingress.messageId, tenantId, ocppConnectionName: station, protocol: ingress.protocol,
         statusIngressConnection: ingress.connection, correlationId: ingress.correlationId,
-        origin: MessageOrigin.ChargingStation, state: MessageState.Request, action: 'StatusNotification',
+        origin: MessageOrigin.ChargingStation, state: String(MessageState.Request), action: 'StatusNotification',
       }, transaction });
       if (!receipt || receipt.protocol !== ingress.protocol || !Array.isArray(receipt.message) || receipt.message[0] !== 2 ||
           receipt.message[1] !== ingress.correlationId || receipt.message[2] !== 'StatusNotification' ||

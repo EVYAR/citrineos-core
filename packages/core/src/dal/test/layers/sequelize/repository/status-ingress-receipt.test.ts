@@ -17,7 +17,7 @@ describe('original status CALL receipt', () => {
       Object.entries(options.where).every(([key, value]) => row[key] === value)) ?? null);
     const create = vi.spyOn(OCPPMessage, 'create').mockImplementation(async (values: any, options: any) => {
       expect(options.transaction).toBe(transaction);
-      const row = { ...values, id: rows.length + 1 };
+      const row = { ...values, state: String(values.state), id: rows.length + 1 };
       rows.push(row);
       return row;
     });
@@ -34,6 +34,8 @@ describe('original status CALL receipt', () => {
   it('reuses the actual original id on exact replay and refuses divergent same-socket identity', async () => {
     const f = fixture();
     const first = await f.repository.reserveStatusIngress(1, f.message());
+    expect(first.state).toBe(String(MessageState.Request));
+    expect(typeof f.message().state).toBe('number');
     expect((await f.repository.reserveStatusIngress(1, f.message())).id).toBe(first.id);
     const changed = f.message();
     (changed.message[3] as any).status = 'Finishing';
@@ -54,4 +56,18 @@ describe('original status CALL receipt', () => {
       replacements: { tenantId: 1, station: 'station', connection: 'socket-b' },
     }));
   });
+  it.each(['2', '01', '99'])('refuses persisted non-request or noncanonical state %s on replay', async (state) => {
+    const f = fixture();
+    await f.repository.reserveStatusIngress(1, f.message());
+    f.rows[0].state = state;
+    await expect(f.repository.reserveStatusIngress(1, f.message())).rejects.toThrow('STATUS_INGRESS_IDENTITY_REUSED');
+    expect(f.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not accept a textual wire state in place of the numeric DTO', async () => {
+    const f = fixture();
+    await expect(f.repository.reserveStatusIngress(1, { ...f.message(), state: '1' } as any)).rejects.toThrow('STATUS_INGRESS_INVALID_IDENTITY');
+    expect(f.create).not.toHaveBeenCalled();
+  });
+
 });

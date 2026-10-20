@@ -76,6 +76,7 @@ describe('atomic status projection transaction contract', () => {
     const f = fixture();
     expect(await f.apply(102, 'Available')).toBe(true);
     expect(await f.apply(101, 'Finishing')).toBe(false);
+    expect(f.receiptRead).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ state: String(MessageState.Request) }) }));
     expect(f.history).toHaveLength(2);
     expect(f.current().pointers).toHaveLength(1);
     expect(f.current().pointers[0].statusNotification.ingressMessageId).toBe(102);

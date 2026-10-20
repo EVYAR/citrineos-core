@@ -187,7 +187,7 @@ export class WebhookDispatcher {
     const origin = MessageOrigin.ChargingStation;
 
     const messageRecord = statusIngressMessageId
-      ? await this._ocppMessageRepository.readOnlyOneByQuery(tenantId, { where: { tenantId, id: statusIngressMessageId, ocppConnectionName, correlationId: messageId, action: 'StatusNotification', origin, state: MessageState.Request } })
+      ? await this._ocppMessageRepository.readOnlyOneByQuery(tenantId, { where: { tenantId, id: statusIngressMessageId, ocppConnectionName, correlationId: messageId, action: 'StatusNotification', origin, state: String(MessageState.Request) } })
       : await this._ocppMessageRepository.createOCPPMessage(tenantId, {
       tenantId: tenantId,
       ocppConnectionName: ocppConnectionName,

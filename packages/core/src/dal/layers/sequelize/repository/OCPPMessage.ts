@@ -35,13 +35,14 @@ export class SequelizeOCPPMessageRepository
       }, transaction });
       if (existing) {
         if (existing.action !== message.action || existing.protocol !== message.protocol ||
-            existing.origin !== message.origin || existing.state !== message.state ||
+            existing.origin !== message.origin || (existing.state as unknown) !== String(message.state) ||
             !isDeepStrictEqual(existing.message, message.message)) {
           throw new Error('STATUS_INGRESS_IDENTITY_REUSED');
         }
         return existing;
       }
-      return OCPPMessage.create({ ...message, tenantId }, { transaction });
+      // OCPP wire state is numeric; the canonical legacy column is VARCHAR.
+      return OCPPMessage.create({ ...message, tenantId, state: String(message.state) }, { transaction });
     });
   }
 
