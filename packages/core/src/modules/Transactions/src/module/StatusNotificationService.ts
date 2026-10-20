@@ -116,11 +116,12 @@ export class StatusNotificationService {
       }
 
       if (ingressContext) {
-        await this._locationRepository.applyOrderedStatus(
+        const applied = await this._locationRepository.applyOrderedStatus(
           tenantId, ocppConnectionName, statusNotification,
           connector.evseId != null ? connector : undefined,
           statusNotificationRequest, requireStatusIngress(ingressContext),
         );
+        if (!applied) return;
       } else if (connector.evseId != null) {
         await this._locationRepository.createOrUpdateConnector(tenantId, connector);
       } else {
