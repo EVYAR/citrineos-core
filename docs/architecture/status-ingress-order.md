@@ -67,6 +67,32 @@ A same connection UUID cannot be generated from a millisecond timestamp.
 - Legacy nullable rows remain readable but cannot override an established bound
   projection. No arbitrary semantic ranking or sleep appears in any test.
 
-The queue helper and its tests are source-only scaffolding until the described
-persistence, generation and atomic repository wiring is complete. Do not merge
-or describe the helper alone as a production fix.
+The source now implements receipt reuse, captured socket generation, pre-fanout
+persistence and atomic connector/latest/AvailabilityState projection. Registration
+rechecks the actual current cache claim under the same station row lock used for
+its generation write; that cache read has a two-second deadline. Broadcast keeps
+one original connector-0 observation plus derived observations for actual
+commissioned targets. Its unique history key is original receipt + connector +
+COALESCE(EVSE,-1). Targets compare independently, so a legitimate newer individual
+status can win against an older broadcast while other targets advance atomically.
+The original body is validated before deriving these targets.
+
+All tests authored in this change are initially UNRUN. The mocked transaction
+contract tests establish intended query/transaction wiring, not real PostgreSQL
+lock or rollback proof. Normal affected builds, existing status/router/network
+regressions and a fresh canonical-migration PostgreSQL race fixture are required
+before merge or runtime acceptance. The original c10 packet remains FAILED.
+
+Focused source suite (execute only in the parent-granted serialized guard window):
+
+```sh
+node node_modules/vitest/vitest.mjs run --maxWorkers=1 --no-file-parallelism \
+  packages/core/src/modules/OcppRouter/test/module/status-ingress-queue.test.ts \
+  packages/core/src/dal/test/layers/sequelize/repository/status-ingress-order.test.ts \
+  packages/core/src/dal/test/layers/sequelize/repository/status-ingress-transaction.test.ts \
+  packages/core/src/dal/test/layers/sequelize/repository/status-ingress-receipt.test.ts
+```
+
+Use this repository's own frozen dependencies and reviewed Node24 binary; never
+borrow dependencies or mark the normal build successful from this documentation.
+
