@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Op } from 'sequelize';
 import { MessageOrigin, MessageState } from '@citrineos/base';
 import { SequelizeLocationRepository } from '../../../../layers/sequelize/repository/Location.js';
 import { ChargingStation } from '../../../../layers/sequelize/model/Location/ChargingStation.js';
+import { Evse } from '../../../../layers/sequelize/model/Location/Evse.js';
 import { Connector } from '../../../../layers/sequelize/model/Location/Connector.js';
 import { StatusNotification } from '../../../../layers/sequelize/model/Location/StatusNotification.js';
 import { LatestStatusNotification } from '../../../../layers/sequelize/model/Location/LatestStatusNotification.js';
@@ -33,16 +35,17 @@ describe('atomic status projection transaction contract', () => {
       history.push(row);
       return row;
     });
-    vi.spyOn(LatestStatusNotification, 'findAll').mockImplementation(async () => pointers as any);
+    vi.spyOn(LatestStatusNotification, 'findAll').mockImplementation(async (options: any) => pointers.filter((row) => row.statusNotification.connectorId === options.include[0].where.connectorId) as any);
     vi.spyOn(LatestStatusNotification, 'destroy').mockImplementation(async (options: any) => {
       expect(options.transaction).toBe(transaction);
-      const count = pointers.length;
-      pointers = [];
+      const ids = options.where.id[Op.in];
+      const count = pointers.filter((row) => ids.includes(row.id)).length;
+      pointers = pointers.filter((row) => !ids.includes(row.id));
       return count;
     });
     vi.spyOn(LatestStatusNotification, 'create').mockImplementation(async (values: any, options: any) => {
       expect(options.transaction).toBe(transaction);
-      const row = { ...values, id: 1, statusNotification: history.find((s) => s.id === values.statusNotificationId) };
+      const row = { ...values, id: values.statusNotificationId, statusNotification: history.find((s) => s.id === values.statusNotificationId) };
       pointers.push(row);
       return row as any;
     });
@@ -55,14 +58,15 @@ describe('atomic status projection transaction contract', () => {
     });
     const repository = Object.create(SequelizeLocationRepository.prototype) as SequelizeLocationRepository;
     Object.defineProperty(repository, 's', { value: { transaction: async (work: any) => work(transaction) } });
-    async function apply(id: number, status = 'Available', connection = 'socket', effects: any[] = []) {
+    async function apply(id: number, status = 'Available', connection = 'socket', effects: any[] = [], connectorId = 1, broadcast = false) {
       nextReceipt = id;
       payload.status = status;
+      payload.connectorId = connectorId;
       return repository.applyOrderedStatus(1, 'station', {
-        connectorId: 1, evseId: 1, timestamp: payload.timestamp,
-        get: () => ({ connectorId: 1, evseId: 1, timestamp: payload.timestamp, connectorStatus: status }),
-      } as any, { connectorId: 1, status, evseId: 1 } as any, payload,
-      { messageId: id, correlationId: 'call', connection, protocol: 'ocpp1.6' }, false, effects);
+        connectorId, evseId: 1, timestamp: payload.timestamp,
+        get: () => ({ connectorId, evseId: 1, timestamp: payload.timestamp, connectorStatus: status }),
+      } as any, { connectorId, status, evseId: 1 } as any, payload,
+      { messageId: id, correlationId: 'call', connection, protocol: 'ocpp1.6' }, broadcast, effects);
     }
     return { apply, history, owner, station, transaction, repository, receiptRead,
       current: () => ({ pointers, connectorStatus }) };
@@ -125,6 +129,24 @@ describe('atomic status projection transaction contract', () => {
     await expect(f.apply(101)).rejects.toThrow('STATUS_INGRESS_RECEIPT_MISMATCH');
     expect(f.history).toHaveLength(0);
     expect(f.current().pointers).toHaveLength(0);
+  });
+
+  it('broadcast uses one immutable original and advances only eligible real connector targets', async () => {
+    const f = fixture();
+    await f.apply(103, 'Charging', 'socket', [], 1);
+    await f.apply(101, 'Finishing', 'socket', [], 2);
+    vi.spyOn(Connector, 'findAll').mockResolvedValue([1, 2].map((connectorId) => ({
+      connectorId, evseId: connectorId, get: () => ({ connectorId, evseId: connectorId }),
+    })) as any);
+    vi.spyOn(Evse, 'findOne').mockImplementation(async (options: any) => ({ evseTypeId: options.where.id }) as any);
+    expect(await f.apply(102, 'Available', 'socket', [], 0, true)).toBe(true);
+    const current = f.current().pointers.map((row) => row.statusNotification);
+    expect(current).toHaveLength(2);
+    expect(current.find((row) => row.connectorId === 1).ingressMessageId).toBe(103);
+    expect(current.find((row) => row.connectorId === 2).ingressMessageId).toBe(102);
+    expect(f.history.filter((row) => row.ingressMessageId === 102).map((row) => row.connectorId)).toEqual([0, 1, 2]);
+    expect(await f.apply(102, 'Available', 'socket', [], 0, true)).toBe(false);
+    expect(f.history.filter((row) => row.ingressMessageId === 102)).toHaveLength(3);
   });
 
 });
