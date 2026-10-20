@@ -12,7 +12,7 @@ export async function up(queryInterface: QueryInterface): Promise<void> {
       ALTER TABLE "StatusNotifications" ADD COLUMN "ingressMessageId" integer NULL
         REFERENCES "OCPPMessages" (id) ON DELETE RESTRICT;
       CREATE UNIQUE INDEX "StatusNotifications_ingress_identity"
-        ON "StatusNotifications" ("ingressMessageId") WHERE "ingressMessageId" IS NOT NULL;
+        ON "StatusNotifications" ("ingressMessageId", "connectorId", (COALESCE("evseId", -1))) WHERE "ingressMessageId" IS NOT NULL;
     `, { transaction });
   });
 }

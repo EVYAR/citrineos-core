@@ -9,6 +9,7 @@ import {
   OCPP2_0_1,
   type ICache,
   type IMessageContext,
+  OCPPVersion,
   type IWebsocketConnection,
 } from '@citrineos/base';
 import type { IDeviceModelRepository, ILocationRepository } from '@dal/interfaces/repositories.js';
@@ -59,6 +60,7 @@ export class StatusNotificationService {
     ocppConnectionName: string,
     statusNotificationRequest: OCPP2_0_1.StatusNotificationRequest,
     ingressContext?: IMessageContext,
+    protocol?: string,
   ) {
     const chargingStation = await this._locationRepository.readChargingStationByStationId(
       tenantId,
@@ -116,12 +118,25 @@ export class StatusNotificationService {
       }
 
       if (ingressContext) {
-        const applied = await this._locationRepository.applyOrderedStatus(
+        const components = await this._componentRepository.readAllByQuery(tenantId, {
+          where: { tenantId, name: 'Connector' }, include: [
+            { model: EvseType, where: { id: statusNotificationRequest.evseId,
+              connectorId: statusNotificationRequest.connectorId } },
+            { model: Variable, where: { name: 'AvailabilityState' } },
+          ],
+        });
+        const effects = components.flatMap((component) => (component.variables ?? []).map((variable) => ({
+          componentId: component.id as number, variableId: variable.id as number,
+          evseDatabaseId: component.evseDatabaseId,
+          value: statusNotificationRequest.connectorStatus, generatedAt: statusNotificationRequest.timestamp,
+        })));
+        await this._locationRepository.applyOrderedStatus(
           tenantId, ocppConnectionName, statusNotification,
           connector.evseId != null ? connector : undefined,
-          statusNotificationRequest, requireStatusIngress(ingressContext),
+          statusNotificationRequest, requireStatusIngress(ingressContext, protocol ?? OCPPVersion.OCPP2_0_1),
+          false, effects,
         );
-        if (!applied) return;
+        return;
       } else if (connector.evseId != null) {
         await this._locationRepository.createOrUpdateConnector(tenantId, connector);
       } else {
@@ -189,6 +204,7 @@ export class StatusNotificationService {
     ocppConnectionName: string,
     statusNotificationRequest: OCPP1_6.StatusNotificationRequest,
     ingressContext?: IMessageContext,
+    protocol?: string,
   ) {
     const chargingStation = await this._locationRepository.readChargingStationByStationId(
       tenantId,
@@ -297,7 +313,7 @@ export class StatusNotificationService {
         await this._locationRepository.applyOrderedStatus(
           tenantId, ocppConnectionName, statusNotification,
           (broadcast || statusNotificationRequest.connectorId !== 0) ? connector : undefined,
-          statusNotificationRequest, requireStatusIngress(ingressContext), broadcast,
+          statusNotificationRequest, requireStatusIngress(ingressContext, protocol ?? OCPPVersion.OCPP1_6), broadcast,
         );
       } else {
         await this._locationRepository.addStatusNotificationToChargingStation(
@@ -312,11 +328,11 @@ export class StatusNotificationService {
   }
 }
 
-function requireStatusIngress(context: IMessageContext) {
+function requireStatusIngress(context: IMessageContext, protocol: string) {
   if (!Number.isSafeInteger(context.statusIngressMessageId) ||
       (context.statusIngressMessageId ?? 0) <= 0 || !context.statusIngressConnection) {
     throw new Error('STATUS_INGRESS_CONTEXT_REQUIRED');
   }
   return { messageId: context.statusIngressMessageId!, connection: context.statusIngressConnection,
-    correlationId: context.correlationId };
+    correlationId: context.correlationId, protocol };
 }

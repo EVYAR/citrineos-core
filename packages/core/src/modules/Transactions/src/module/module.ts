@@ -814,6 +814,7 @@ export class TransactionsModule extends AbstractModule {
         message.context.ocppConnectionName,
         message.payload,
         message.context,
+        message.protocol,
       );
 
     // Create response
@@ -1045,6 +1046,7 @@ export class TransactionsModule extends AbstractModule {
       message.context.ocppConnectionName,
       message.payload,
       message.context,
+      message.protocol,
     );
 
     // Create response

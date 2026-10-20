@@ -269,12 +269,13 @@ export interface ILocationRepository extends CrudRepository<Location> {
     tenantId: number,
     ocppConnectionName: string,
   ) => Promise<boolean>;
-  setStatusIngressConnection(tenantId: number, station: string, connection: string): Promise<void>;
+  setStatusIngressConnection(tenantId: number, station: string, connection: string, isCurrent: () => Promise<boolean>): Promise<void>;
   applyOrderedStatus(
     tenantId: number, station: string, status: StatusNotification,
     connector: Connector | undefined, originalPayload: unknown,
-    ingress: { messageId: number; connection: string; correlationId: string },
+    ingress: { messageId: number; connection: string; correlationId: string; protocol: string },
     broadcast?: boolean,
+    deviceModelEffects?: Array<{ componentId: number; variableId: number; evseDatabaseId?: number | null; value: string; generatedAt: string }>,
   ): Promise<boolean>;
   addStatusNotificationToChargingStation(
     tenantId: number,

@@ -13,7 +13,7 @@ describe('atomic status projection transaction contract', () => {
 
   function fixture() {
     const transaction = { LOCK: { UPDATE: 'UPDATE' } };
-    const owner = { id: 1, statusIngressConnection: 'socket' };
+    const owner = { id: 1, statusIngressConnection: 'socket', update: vi.fn().mockResolvedValue(undefined) };
     const history: any[] = [];
     let pointers: any[] = [];
     let connectorStatus: string | undefined;
@@ -21,7 +21,7 @@ describe('atomic status projection transaction contract', () => {
     const payload = { connectorId: 1, status: 'Available', timestamp: '2026-10-20T19:59:59.116Z' };
     const station = vi.spyOn(ChargingStation, 'findOne').mockResolvedValue(owner as any);
     vi.spyOn(OCPPMessage, 'findOne').mockImplementation(async () => ({
-      id: nextReceipt, message: [2, 'call', 'StatusNotification', payload],
+      id: nextReceipt, protocol: 'ocpp1.6', message: [2, 'call', 'StatusNotification', payload],
       timestamp: payload.timestamp, origin: MessageOrigin.ChargingStation, state: MessageState.Request,
     }) as any);
     vi.spyOn(StatusNotification, 'findOne').mockImplementation(async (options: any) =>
@@ -61,9 +61,9 @@ describe('atomic status projection transaction contract', () => {
         connectorId: 1, evseId: 1, timestamp: payload.timestamp,
         get: () => ({ connectorId: 1, evseId: 1, timestamp: payload.timestamp, connectorStatus: status }),
       } as any, { connectorId: 1, status, evseId: 1 } as any, payload,
-      { messageId: id, correlationId: 'call', connection });
+      { messageId: id, correlationId: 'call', connection, protocol: 'ocpp1.6' });
     }
-    return { apply, history, owner, station, transaction,
+    return { apply, history, owner, station, transaction, repository,
       current: () => ({ pointers, connectorStatus }) };
   }
 
@@ -91,4 +91,18 @@ describe('atomic status projection transaction contract', () => {
     expect(f.current().connectorStatus).toBe('Available');
     expect(f.current().pointers).toHaveLength(1);
   });
+  it('rechecks the actual current socket only after acquiring the station lock', async () => {
+    const f = fixture();
+    const order: string[] = [];
+    f.station.mockImplementation(async () => { order.push('lock'); return f.owner as any; });
+    await expect(f.repository.setStatusIngressConnection(1, 'station', 'retired', async () => {
+      order.push('fresh-claim');
+      return false;
+    })).rejects.toThrow('STATUS_INGRESS_RETIRED_REGISTRATION');
+    expect(order).toEqual(['lock', 'fresh-claim']);
+    expect(f.owner.update).not.toHaveBeenCalled();
+    await f.repository.setStatusIngressConnection(1, 'station', 'new', async () => true);
+    expect(f.owner.update).toHaveBeenCalledWith({ statusIngressConnection: 'new' }, { transaction: f.transaction });
+  });
+
 });

@@ -159,7 +159,20 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
         throw new Error('STATUS_INGRESS_CONNECTION_CLAIM_MISMATCH');
       }
       await this._locationRepository.setStatusIngressConnection(
-        tenantId, ocppConnectionName, statusIngressConnection,
+        tenantId, ocppConnectionName, statusIngressConnection, async () => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const latest = await Promise.race([
+              this._cache.get<string>(createIdentifier(tenantId, ocppConnectionName), CacheNamespace.Connections),
+              new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('STATUS_INGRESS_CLAIM_TIMEOUT')), 2000);
+              }),
+            ]);
+            return latest ? (JSON.parse(latest) as IWebsocketConnection).statusIngressConnection === statusIngressConnection : false;
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        },
       );
     }
     const dispatcherRegistration = this._webhookDispatcher.register(tenantId, ocppConnectionName);
