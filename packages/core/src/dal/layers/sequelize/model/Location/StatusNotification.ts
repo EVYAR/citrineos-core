@@ -35,6 +35,9 @@ export class StatusNotification extends Model implements StatusNotificationDto {
   @Column(DataType.STRING)
   declare ocppConnectionName: string;
 
+  @Column(DataType.INTEGER)
+  declare ingressMessageId?: number | null;
+
   @BelongsTo(() => ChargingStation, 'stationId')
   declare chargingStation: ChargingStationDto;
 

@@ -269,6 +269,13 @@ export interface ILocationRepository extends CrudRepository<Location> {
     tenantId: number,
     ocppConnectionName: string,
   ) => Promise<boolean>;
+  setStatusIngressConnection(tenantId: number, station: string, connection: string): Promise<void>;
+  applyOrderedStatus(
+    tenantId: number, station: string, status: StatusNotification,
+    connector: Connector | undefined, originalPayload: unknown,
+    ingress: { messageId: number; connection: string; correlationId: string },
+    broadcast?: boolean,
+  ): Promise<boolean>;
   addStatusNotificationToChargingStation(
     tenantId: number,
     ocppConnectionName: string,
@@ -514,6 +521,7 @@ export interface IReservationRepository extends CrudRepository<Reservation> {
 }
 
 export interface IOCPPMessageRepository extends CrudRepository<OCPPMessage> {
+  reserveStatusIngress(tenantId: number, message: OCPPMessageDto): Promise<OCPPMessage>;
   createOCPPMessage(tenantId: number, message: OCPPMessageDto): Promise<OCPPMessage>;
   getRequestByCorrelationId(
     tenantId: number,

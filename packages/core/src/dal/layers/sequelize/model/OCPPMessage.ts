@@ -36,6 +36,9 @@ export class OCPPMessage extends Model implements OCPPMessageDto {
   @Column(DataType.STRING)
   declare correlationId?: string;
 
+  @Column(DataType.UUID)
+  declare statusIngressConnection?: string | null;
+
   @Column(DataType.STRING)
   declare origin: MessageOrigin;
 

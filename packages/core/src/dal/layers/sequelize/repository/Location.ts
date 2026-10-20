@@ -5,6 +5,10 @@
 import type { ChargingStationDto, OCPP2_0_1 } from '@citrineos/base';
 import { CrudRepository, OCPPVersion } from '@citrineos/base';
 import { Op } from 'sequelize';
+import { isDeepStrictEqual } from 'node:util';
+import { MessageOrigin, MessageState } from '@citrineos/base';
+import { statusIngressWins } from './status-ingress-order.js';
+import { OCPPMessage } from '../model/OCPPMessage.js';
 import { type ILocationRepository } from '../../../interfaces/repositories.js';
 import { EvseType } from '../model/DeviceModel/EvseType.js';
 import { ChargingStation } from '../model/Location/ChargingStation.js';
@@ -104,6 +108,79 @@ export class SequelizeLocationRepository
         where: { ocppConnectionName: ocppConnectionName, tenantId },
       })) > 0
     );
+  }
+
+  async setStatusIngressConnection(tenantId: number, station: string, connection: string): Promise<void> {
+    const [changed] = await ChargingStation.update({ statusIngressConnection: connection }, {
+      where: { tenantId, ocppConnectionName: station },
+    });
+    if (changed !== 1) throw new Error('STATUS_INGRESS_STATION_MISSING');
+  }
+
+  async applyOrderedStatus(
+    tenantId: number, station: string, status: StatusNotification,
+    connector: Connector | undefined, originalPayload: unknown,
+    ingress: { messageId: number; connection: string; correlationId: string },
+    broadcast = false,
+  ): Promise<boolean> {
+    return this.s.transaction(async (transaction) => {
+      const owner = await ChargingStation.findOne({
+        where: { tenantId, ocppConnectionName: station }, transaction, lock: transaction.LOCK.UPDATE,
+      });
+      if (!owner) throw new Error('STATUS_INGRESS_STATION_MISSING');
+      const receipt = await OCPPMessage.findOne({ where: {
+        id: ingress.messageId, tenantId, ocppConnectionName: station,
+        statusIngressConnection: ingress.connection, correlationId: ingress.correlationId,
+        origin: MessageOrigin.ChargingStation, state: MessageState.Request, action: 'StatusNotification',
+      }, transaction });
+      if (!receipt || !Array.isArray(receipt.message) || receipt.message[0] !== 2 ||
+          receipt.message[1] !== ingress.correlationId || receipt.message[2] !== 'StatusNotification' ||
+          !isDeepStrictEqual(receipt.message[3], originalPayload)) {
+        throw new Error('STATUS_INGRESS_RECEIPT_MISMATCH');
+      }
+      const replay = await StatusNotification.findOne({ where: { ingressMessageId: receipt.id }, transaction });
+      if (replay) return false;
+      const currentPointers = await LatestStatusNotification.findAll({
+        where: { tenantId, ocppConnectionName: station },
+        include: [{ model: StatusNotification, where: {
+          connectorId: status.connectorId,
+          ...(broadcast ? {} : { evseId: status.evseId ?? null }),
+        }, required: true }], transaction,
+      });
+      const observedAt = Date.parse(status.timestamp ?? receipt.timestamp);
+      if (!Number.isFinite(observedAt)) throw new Error('STATUS_INGRESS_INVALID_TIMESTAMP');
+      const wins = currentPointers.every((pointer) => {
+        const current = pointer.statusNotification as StatusNotification;
+        const previousAt = Date.parse(current.timestamp ?? current.createdAt.toISOString());
+        return statusIngressWins({ observedAt, messageId: receipt.id }, {
+          observedAt: previousAt, messageId: current.ingressMessageId ?? null,
+        });
+      });
+      // Keep the genuine historical observation even when newer work already won.
+      const saved = await StatusNotification.create({ ...status.get(), tenantId,
+        ocppConnectionName: station, stationId: owner.id, ingressMessageId: receipt.id,
+      }, { transaction });
+      if (!wins || owner.statusIngressConnection !== ingress.connection) return false;
+      if (connector) {
+        const values = { ...connector, tenantId, stationId: owner.id };
+        if (broadcast) {
+          const { connectorId: _connectorId, ...broadcastValues } = values;
+          await Connector.update(broadcastValues, { where: { tenantId, stationId: owner.id }, transaction });
+        } else {
+          const [row, created] = await Connector.findOrCreate({ where: {
+            tenantId, ocppConnectionName: station, connectorId: connector.connectorId,
+          }, defaults: values, transaction });
+          if (!created) await row.update(values, { transaction });
+        }
+      }
+      await LatestStatusNotification.destroy({ where: {
+        tenantId, ocppConnectionName: station, id: { [Op.in]: currentPointers.map((row) => row.id) },
+      }, transaction });
+      await LatestStatusNotification.create({ tenantId, stationId: owner.id,
+        ocppConnectionName: station, statusNotificationId: saved.id,
+      }, { transaction });
+      return true;
+    });
   }
 
   async addStatusNotificationToChargingStation(

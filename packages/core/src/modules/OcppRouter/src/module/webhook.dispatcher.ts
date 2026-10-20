@@ -4,6 +4,8 @@
 import type {
   BootstrapConfig,
   ICache,
+  IMessage,
+  OcppRequest,
   OCPPVersion,
   OCPPVersionType,
   SystemConfig,
@@ -160,6 +162,16 @@ export class WebhookDispatcher {
     }
   }
 
+  async reserveStatusIngress(message: IMessage<OcppRequest>, rpcMessage: unknown, connection: string) {
+    return this._ocppMessageRepository.reserveStatusIngress(message.context.tenantId, {
+      tenantId: message.context.tenantId, ocppConnectionName: message.context.ocppConnectionName,
+      correlationId: message.context.correlationId, origin: MessageOrigin.ChargingStation,
+      state: MessageState.Request, protocol: message.protocol as OCPPVersion,
+      action: message.action, message: rpcMessage, timestamp: message.context.timestamp,
+      statusIngressConnection: connection,
+    });
+  }
+
   async dispatchMessageReceived(
     tenantId: number,
     ocppConnectionName: string,
@@ -168,12 +180,15 @@ export class WebhookDispatcher {
     action: string,
     state: MessageState,
     rpcMessage: any,
+    statusIngressMessageId?: number,
   ) {
     const identifier = createIdentifier(tenantId, ocppConnectionName);
     const messageId = rpcMessage[1];
     const origin = MessageOrigin.ChargingStation;
 
-    const messageRecord = await this._ocppMessageRepository.createOCPPMessage(tenantId, {
+    const messageRecord = statusIngressMessageId
+      ? await this._ocppMessageRepository.readOnlyOneByQuery(tenantId, { where: { tenantId, id: statusIngressMessageId, ocppConnectionName, correlationId: messageId, action: 'StatusNotification', origin, state: MessageState.Request } })
+      : await this._ocppMessageRepository.createOCPPMessage(tenantId, {
       tenantId: tenantId,
       ocppConnectionName: ocppConnectionName,
       correlationId: messageId,
@@ -185,6 +200,7 @@ export class WebhookDispatcher {
       timestamp: timestamp,
     });
 
+    if (!messageRecord) throw new Error('STATUS_INGRESS_RECEIPT_MISSING');
     if (action === undefined) {
       this._logger.debug(
         `Using action from stored message for correlationId ${messageId} and tenantId ${tenantId}: ${messageRecord.action}`,

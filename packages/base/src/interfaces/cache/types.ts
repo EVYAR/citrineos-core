@@ -48,6 +48,7 @@ export interface IWebsocketConnection {
    * Stored as ISO string in the cache, converted to Date when retrieved
    */
   timeConnected: string;
+  statusIngressConnection?: string;
   protocol: string;
   allowUnknownChargingStations: boolean;
 }

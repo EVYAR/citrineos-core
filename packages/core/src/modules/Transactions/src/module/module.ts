@@ -813,10 +813,8 @@ export class TransactionsModule extends AbstractModule {
         message.context.tenantId,
         message.context.ocppConnectionName,
         message.payload,
-      )
-      .catch((error) => {
-        this._logger.error('Failed to process status notification', error);
-      });
+        message.context,
+      );
 
     // Create response
     const response: OCPP2_response_types.StatusNotificationResponse = {};
@@ -1046,6 +1044,7 @@ export class TransactionsModule extends AbstractModule {
       message.context.tenantId,
       message.context.ocppConnectionName,
       message.payload,
+      message.context,
     );
 
     // Create response

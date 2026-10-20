@@ -10,6 +10,7 @@ export function getClientIdFromUrl(url: string): string {
   return url.split('?')[0].split('/').pop() as string;
 }
 
+import { randomUUID } from 'node:crypto';
 import { connectionErrorCategory } from './connection-error-category.js';
 import type {
   IAuthenticator,
@@ -502,6 +503,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
         const websocketConnection: IWebsocketConnection = {
           id: websocketServerConfig.id,
           timeConnected: new Date().toISOString(),
+          statusIngressConnection: randomUUID(),
           protocol: ws.protocol,
           allowUnknownChargingStations: websocketServerConfig.allowUnknownChargingStations,
         };
@@ -523,6 +525,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
           tenantId,
           ocppConnectionName,
           ws.protocol,
+          websocketConnection.statusIngressConnection,
         );
         if (!registered) {
           connLogger.fatal('Failed to register websocket client', identifier);
@@ -540,7 +543,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
         );
 
         // Register all websocket events
-        this._registerWebsocketEvents(identifier, ws, pingInterval);
+        this._registerWebsocketEvents(identifier, ws, pingInterval, websocketConnection.statusIngressConnection);
 
         connLogger.info(
           `Successfully connected new charging station: ${identifier} live connections: ${this._identifierConnections.size}`,
@@ -562,7 +565,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
    * @param {number} pingInterval - The ping interval in seconds.
    * @return {void} This function does not return anything.
    */
-  private _registerWebsocketEvents(identifier: string, ws: WebSocket, pingInterval: number): void {
+  private _registerWebsocketEvents(identifier: string, ws: WebSocket, pingInterval: number, statusIngressConnection?: string): void {
     ws.onerror = (event: ErrorEvent) => {
       this._logger.error(
         'Connection error encountered for',
@@ -574,7 +577,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
       ws.close(1011, event.message);
     };
     ws.onmessage = (event: MessageEvent) => {
-      this._onMessage(identifier, event.data.toString(), ws.protocol as OCPPVersionType);
+      this._onMessage(identifier, event.data.toString(), ws.protocol as OCPPVersionType, statusIngressConnection);
     };
 
     const closeHandler = (code: number, reason: Buffer<ArrayBufferLike>) => {
@@ -612,8 +615,8 @@ export class WebsocketNetworkConnection implements INetworkConnection {
    * @param {OCPPVersionType} protocol - The OCPP protocol version of the client, 'ocpp1.6' or 'ocpp2.0.1'.
    * @return {void} This function does not return anything.
    */
-  private _onMessage(identifier: string, message: string, protocol: OCPPVersionType): void {
-    this._router.onMessage(identifier, message, new Date(), protocol);
+  private _onMessage(identifier: string, message: string, protocol: OCPPVersionType, statusIngressConnection?: string): void {
+    this._router.onMessage(identifier, message, new Date(), protocol, statusIngressConnection);
   }
 
   private async _handleWebsocketClose(
