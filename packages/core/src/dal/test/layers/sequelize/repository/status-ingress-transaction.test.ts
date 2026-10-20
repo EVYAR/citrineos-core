@@ -5,6 +5,7 @@ import { ChargingStation } from '../../../../layers/sequelize/model/Location/Cha
 import { Connector } from '../../../../layers/sequelize/model/Location/Connector.js';
 import { StatusNotification } from '../../../../layers/sequelize/model/Location/StatusNotification.js';
 import { LatestStatusNotification } from '../../../../layers/sequelize/model/Location/LatestStatusNotification.js';
+import { VariableAttribute } from '../../../../layers/sequelize/model/DeviceModel/VariableAttribute.js';
 import { OCPPMessage } from '../../../../layers/sequelize/model/OCPPMessage.js';
 
 /** Transaction-contract tests; real PostgreSQL lock/rollback acceptance is separate. */
@@ -20,7 +21,7 @@ describe('atomic status projection transaction contract', () => {
     let nextReceipt = 101;
     const payload = { connectorId: 1, status: 'Available', timestamp: '2026-10-20T19:59:59.116Z' };
     const station = vi.spyOn(ChargingStation, 'findOne').mockResolvedValue(owner as any);
-    vi.spyOn(OCPPMessage, 'findOne').mockImplementation(async () => ({
+    const receiptRead = vi.spyOn(OCPPMessage, 'findOne').mockImplementation(async () => ({
       id: nextReceipt, protocol: 'ocpp1.6', message: [2, 'call', 'StatusNotification', payload],
       timestamp: payload.timestamp, origin: MessageOrigin.ChargingStation, state: MessageState.Request,
     }) as any);
@@ -54,16 +55,16 @@ describe('atomic status projection transaction contract', () => {
     });
     const repository = Object.create(SequelizeLocationRepository.prototype) as SequelizeLocationRepository;
     Object.defineProperty(repository, 's', { value: { transaction: async (work: any) => work(transaction) } });
-    async function apply(id: number, status = 'Available', connection = 'socket') {
+    async function apply(id: number, status = 'Available', connection = 'socket', effects: any[] = []) {
       nextReceipt = id;
       payload.status = status;
       return repository.applyOrderedStatus(1, 'station', {
         connectorId: 1, evseId: 1, timestamp: payload.timestamp,
         get: () => ({ connectorId: 1, evseId: 1, timestamp: payload.timestamp, connectorStatus: status }),
       } as any, { connectorId: 1, status, evseId: 1 } as any, payload,
-      { messageId: id, correlationId: 'call', connection, protocol: 'ocpp1.6' });
+      { messageId: id, correlationId: 'call', connection, protocol: 'ocpp1.6' }, false, effects);
     }
-    return { apply, history, owner, station, transaction, repository,
+    return { apply, history, owner, station, transaction, repository, receiptRead,
       current: () => ({ pointers, connectorStatus }) };
   }
 
@@ -103,6 +104,27 @@ describe('atomic status projection transaction contract', () => {
     expect(f.owner.update).not.toHaveBeenCalled();
     await f.repository.setStatusIngressConnection(1, 'station', 'new', async () => true);
     expect(f.owner.update).toHaveBeenCalledWith({ statusIngressConnection: 'new' }, { transaction: f.transaction });
+  });
+
+  it('commits the winning availability attribute inside the same status transaction only', async () => {
+    const f = fixture();
+    const update = vi.fn().mockResolvedValue(undefined);
+    const attributes = vi.spyOn(VariableAttribute, 'findOrCreate').mockResolvedValue([{ update }, false] as any);
+    const effect = { componentId: 3, variableId: 4, value: 'Available', generatedAt: '2026-10-20T19:59:59.116Z' };
+    expect(await f.apply(102, 'Available', 'socket', [effect])).toBe(true);
+    expect(attributes).toHaveBeenCalledWith(expect.objectContaining({ transaction: f.transaction }));
+    expect(update).toHaveBeenCalledWith({ value: 'Available', generatedAt: effect.generatedAt }, { transaction: f.transaction });
+    expect(await f.apply(101, 'Finishing', 'socket', [{ ...effect, value: 'Occupied' }])).toBe(false);
+    expect(update).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a protocol-mismatched original receipt before any historical or live write', async () => {
+    const f = fixture();
+    f.receiptRead.mockResolvedValue({ id: 101, protocol: 'ocpp2.0.1',
+      message: [2, 'call', 'StatusNotification', { connectorId: 1, status: 'Available', timestamp: '2026-10-20T19:59:59.116Z' }] } as any);
+    await expect(f.apply(101)).rejects.toThrow('STATUS_INGRESS_RECEIPT_MISMATCH');
+    expect(f.history).toHaveLength(0);
+    expect(f.current().pointers).toHaveLength(0);
   });
 
 });
