@@ -10,6 +10,7 @@ export function getClientIdFromUrl(url: string): string {
   return url.split('?')[0].split('/').pop() as string;
 }
 
+import { connectionErrorCategory } from './connection-error-category.js';
 import type {
   IAuthenticator,
   ICache,
@@ -547,7 +548,7 @@ export class WebsocketNetworkConnection implements INetworkConnection {
         // Resume the WebSocket event emitter after events have been subscribed to
         ws.resume();
       } catch (error) {
-        this._logger.fatal('Failed to subscribe to message broker for ', identifier);
+        this._logger.fatal('Failed to subscribe to message broker for ', identifier, connectionErrorCategory(error));
         ws.close(1011, 'Failed to subscribe to message broker for ' + identifier);
       }
     }
