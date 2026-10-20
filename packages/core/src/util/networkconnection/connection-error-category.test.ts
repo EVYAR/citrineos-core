@@ -11,5 +11,15 @@ describe('connection registration error diagnostics', () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
   it('rejects arbitrary five-letter strings as SQL states', () => expect(connectionErrorCategory({name:'Error',code:'TOKEN'})).toEqual({category:'Error'}));
+  it('throwing error getters cannot escape the catch handler', () => {
+    const row = Object.defineProperties({}, Object.fromEntries(['name','parent','original','code'].map(key => [key,{get(){throw Error('private getter secret');}}])));
+    expect(() => connectionErrorCategory(row)).not.toThrow();
+    expect(connectionErrorCategory(row)).toEqual({category:'UnknownConnectionRegistrationError'});
+  });
+  it('throwing Proxy and nested Proxy cannot escape the catch handler', () => {
+    const proxy = new Proxy({}, {get(){throw Error('private proxy secret');}});
+    expect(connectionErrorCategory(proxy)).toEqual({category:'UnknownConnectionRegistrationError'});
+    expect(connectionErrorCategory({name:'Error',parent:proxy,original:{code:'22001'}})).toEqual({category:'Error',sqlState:'22001'});
+  });
   it.each([null,undefined,'private exception',7])('safe for non-error value %s', value => expect(connectionErrorCategory(value)).toEqual({category:'UnknownConnectionRegistrationError'}));
 });
