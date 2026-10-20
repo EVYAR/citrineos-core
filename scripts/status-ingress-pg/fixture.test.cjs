@@ -1,0 +1,4 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const{assertEndpoint}=require('./fixture.cjs');
+test('exact fresh endpoint tuple is required before any PostgreSQL connection',()=>{const value='postgresql://owner:private@172.18.0.7:5432/cgp_core_status_aaaaaaaaaaaaaaaa';assert.equal(assertEndpoint(value,'172.18.0.7','cgp_core_status_aaaaaaaaaaaaaaaa','owner').pathname,'/cgp_core_status_aaaaaaaaaaaaaaaa');for(const [host,name,user]of [['127.0.0.1','cgp_core_status_aaaaaaaaaaaaaaaa','owner'],['172.18.0.7','cgp_e2e_core','owner'],['172.18.0.7','cgp_core_status_aaaaaaaaaaaaaaaa','other']])assert.throws(()=>assertEndpoint(value,host,name,user));});
+test('invalid private URL has a generic error without raw credentials',()=>{assert.throws(()=>assertEndpoint('not-a-private-url:secret@','host','database','user'),error=>!error.message.includes('secret@'));});
