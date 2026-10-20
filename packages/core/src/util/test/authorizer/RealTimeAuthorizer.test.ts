@@ -13,7 +13,11 @@ import type { Authorization } from '@dal/layers/sequelize/index.js';
 import type { ILocationRepository } from '@dal/interfaces/repositories.js';
 import { beforeEach, describe, expect, it, type Mocked, vi } from 'vitest';
 import { RealTimeAuthorizer } from '../../authorizer/RealTimeAuthorizer.js';
-import { createTestContainer, getTestInstance } from '../../../test/testContainer.js';
+import {
+  createTestContainer,
+  getTestInstance,
+  type MockLogger,
+} from '../../../test/testContainer.js';
 
 function buildMockLocationRepository(chargingStation: unknown): Mocked<ILocationRepository> {
   return {
@@ -118,7 +122,11 @@ describe('RealTimeAuthorizer', () => {
   });
 
   describe('start target evidence and bounded callout (CGP-0012/0013)', () => {
-    const named = { id: 10, evseTypeId: 2, connectors: [{ id: 100, connectorId: 3 }] } as unknown as EvseDto;
+    const named = {
+      id: 10,
+      evseTypeId: 2,
+      connectors: [{ id: 100, connectorId: 3 }],
+    } as unknown as EvseDto;
     const namedConnector = { id: 100, connectorId: 3 } as unknown as ConnectorDto;
     const bodyOf = () => JSON.parse(fetchMock.mock.calls[0][1].body);
     const make = (station: unknown, config: Partial<SystemConfig> = {}) =>
@@ -128,27 +136,49 @@ describe('RealTimeAuthorizer', () => {
       });
 
     it('marks an EVSE/connector named by the message as EXPLICIT and carries the OCPP identifiers', async () => {
-      await make({ locationId: 1, evses: [] }).authorize(buildAuthorization(), buildContext(), named, namedConnector);
-      expect(bodyOf()).toMatchObject({ evseId: 10, connectorId: 100, targetSource: 'EXPLICIT', ocppEvseId: 2, ocppConnectorId: 3 });
+      await make({ locationId: 1, evses: [] }).authorize(
+        buildAuthorization(),
+        buildContext(),
+        named,
+        namedConnector,
+      );
+      expect(bodyOf()).toMatchObject({
+        evseId: 10,
+        connectorId: 100,
+        targetSource: 'EXPLICIT',
+        ocppEvseId: 2,
+        ocppConnectorId: 3,
+      });
     });
 
     it('marks a single-connector guess on a bare Authorize as INFERRED, never EXPLICIT', async () => {
-      await make({ locationId: 1, evses: [{ id: 7, connectors: [{ id: 70 }] }] }).authorize(buildAuthorization(), buildContext());
+      await make({ locationId: 1, evses: [{ id: 7, connectors: [{ id: 70 }] }] }).authorize(
+        buildAuthorization(),
+        buildContext(),
+      );
       const body = bodyOf();
-      expect(body).toMatchObject({ evseId: 7, connectorId: 70, targetSource: 'INFERRED_SINGLE_CONNECTOR' });
+      expect(body).toMatchObject({
+        evseId: 7,
+        connectorId: 70,
+        targetSource: 'INFERRED_SINGLE_CONNECTOR',
+      });
       expect(body).not.toHaveProperty('ocppConnectorId');
     });
 
     it('marks an unknown target as NONE', async () => {
-      await make({ locationId: 1, evses: [{ id: 1 }, { id: 2 }] }).authorize(buildAuthorization(), buildContext());
+      await make({ locationId: 1, evses: [{ id: 1 }, { id: 2 }] }).authorize(
+        buildAuthorization(),
+        buildContext(),
+      );
       expect(bodyOf()).toMatchObject({ targetSource: 'NONE' });
     });
 
     it('bounds the callout with an abort signal and fails closed when it fires', async () => {
       fetchMock.mockRejectedValue(Object.assign(new Error('aborted'), { name: 'TimeoutError' }));
-      const result = await make({ locationId: 1, evses: [] }, { realTimeAuthRequestTimeoutMs: 250 }).authorize(
-        buildAuthorization(), buildContext(), named, namedConnector,
-      );
+      const result = await make(
+        { locationId: 1, evses: [] },
+        { realTimeAuthRequestTimeoutMs: 250 },
+      ).authorize(buildAuthorization(), buildContext(), named, namedConnector);
       expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
       expect(result).toBe(AuthorizationStatusEnum.Invalid);
     });
@@ -169,18 +199,87 @@ describe('RealTimeAuthorizer', () => {
       const flatConnector = { id: 100 } as unknown as ConnectorDto;
 
       it('still replays by default (compatible behaviour)', async () => {
-        await make({ locationId: 1, evses: [] }, { realTimeAuthDefaultTimeoutSeconds: 15 }).authorize(
-          recent(), buildContext(), flat, flatConnector,
-        );
+        await make(
+          { locationId: 1, evses: [] },
+          { realTimeAuthDefaultTimeoutSeconds: 15 },
+        ).authorize(recent(), buildContext(), flat, flatConnector);
         expect(fetchMock).not.toHaveBeenCalled();
       });
 
       it('makes the callout every time when replay is disabled', async () => {
-        await make({ locationId: 1, evses: [] }, { realTimeAuthDefaultTimeoutSeconds: 15, realTimeAuthReplayLastAttempt: false }).authorize(
-          recent(), buildContext(), flat, flatConnector,
-        );
+        await make(
+          { locationId: 1, evses: [] },
+          { realTimeAuthDefaultTimeoutSeconds: 15, realTimeAuthReplayLastAttempt: false },
+        ).authorize(recent(), buildContext(), flat, flatConnector);
         expect(fetchMock).toHaveBeenCalledTimes(1);
       });
     });
+  });
+
+  for (const [decision, expected] of [
+    ['ALLOWED', AuthorizationStatusEnum.Accepted],
+    ['NOT_ALLOWED', AuthorizationStatusEnum.NotAtThisLocation],
+  ] as const) {
+    it(`awaits deferred last-attempt persistence before returning ${decision}`, async () => {
+      fetchMock.mockResolvedValue({ json: async () => ({ data: { allowed: decision } }) });
+      let finish!: () => void;
+      const pendingSave = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      const authorization = buildAuthorization();
+      const events: string[] = [];
+      vi.mocked(authorization.save).mockImplementation(async () => {
+        events.push('save-start');
+        await pendingSave;
+        events.push('save-end');
+        return authorization;
+      });
+      const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+        locationRepository: buildMockLocationRepository({ locationId: null, evses: [] }),
+        config: {} as SystemConfig,
+      });
+      const result = authorizer
+        .authorize(authorization, buildContext(), evse, connector)
+        .then((value) => {
+          events.push('handler-return');
+          return value;
+        });
+      await vi.waitFor(() => expect(authorization.save).toHaveBeenCalled());
+      expect(events).toEqual(['save-start']);
+      finish();
+      await expect(result).resolves.toBe(expected);
+      expect(events).toEqual(['save-start', 'save-end', 'handler-return']);
+    });
+  }
+
+  it('awaits failed cache persistence and retains the existing logged-error authorization outcome', async () => {
+    let rejectSave!: (reason: Error) => void;
+    const authorization = buildAuthorization(),
+      failure = new Error('last-attempt persistence failed');
+    vi.mocked(authorization.save).mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectSave = reject;
+        }),
+    );
+    const authorizer = getTestInstance(container, RealTimeAuthorizer, {
+      locationRepository: buildMockLocationRepository({ locationId: null, evses: [] }),
+      config: {} as SystemConfig,
+    });
+    let settled = false;
+    const result = authorizer
+      .authorize(authorization, buildContext(), evse, connector)
+      .then((value) => {
+        settled = true;
+        return value;
+      });
+    await vi.waitFor(() => expect(authorization.save).toHaveBeenCalled());
+    expect(settled).toBe(false);
+    rejectSave(failure);
+    await expect(result).resolves.toBe(AuthorizationStatusEnum.Accepted);
+    expect(settled).toBe(true);
+    expect(container.resolve<MockLogger>('logger').error).toHaveBeenCalledWith(
+      expect.stringContaining('last-attempt persistence failed'),
+    );
   });
 });

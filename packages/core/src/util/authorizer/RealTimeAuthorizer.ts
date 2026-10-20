@@ -321,7 +321,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
       evseId: evseId,
       ...(connectorId !== undefined ? { connectorId } : {}),
     };
-    authorization.save().catch((error) => {
+    await authorization.save().catch((error) => {
       this._logger.error(
         `Failed to save realTimeAuthLastAttempt for authorization ${authorization.id}: ${error}`,
       );
