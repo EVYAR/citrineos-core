@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Adopt independent component version policy, release PR preparation and source-bound build metadata; preserve runtime behavior and existing versions."
+}

@@ -1,0 +1,62 @@
+name: Component version policy
+on:
+  pull_request:
+    branches: [dev, prod]
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+concurrency:
+  group: component-version-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  policy:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Test release policy safeguards
+        run: python3 -B -m unittest discover -s .release/tests -v
+      - name: Validate PR declaration or reviewed release
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Prefer the previously accepted checker; first adoption uses the reviewed bootstrap copy.
+          checker="$RUNNER_TEMP/evyar-release-policy.py"
+          if ! git show "$BASE_SHA:.release/release.py" > "$checker" 2>/dev/null; then
+            cp .release/release.py "$checker"
+          fi
+          args=()
+          if [[ "$BASE_BRANCH" == "prod" && "$HEAD_BRANCH" == release/* ]]; then args+=(--release); fi
+          python3 "$checker" check --base "$BASE_SHA" "${args[@]}"
+      - name: Generate source-bound build metadata
+        run: python3 .release/release.py build-info --output "$RUNNER_TEMP/build-info.json"
+      - name: Preserve metadata in the workflow summary
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          metadata = Path(os.environ['RUNNER_TEMP'], 'build-info.json').read_text()
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## Source build metadata\n\n```json\n' + metadata + '```\n')
+          PYTHON
+      - uses: actions/upload-artifact@v4
+        # Summary above preserves source evidence even when the organization's artifact quota is full.
+        continue-on-error: true
+        with:
+          name: component-build-info
+          retention-days: 7
+          path: ${{ runner.temp }}/build-info.json
