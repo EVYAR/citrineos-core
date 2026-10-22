@@ -12,7 +12,7 @@ python3 .release/release.py prepare
 
 It changes the component version source, root npm lock versions, Expo display version where applicable, changelog, and an auditable consumed-change history. Native Android/iOS build counters remain managed by EAS. Open the resulting release PR against prod. Include service tests, migration/config review and artifact verification. The release check verifies consumed records against the frozen dev commit and rejects source changes after freezing. Bring the release/version-history commit back to dev after promotion before preparing another release.
 
-The first adoption PR establishes tooling only. Baselines preserve existing package versions; they are not assertions that all existing code is production-accepted. Repositories without a package version use `VERSION` with an explicitly reviewed initial 0.1.0 baseline. Upstream forks retain upstream version syntax and require reviewed upstream releases; automated preparation refuses to rewrite them.
+The first adoption PR establishes tooling only. Baselines preserve existing package versions; they are not assertions that all existing code is production-accepted. Repositories without a package version use a dedicated policy version source with an explicitly reviewed initial 0.1.0 baseline. Upstream forks retain upstream version syntax and require reviewed upstream releases; automated preparation refuses to rewrite them.
 
 ```
 python3 .release/release.py check --base <base-sha>
