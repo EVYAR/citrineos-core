@@ -20,7 +20,7 @@ python3 .release/release.py check --base <prod-base-sha> --release
 python3 .release/release.py build-info --output /tmp/build-info.json
 ```
 
-Build metadata identifies the component version, exact source commit, dirty status and CI run; it contains no credentials. CI archives it for every successful policy run. This is source/build evidence, not proof of what a server or browser is currently running. Runtime endpoint/asset embedding and the CSMS release inventory must consume actual deployed artifacts before reporting observed deployment versions.
+Build metadata identifies the component version, exact source commit, dirty status and CI run; it contains no credentials. CI records it in the workflow summary and attempts a seven-day artifact upload. Artifact storage quota errors do not suppress the summary or bypass policy validation. This is source/build evidence, not proof of what a server or browser is currently running. Runtime endpoint/asset embedding and the CSMS release inventory must consume actual deployed artifacts before reporting observed deployment versions.
 
 Current GitHub private-repository branch protection is unavailable under the organization's plan (HTTP 403). These workflows report checks but cannot make merges server-enforced by themselves. Enable an eligible plan/ruleset and require `Component version policy / policy` on dev/prod; gate production deployment separately. This setup deliberately creates no production auto-deploy trigger.
 

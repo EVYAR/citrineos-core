@@ -43,7 +43,20 @@ jobs:
           python3 "$checker" check --base "$BASE_SHA" "${args[@]}"
       - name: Generate source-bound build metadata
         run: python3 .release/release.py build-info --output "$RUNNER_TEMP/build-info.json"
+      - name: Preserve metadata in the workflow summary
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from pathlib import Path
+          metadata = Path(os.environ['RUNNER_TEMP'], 'build-info.json').read_text()
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('## Source build metadata\n\n```json\n' + metadata + '```\n')
+          PYTHON
       - uses: actions/upload-artifact@v4
+        # Summary above preserves source evidence even when the organization's artifact quota is full.
+        continue-on-error: true
         with:
           name: component-build-info
+          retention-days: 7
           path: ${{ runner.temp }}/build-info.json
