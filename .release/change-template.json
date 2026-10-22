@@ -1,0 +1,5 @@
+{
+  "type": "patch",
+  "summary": "Describe the user-visible fix or compatible feature.",
+  "migration": "Required for major: affected consumers, compatibility/deployment order and migration/recovery notes."
+}
