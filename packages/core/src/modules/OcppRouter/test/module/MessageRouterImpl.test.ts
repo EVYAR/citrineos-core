@@ -1,3 +1,4 @@
+import { ChargingStation } from '../../../../dal/layers/sequelize/model/Location/ChargingStation.js';
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -87,6 +88,7 @@ function buildMockHandler(): Mocked<IMessageHandler> {
 
 function buildMockDispatcher(): Mocked<WebhookDispatcher> {
   return {
+    shutdown: vi.fn().mockResolvedValue(undefined),
     register: vi.fn().mockResolvedValue(undefined),
     deregister: vi.fn().mockResolvedValue(undefined),
     dispatchMessageReceivedUnparsed: vi.fn().mockResolvedValue(undefined),
@@ -98,6 +100,8 @@ function buildMockDispatcher(): Mocked<WebhookDispatcher> {
 
 function buildMockLocationRepository(): Mocked<ILocationRepository> {
   return {
+    doesChargingStationExistByStationId: vi.fn().mockResolvedValue(false),
+    createOrUpdateChargingStation: vi.fn().mockResolvedValue(undefined),
     setChargingStationIsOnlineAndOCPPVersion: vi.fn().mockResolvedValue(undefined),
     readChargingStationByStationId: vi.fn().mockResolvedValue(undefined),
     updateChargingStationTimestamp: vi.fn().mockResolvedValue(undefined),
@@ -154,6 +158,34 @@ describe('MessageRouterImpl', () => {
   // ─── registerConnection ────────────────────────────────────────────────────
 
   describe('registerConnection', () => {
+    it('creates the allowed unknown station before registering or persisting its first messages', async () => {
+      const record = { tenantId: TENANT_ID, ocppConnectionName: STATION_ID } as ChargingStation;
+      const build = vi.spyOn(ChargingStation, 'build').mockReturnValue(record);
+      cache.get.mockResolvedValue(JSON.stringify({ allowUnknownChargingStations: true }));
+      try {
+        await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+        expect(locationRepository.createOrUpdateChargingStation).toHaveBeenCalledWith(
+          TENANT_ID,
+          record,
+        );
+        expect(
+          locationRepository.createOrUpdateChargingStation.mock.invocationCallOrder[0],
+        ).toBeLessThan(dispatcher.register.mock.invocationCallOrder[0]!);
+      } finally {
+        build.mockRestore();
+      }
+    });
+    it('does not create an unknown station without the trusted network profile permission', async () => {
+      cache.get.mockResolvedValue(JSON.stringify({ allowUnknownChargingStations: false }));
+      await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+      expect(locationRepository.createOrUpdateChargingStation).not.toHaveBeenCalled();
+    });
+    it('does not overwrite an existing station during connection registration', async () => {
+      cache.get.mockResolvedValue(JSON.stringify({ allowUnknownChargingStations: true }));
+      locationRepository.doesChargingStationExistByStationId.mockResolvedValue(true);
+      await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+      expect(locationRepository.createOrUpdateChargingStation).not.toHaveBeenCalled();
+    });
     it('should register webhook dispatcher, subscribe request and response, and set charger online', async () => {
       const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
 

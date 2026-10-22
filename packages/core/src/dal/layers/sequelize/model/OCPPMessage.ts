@@ -1,3 +1,4 @@
+import type { CreateOptions } from 'sequelize';
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -34,6 +35,9 @@ export class OCPPMessage extends Model implements OCPPMessageDto {
   @Index
   @Column(DataType.STRING)
   declare correlationId?: string;
+
+  @Column(DataType.UUID)
+  declare statusIngressConnection?: string | null;
 
   @Column(DataType.STRING)
   declare origin: MessageOrigin;
@@ -85,11 +89,12 @@ export class OCPPMessage extends Model implements OCPPMessageDto {
   declare responseMessages?: OCPPMessage[];
 
   @BeforeCreate
-  static async resolveStationId(instance: OCPPMessage): Promise<void> {
+  static async resolveStationId(instance: OCPPMessage, options: CreateOptions = {}): Promise<void> {
     if (instance.stationId == null && instance.ocppConnectionName && instance.tenantId != null) {
       const station = await ChargingStation.findOne({
         where: { ocppConnectionName: instance.ocppConnectionName, tenantId: instance.tenantId },
         attributes: ['id'],
+        transaction: options.transaction,
       });
       if (station) {
         instance.stationId = station.id;

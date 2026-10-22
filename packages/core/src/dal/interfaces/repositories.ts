@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import type { Transaction as SequelizeTransaction } from 'sequelize';
 import type {
   BootConfig,
   CallAction,
@@ -268,6 +269,14 @@ export interface ILocationRepository extends CrudRepository<Location> {
     tenantId: number,
     ocppConnectionName: string,
   ) => Promise<boolean>;
+  setStatusIngressConnection(tenantId: number, station: string, connection: string, isCurrent: () => Promise<boolean>): Promise<void>;
+  applyOrderedStatus(
+    tenantId: number, station: string, status: StatusNotification,
+    connector: Connector | undefined, originalPayload: unknown,
+    ingress: { messageId: number; connection: string; correlationId: string; protocol: string },
+    broadcast?: boolean,
+    deviceModelEffects?: Array<{ componentId: number; variableId: number; evseDatabaseId?: number | null; value: string; generatedAt: string }>,
+  ): Promise<boolean>;
   addStatusNotificationToChargingStation(
     tenantId: number,
     ocppConnectionName: string,
@@ -513,6 +522,7 @@ export interface IReservationRepository extends CrudRepository<Reservation> {
 }
 
 export interface IOCPPMessageRepository extends CrudRepository<OCPPMessage> {
+  reserveStatusIngress(tenantId: number, message: OCPPMessageDto): Promise<OCPPMessage>;
   createOCPPMessage(tenantId: number, message: OCPPMessageDto): Promise<OCPPMessage>;
   getRequestByCorrelationId(
     tenantId: number,
@@ -536,6 +546,7 @@ export interface IChargingStationSequenceRepository
     tenantId: number,
     ocppConnectionName: string,
     type: ChargingStationSequenceTypeEnumType,
+    transaction?: SequelizeTransaction,
   ): Promise<number>;
 }
 

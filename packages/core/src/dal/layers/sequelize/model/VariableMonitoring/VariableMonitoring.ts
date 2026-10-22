@@ -1,3 +1,4 @@
+import type { CreateOptions } from 'sequelize';
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -122,13 +123,17 @@ export class VariableMonitoring extends Model implements VariableMonitoringDto {
   declare tenant?: TenantDto;
 
   @BeforeCreate
-  static async resolveStationId(instance: VariableMonitoring): Promise<void> {
+  static async resolveStationId(
+    instance: VariableMonitoring,
+    options: CreateOptions = {},
+  ): Promise<void> {
     if (instance.stationId == null && instance.ocppConnectionName && instance.tenantId != null) {
       // Lazy load ChargingStation to avoid circular dependency
       const { ChargingStation } = await import('../Location/index.js');
       const station = await ChargingStation.findOne({
         where: { ocppConnectionName: instance.ocppConnectionName, tenantId: instance.tenantId },
         attributes: ['id'],
+        transaction: options.transaction,
       });
       if (station) {
         instance.stationId = station.id;

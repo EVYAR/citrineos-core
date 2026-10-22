@@ -9,6 +9,9 @@
  */
 export interface IMessageContext {
   correlationId: string;
+  /** Original durable StatusNotification CALL, persisted before module fanout. */
+  statusIngressMessageId?: number;
+  statusIngressConnection?: string;
   tenantId: number;
   ocppConnectionName: string;
   timestamp: string; // Iso Timestamp

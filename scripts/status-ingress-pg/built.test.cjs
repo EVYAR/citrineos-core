@@ -1,0 +1,3 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const{loadBuilt}=require('./built.cjs');
+test('actual production Sequelize classes load natively with compiled decorator metadata, without database bootstrap',()=>{const modules=loadBuilt();assert.equal(modules.OCPPVersion.OCPP1_6,'ocpp1.6');assert.equal(typeof modules.SequelizeLocationRepository.prototype.applyOrderedStatus,'function');assert.equal(typeof modules.SequelizeOCPPMessageRepository.prototype.reserveStatusIngress,'function');assert.equal(typeof modules.DefaultSequelizeInstance.getInstance,'function');assert.equal(Reflect.getMetadata('design:type',modules.StatusNotification.prototype,'connectorId'),Number);});

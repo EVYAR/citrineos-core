@@ -4,6 +4,8 @@
 import type {
   BootstrapConfig,
   ICache,
+  IMessage,
+  OcppRequest,
   OCPPVersion,
   OCPPVersionType,
   SystemConfig,
@@ -31,6 +33,8 @@ export class WebhookDispatcher {
   protected static readonly CALLBACK_MAX_ATTEMPTS = 3;
   protected static readonly CALLBACK_RETRY_DELAY_MS = 200;
 
+  private readonly _refreshTimer: NodeJS.Timeout;
+  private _refreshing?: Promise<void>;
   protected _logger: Logger<ILogObj>;
   protected _ocppMessageRepository: IOCPPMessageRepository;
   protected _subscriptionRepository: ISubscriptionRepository;
@@ -69,9 +73,21 @@ export class WebhookDispatcher {
       this._oidcTokenProvider = new OidcTokenProvider(config.oidcClient, this._logger);
     }
 
-    setInterval(async () => {
-      await this._refreshSubscriptions();
+    this._refreshTimer = setInterval(() => {
+      if (this._refreshing) return;
+      this._refreshing = this._refreshSubscriptions()
+        .catch((error) => {
+          this._logger.error('Subscription refresh failed', error);
+        })
+        .finally(() => {
+          this._refreshing = undefined;
+        });
     }, WebhookDispatcher.SUBSCRIPTION_REFRESH_INTERVAL_MS);
+  }
+
+  async shutdown(): Promise<void> {
+    clearInterval(this._refreshTimer);
+    await this._refreshing;
   }
 
   async register(tenantId: number, ocppConnectionName: string) {
@@ -146,6 +162,16 @@ export class WebhookDispatcher {
     }
   }
 
+  async reserveStatusIngress(message: IMessage<OcppRequest>, rpcMessage: unknown, connection: string) {
+    return this._ocppMessageRepository.reserveStatusIngress(message.context.tenantId, {
+      tenantId: message.context.tenantId, ocppConnectionName: message.context.ocppConnectionName,
+      correlationId: message.context.correlationId, origin: MessageOrigin.ChargingStation,
+      state: MessageState.Request, protocol: message.protocol as OCPPVersion,
+      action: message.action, message: rpcMessage, timestamp: message.context.timestamp,
+      statusIngressConnection: connection,
+    });
+  }
+
   async dispatchMessageReceived(
     tenantId: number,
     ocppConnectionName: string,
@@ -154,12 +180,15 @@ export class WebhookDispatcher {
     action: string,
     state: MessageState,
     rpcMessage: any,
+    statusIngressMessageId?: number,
   ) {
     const identifier = createIdentifier(tenantId, ocppConnectionName);
     const messageId = rpcMessage[1];
     const origin = MessageOrigin.ChargingStation;
 
-    const messageRecord = await this._ocppMessageRepository.createOCPPMessage(tenantId, {
+    const messageRecord = statusIngressMessageId
+      ? await this._ocppMessageRepository.readOnlyOneByQuery(tenantId, { where: { tenantId, id: statusIngressMessageId, ocppConnectionName, correlationId: messageId, action: 'StatusNotification', origin, state: String(MessageState.Request) } })
+      : await this._ocppMessageRepository.createOCPPMessage(tenantId, {
       tenantId: tenantId,
       ocppConnectionName: ocppConnectionName,
       correlationId: messageId,
@@ -171,6 +200,7 @@ export class WebhookDispatcher {
       timestamp: timestamp,
     });
 
+    if (!messageRecord) throw new Error('STATUS_INGRESS_RECEIPT_MISSING');
     if (action === undefined) {
       this._logger.debug(
         `Using action from stored message for correlationId ${messageId} and tenantId ${tenantId}: ${messageRecord.action}`,
@@ -311,10 +341,12 @@ export class WebhookDispatcher {
       return;
     }
     this._logger.debug(`Refreshing subscriptions for ${this._identifiers.size} identifiers`);
-    this._identifiers.forEach((identifier) =>
-      this._loadSubscriptionsForConnection(
-        getTenantIdFromIdentifier(identifier),
-        getStationIdFromIdentifier(identifier),
+    await Promise.all(
+      [...this._identifiers].map((identifier) =>
+        this._loadSubscriptionsForConnection(
+          getTenantIdFromIdentifier(identifier),
+          getStationIdFromIdentifier(identifier),
+        ),
       ),
     );
   }

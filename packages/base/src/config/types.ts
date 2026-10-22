@@ -318,6 +318,28 @@ export const systemConfigInputSchema = z.object({
   rbacRulesFileName: z.string().default('rbac-rules.json').optional(),
   rbacRulesDir: z.string().optional(),
   realTimeAuthDefaultTimeoutSeconds: z.number().int().min(1).default(15).optional(),
+  // Hard bound on the synchronous real-time authorization callout (ms). The callout used to have no timeout.
+  realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(3000).optional(),
+  // false = never answer a start from the last real-time attempt; every callout is made. Required when an
+  // external admission authority (e.g. eMSP package admission) must see each start.
+  realTimeAuthReplayLastAttempt: z.boolean().default(true).optional(),
+  // CGP-0012 durable decline-before-power receipts. Disabled by default; when enabled, every target-specific real-time
+  // authorization callout is pinned to a Core-generated chargingCalloutRef and a declined/unknown outcome is committed
+  // durably (fencing a late response) before the decline receipt is retried to the adapter.
+  realTimeAuthChargingCallouts: z
+    .object({
+      enabled: z.boolean().default(false),
+      adapterBaseUrl: z.string().url().optional(),
+      webhookToken: z.string().min(32).optional(),
+      /** Core integer tenant id (as string) -> canonical tenant UUID known to the adapter. Unmapped tenants never emit a receipt. */
+      tenantMap: z.record(z.string(), z.string().uuid()).default({}),
+      fenceSeconds: z.number().int().min(1).max(3600).default(30),
+      declineRetryBaseMs: z.number().int().min(100).max(60000).default(1000),
+      declineRetryMaxMs: z.number().int().min(1000).max(3600000).default(300000),
+      declineMaxAttempts: z.number().int().min(1).max(1000).default(50),
+      declineRequestTimeoutMs: z.number().int().min(100).max(30000).default(3000),
+    })
+    .optional(),
   notReadyThresholdSeconds: z.number().int().min(1).default(60).optional(),
 });
 
@@ -645,6 +667,25 @@ export const systemConfigSchema = z
     rbacRulesDir: z.string().optional(),
     oidcClient: oidcClientConfigSchema,
     realTimeAuthDefaultTimeoutSeconds: z.number().int().min(1).default(15),
+    realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(3000),
+    realTimeAuthReplayLastAttempt: z.boolean().default(true),
+    // CGP-0012 durable decline-before-power receipts. Disabled by default; when enabled, every target-specific real-time
+    // authorization callout is pinned to a Core-generated chargingCalloutRef and a declined/unknown outcome is committed
+    // durably (fencing a late response) before the decline receipt is retried to the adapter.
+    realTimeAuthChargingCallouts: z
+      .object({
+        enabled: z.boolean().default(false),
+        adapterBaseUrl: z.string().url().optional(),
+        webhookToken: z.string().min(32).optional(),
+        /** Core integer tenant id (as string) -> canonical tenant UUID known to the adapter. Unmapped tenants never emit a receipt. */
+        tenantMap: z.record(z.string(), z.string().uuid()).default({}),
+        fenceSeconds: z.number().int().min(1).max(3600).default(30),
+        declineRetryBaseMs: z.number().int().min(100).max(60000).default(1000),
+        declineRetryMaxMs: z.number().int().min(1000).max(3600000).default(300000),
+        declineMaxAttempts: z.number().int().min(1).max(1000).default(50),
+        declineRequestTimeoutMs: z.number().int().min(100).max(30000).default(3000),
+      })
+      .default({ enabled: false, tenantMap: {}, fenceSeconds: 30, declineRetryBaseMs: 1000, declineRetryMaxMs: 300000, declineMaxAttempts: 50, declineRequestTimeoutMs: 3000 }),
     notReadyThresholdSeconds: z.number().int().min(1).default(60),
   })
   .refine((obj) => obj.maxCachingSeconds >= obj.maxCallLengthSeconds, {

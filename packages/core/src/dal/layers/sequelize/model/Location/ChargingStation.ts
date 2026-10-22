@@ -59,6 +59,9 @@ import { StatusNotification } from './StatusNotification.js';
  */
 @Table
 export class ChargingStation extends Model implements ChargingStationDto {
+  @Column(DataType.UUID)
+  declare statusIngressConnection?: string | null;
+
   static readonly MODEL_NAME: string = Namespace.ChargingStation;
 
   @AutoIncrement

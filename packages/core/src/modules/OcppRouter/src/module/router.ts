@@ -13,6 +13,7 @@ import type {
   IMessageHandler,
   IMessageRouter,
   IMessageSender,
+  IWebsocketConnection,
   OcppRequest,
   OcppResponse,
   OCPPVersionType,
@@ -40,10 +41,12 @@ import {
   RequestBuilder,
   RetryMessageError,
 } from '@citrineos/base';
+import { ChargingStation } from '@dal/layers/sequelize/model/Location/ChargingStation.js';
 import type { ILocationRepository } from '@dal/interfaces/repositories.js';
 import type { ILogObj } from 'tslog';
 import { Logger } from 'tslog';
 import { v4 as uuidv4 } from 'uuid';
+import { StatusIngressQueue } from './status-ingress-queue.js';
 import { WebhookDispatcher } from './webhook.dispatcher.js';
 
 /**
@@ -60,6 +63,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   protected _handler: IMessageHandler;
   protected _networkHook: (identifier: string, message: string) => Promise<void>;
   protected _locationRepository: ILocationRepository;
+  private readonly _statusIngressQueue = new StatusIngressQueue();
   private readonly _callResponseTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   /**
    * Serializes `setChargingStationIsOnlineAndOCPPVersion` writes per
@@ -127,7 +131,50 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     tenantId: number,
     ocppConnectionName: string,
     protocol: OCPPVersion,
+    statusIngressConnection?: string,
   ): Promise<boolean> {
+    // The accepted connection must have a station FK before its first OCPP message is persisted.
+    // Only the trusted network profile in the claimed cache slot may permit unknown stations.
+    const connectionJson = await this._cache.get<string>(
+      createIdentifier(tenantId, ocppConnectionName),
+      CacheNamespace.Connections,
+    );
+    const connection: IWebsocketConnection | null = connectionJson
+      ? JSON.parse(connectionJson)
+      : null;
+    if (
+      connection?.allowUnknownChargingStations &&
+      !(await this._locationRepository.doesChargingStationExistByStationId(
+        tenantId,
+        ocppConnectionName,
+      ))
+    ) {
+      await this._locationRepository.createOrUpdateChargingStation(
+        tenantId,
+        ChargingStation.build({ tenantId, ocppConnectionName }),
+      );
+    }
+    if (statusIngressConnection) {
+      if (connection?.statusIngressConnection !== statusIngressConnection) {
+        throw new Error('STATUS_INGRESS_CONNECTION_CLAIM_MISMATCH');
+      }
+      await this._locationRepository.setStatusIngressConnection(
+        tenantId, ocppConnectionName, statusIngressConnection, async () => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const latest = await Promise.race([
+              this._cache.get<string>(createIdentifier(tenantId, ocppConnectionName), CacheNamespace.Connections),
+              new Promise<never>((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('STATUS_INGRESS_CLAIM_TIMEOUT')), 2000);
+              }),
+            ]);
+            return latest ? (JSON.parse(latest) as IWebsocketConnection).statusIngressConnection === statusIngressConnection : false;
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
+        },
+      );
+    }
     const dispatcherRegistration = this._webhookDispatcher.register(tenantId, ocppConnectionName);
 
     const connectionIdentifier = createIdentifier(tenantId, ocppConnectionName);
@@ -248,6 +295,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     message: string,
     timestamp: Date,
     protocol: OCPPVersionType,
+    statusIngressConnection?: string,
   ): Promise<boolean> {
     const tenantId = getTenantIdFromIdentifier(identifier);
     const ocppConnectionName = getStationIdFromIdentifier(identifier);
@@ -269,7 +317,20 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       messageId = rpcMessage[1];
       switch (messageTypeId) {
         case MessageTypeId.Call: {
-          await this._onCall(identifier, rpcMessage as Call, timestamp, protocol);
+          if (rpcMessage[2] === 'StatusNotification') {
+            // Queue registration occurs synchronously in this socket callback,
+            // before cache/permission/persistence awaits can reorder tied frames.
+            await this._statusIngressQueue.run(identifier, async () => {
+              const cached = await this._cache.get<string>(identifier, CacheNamespace.Connections);
+              const current = cached ? JSON.parse(cached) as IWebsocketConnection : null;
+              if (!statusIngressConnection || current?.statusIngressConnection !== statusIngressConnection) {
+                throw new Error('STATUS_INGRESS_RETIRED_CONNECTION');
+              }
+              await this._onCall(identifier, rpcMessage as Call, timestamp, protocol, statusIngressConnection);
+            });
+          } else {
+            await this._onCall(identifier, rpcMessage as Call, timestamp, protocol);
+          }
           break;
         }
         case MessageTypeId.CallResult: {
@@ -585,6 +646,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   async shutdown(): Promise<void> {
     for (const handle of this._callResponseTimeouts.values()) clearTimeout(handle);
     this._callResponseTimeouts.clear();
+    await this._webhookDispatcher.shutdown();
     await this._sender.shutdown();
     await this._handler.shutdown();
   }
@@ -607,6 +669,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     message: Call,
     timestamp: Date,
     protocol: OCPPVersionType,
+    statusIngressConnection?: string,
   ): Promise<void> {
     const messageId = message[1];
     const tenantId = getTenantIdFromIdentifier(identifier);
@@ -670,7 +733,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
 
     try {
       // Route call
-      const confirmation = await this._routeCall(identifier, message, timestamp, protocol);
+      const confirmation = await this._routeCall(identifier, message, timestamp, protocol, statusIngressConnection);
 
       if (!confirmation.success) {
         throw new OcppError(messageId, ErrorCode.InternalError, 'Call failed', {
@@ -1016,6 +1079,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     message: Call,
     timestamp: Date,
     protocol: OCPPVersionType,
+    statusIngressConnection?: string,
   ): Promise<IMessageConfirmation> {
     const messageId = message[1];
     const action = mapToCallAction(protocol, message[2]);
@@ -1035,6 +1099,14 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       timestamp,
     );
 
+    if (action === OCPP_CallAction.StatusNotification) {
+      if (!statusIngressConnection) throw new Error('STATUS_INGRESS_CONNECTION_REQUIRED');
+      const receipt = await this._webhookDispatcher.reserveStatusIngress(
+        _message, message, statusIngressConnection,
+      );
+      _message.context.statusIngressMessageId = receipt.id;
+      _message.context.statusIngressConnection = statusIngressConnection;
+    }
     return this.emitMessage(_message, message);
   }
 
@@ -1128,6 +1200,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       message.action,
       message.state,
       rpcMessage,
+      message.context.statusIngressMessageId,
     );
 
     return confirmation;

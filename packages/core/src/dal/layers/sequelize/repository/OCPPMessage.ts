@@ -2,8 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { MessageState, type OCPPMessageDto } from '@citrineos/base';
+import { MessageState, MessageOrigin, type OCPPMessageDto } from '@citrineos/base';
 import type { IOCPPMessageRepository } from '../../../interfaces/repositories.js';
+import { isDeepStrictEqual } from 'node:util';
 import { OCPPMessage } from '../model/OCPPMessage.js';
 import { SequelizeRepository, type SequelizeRepositoryDependencies } from './Base.js';
 
@@ -13,6 +14,36 @@ export class SequelizeOCPPMessageRepository
 {
   constructor({ config, logger, sequelizeInstance }: SequelizeRepositoryDependencies) {
     super({ config, namespace: OCPPMessage.MODEL_NAME, logger, sequelizeInstance });
+  }
+
+  public async reserveStatusIngress(tenantId: number, message: OCPPMessageDto): Promise<OCPPMessage> {
+    if (message.tenantId !== tenantId || !message.statusIngressConnection ||
+        message.action !== 'StatusNotification' || message.state !== MessageState.Request ||
+        message.origin !== MessageOrigin.ChargingStation || !message.correlationId) {
+      throw new Error('STATUS_INGRESS_INVALID_IDENTITY');
+    }
+    // Station lock serializes same-identity requests across processes. Socket
+    // ingress ordering itself is established before any async router lookup.
+    return this.s.transaction(async (transaction) => {
+      const [stations] = await this.s.query('SELECT id FROM "ChargingStations" WHERE "tenantId"=:tenantId AND "ocppConnectionName"=:station AND "statusIngressConnection"=:connection FOR UPDATE', {
+        replacements: { tenantId, station: message.ocppConnectionName, connection: message.statusIngressConnection }, transaction,
+      });
+      if (stations.length !== 1) throw new Error('STATUS_INGRESS_RETIRED_CONNECTION');
+      const existing = await OCPPMessage.findOne({ where: {
+        tenantId, ocppConnectionName: message.ocppConnectionName,
+        statusIngressConnection: message.statusIngressConnection, correlationId: message.correlationId,
+      }, transaction });
+      if (existing) {
+        if (existing.action !== message.action || existing.protocol !== message.protocol ||
+            existing.origin !== message.origin || (existing.state as unknown) !== String(message.state) ||
+            !isDeepStrictEqual(existing.message, message.message)) {
+          throw new Error('STATUS_INGRESS_IDENTITY_REUSED');
+        }
+        return existing;
+      }
+      // OCPP wire state is numeric; the canonical legacy column is VARCHAR.
+      return OCPPMessage.create({ ...message, tenantId, state: String(message.state) }, { transaction });
+    });
   }
 
   public async createOCPPMessage(tenantId: number, message: OCPPMessageDto): Promise<OCPPMessage> {

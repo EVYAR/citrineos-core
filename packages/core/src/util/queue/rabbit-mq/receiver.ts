@@ -35,6 +35,11 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
 
   protected _channelManager: RabbitMQChannelManager;
   protected exchange: string;
+  private _stopped = false;
+  private readonly _reconnectTasks = new Set<Promise<void>>();
+  private readonly _inFlightDeliveries = new Set<Promise<void>>();
+  private _deliveryFailed = false;
+  private _deliveryFailure: unknown;
   protected readonly _isRouterMode: boolean;
 
   protected _consumerTags = new Map<string, string[]>();
@@ -74,10 +79,15 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     }
 
     this._channelManager.getConnectionManager().on('connected', async () => {
+      if (this._stopped) return;
+      const task = this._onReconnect();
+      this._reconnectTasks.add(task);
       try {
-        await this._onReconnect();
+        await task;
       } catch (err) {
         this._logger.error('Failed to reinitialize after reconnect:', err);
+      } finally {
+        this._reconnectTasks.delete(task);
       }
     });
   }
@@ -108,6 +118,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
    */
   async initializeInstanceQueue(queueName: string): Promise<void> {
     const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+    if (this._stopped) return;
     await channel.assertExchange(this.exchange, 'headers', { durable: false });
     await channel.assertQueue(queueName, {
       durable: true,
@@ -116,7 +127,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     });
 
     const { consumerTag } = await channel.consume(queueName, (msg) =>
-      this._onMessage(msg, channel),
+      this._dispatchMessage(msg, channel),
     );
     this._instanceConsumerTags.push(consumerTag);
 
@@ -124,6 +135,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
   }
 
   protected async _onReconnect(): Promise<void> {
+    if (this._stopped) return;
     if (this._isRouterMode) {
       await this._reinitializeInstanceQueue();
     } else {
@@ -165,6 +177,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
 
     const queueName = this._instanceQueueName!;
     const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+    if (this._stopped) return;
 
     await channel.assertExchange(this.exchange, 'headers', { durable: false });
     await channel.assertQueue(queueName, {
@@ -185,7 +198,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     // Re-create the single consumer on the new channel
     this._instanceConsumerTags = [];
     const { consumerTag } = await channel.consume(queueName, (msg) =>
-      this._onMessage(msg, channel),
+      this._dispatchMessage(msg, channel),
     );
     this._instanceConsumerTags.push(consumerTag);
 
@@ -281,6 +294,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     filter = filter ? { 'x-match': 'all', ...filter } : { 'x-match': 'all' };
 
     const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+    if (this._stopped) return false;
     if (!channel) {
       throw new Error('RabbitMQ is down: cannot subscribe.');
     }
@@ -315,7 +329,7 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
     }
 
     // Start consuming messages
-    const consume = await channel.consume(queueName, (msg) => this._onMessage(msg, channel));
+    const consume = await channel.consume(queueName, (msg) => this._dispatchMessage(msg, channel));
     const existing = this._consumerTags.get(identifier) ?? [];
     this._consumerTags.set(identifier, [...existing, consume.consumerTag]);
 
@@ -379,44 +393,82 @@ export class RabbitMqReceiver extends AbstractMessageHandler {
   }
 
   async shutdown(): Promise<void> {
-    // ROUTER MODE: cancel all tracked consumers on the shared queue
-    if (this._isRouterMode) {
-      try {
-        const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
-        for (const tag of this._instanceConsumerTags) {
-          try {
-            await channel.cancel(tag);
-            this._logger.debug(`[instance-queue] Cancelled consumer ${tag} during shutdown.`);
-          } catch (error) {
-            this._logger.error(
-              `[instance-queue] Error cancelling consumer ${tag} during shutdown.`,
-              error,
-            );
+    try {
+      this._stopped = true;
+      await Promise.allSettled([...this._reconnectTasks]);
+      this._moduleSubscriptions.clear();
+      // ROUTER MODE: cancel all tracked consumers on the shared queue
+      if (this._isRouterMode) {
+        try {
+          const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+          for (const tag of this._instanceConsumerTags) {
+            try {
+              await channel.cancel(tag);
+              this._logger.debug(`[instance-queue] Cancelled consumer ${tag} during shutdown.`);
+            } catch (error) {
+              this._rememberDeliveryFailure(error);
+              this._logger.error(
+                `[instance-queue] Error cancelling consumer ${tag} during shutdown.`,
+                error,
+              );
+            }
           }
+        } catch {
+          this._logger.warn('[instance-queue] Channel unavailable during shutdown.');
         }
-      } catch {
-        this._logger.warn('[instance-queue] Channel unavailable during shutdown.');
+        return;
       }
-      return;
-    }
 
-    // MODULE MODE: cancel all tracked consumers
-    for (const consumerTags of this._consumerTags.values()) {
-      const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
-      if (channel) {
-        for (const consumerTag of consumerTags) {
-          try {
-            await channel.cancel(consumerTag);
-            this._logger.debug(`Cancelled consumer with tag ${consumerTag} during shutdown.`);
-          } catch (error) {
-            this._logger.error(
-              `Error cancelling consumer with tag ${consumerTag} during shutdown.`,
-              error,
-            );
+      // MODULE MODE: cancel all tracked consumers
+      for (const consumerTags of this._consumerTags.values()) {
+        const channel = await this._channelManager.getChannel(RabbitMqReceiver.CHANNEL_ID);
+        if (channel) {
+          for (const consumerTag of consumerTags) {
+            try {
+              await channel.cancel(consumerTag);
+              this._logger.debug(`Cancelled consumer with tag ${consumerTag} during shutdown.`);
+            } catch (error) {
+              this._rememberDeliveryFailure(error);
+              this._logger.error(
+                `Error cancelling consumer with tag ${consumerTag} during shutdown.`,
+                error,
+              );
+            }
           }
         }
       }
+    } finally {
+      // cancel() stops future delivery; it does not await handlers already using RabbitMQ or PostgreSQL.
+      while (this._inFlightDeliveries.size) {
+        await Promise.allSettled([...this._inFlightDeliveries]);
+      }
+      if (this._deliveryFailed) throw this._deliveryFailure;
     }
+  }
+
+  private _rememberDeliveryFailure(error: unknown): void {
+    if (!this._deliveryFailed) {
+      this._deliveryFailed = true;
+      this._deliveryFailure = error;
+    }
+  }
+
+  protected _dispatchMessage(
+    message: amqplib.ConsumeMessage | null,
+    channel: amqplib.Channel,
+  ): Promise<void> {
+    const delivery = this._onMessage(message, channel);
+    // Register before returning to amqplib: shutdown must see even a delivery awaiting its first handler.
+    this._inFlightDeliveries.add(delivery);
+    void delivery.then(
+      () => this._inFlightDeliveries.delete(delivery),
+      (error: unknown) => {
+        this._inFlightDeliveries.delete(delivery);
+        this._rememberDeliveryFailure(error);
+        this._logger.error('Failed to settle RabbitMQ delivery:', error);
+      },
+    );
+    return delivery;
   }
 
   /**

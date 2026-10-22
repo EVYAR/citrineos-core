@@ -1,3 +1,4 @@
+import type { CreateOptions } from 'sequelize';
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
@@ -57,12 +58,16 @@ export class ChargingStationSecurityInfo extends Model implements ChargingStatio
   declare tenant?: TenantDto;
 
   @BeforeCreate
-  static async resolveStationId(instance: ChargingStationSecurityInfo): Promise<void> {
+  static async resolveStationId(
+    instance: ChargingStationSecurityInfo,
+    options: CreateOptions = {},
+  ): Promise<void> {
     if (instance.stationId == null && instance.ocppConnectionName && instance.tenantId != null) {
       const { ChargingStation } = await import('./Location/ChargingStation.js');
       const station = await ChargingStation.findOne({
         where: { ocppConnectionName: instance.ocppConnectionName, tenantId: instance.tenantId },
         attributes: ['id'],
+        transaction: options.transaction,
       });
       if (station) {
         instance.stationId = station.id;

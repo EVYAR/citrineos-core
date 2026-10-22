@@ -5,6 +5,11 @@
 import type { ChargingStationDto, OCPP2_0_1 } from '@citrineos/base';
 import { CrudRepository, OCPPVersion } from '@citrineos/base';
 import { Op } from 'sequelize';
+import { isDeepStrictEqual } from 'node:util';
+import { MessageOrigin, MessageState } from '@citrineos/base';
+import { VariableAttribute } from '../model/DeviceModel/VariableAttribute.js';
+import { statusIngressWins } from './status-ingress-order.js';
+import { OCPPMessage } from '../model/OCPPMessage.js';
 import { type ILocationRepository } from '../../../interfaces/repositories.js';
 import { EvseType } from '../model/DeviceModel/EvseType.js';
 import { ChargingStation } from '../model/Location/ChargingStation.js';
@@ -104,6 +109,125 @@ export class SequelizeLocationRepository
         where: { ocppConnectionName: ocppConnectionName, tenantId },
       })) > 0
     );
+  }
+
+  async setStatusIngressConnection(
+    tenantId: number, station: string, connection: string, isCurrent: () => Promise<boolean>,
+  ): Promise<void> {
+    await this.s.transaction(async (transaction) => {
+      const owner = await ChargingStation.findOne({ where: { tenantId, ocppConnectionName: station },
+        transaction, lock: transaction.LOCK.UPDATE });
+      if (!owner) throw new Error('STATUS_INGRESS_STATION_MISSING');
+      // Recheck the real socket claim under the SAME lock as the write. A
+      // retired registration paused before this transaction cannot overwrite
+      // a newer registration that already acquired the lock and committed.
+      if (!(await isCurrent())) throw new Error('STATUS_INGRESS_RETIRED_REGISTRATION');
+      await owner.update({ statusIngressConnection: connection }, { transaction });
+    });
+  }
+
+  async applyOrderedStatus(
+    tenantId: number, station: string, status: StatusNotification,
+    connector: Connector | undefined, originalPayload: unknown,
+    ingress: { messageId: number; connection: string; correlationId: string; protocol: string },
+    broadcast = false,
+    deviceModelEffects: Array<{ componentId: number; variableId: number; evseDatabaseId?: number | null; value: string; generatedAt: string }> = [],
+  ): Promise<boolean> {
+    return this.s.transaction(async (transaction) => {
+      const owner = await ChargingStation.findOne({
+        where: { tenantId, ocppConnectionName: station }, transaction, lock: transaction.LOCK.UPDATE,
+      });
+      if (!owner) throw new Error('STATUS_INGRESS_STATION_MISSING');
+      const receipt = await OCPPMessage.findOne({ where: {
+        id: ingress.messageId, tenantId, ocppConnectionName: station, protocol: ingress.protocol,
+        statusIngressConnection: ingress.connection, correlationId: ingress.correlationId,
+        origin: MessageOrigin.ChargingStation, state: String(MessageState.Request), action: 'StatusNotification',
+      }, transaction });
+      if (!receipt || receipt.protocol !== ingress.protocol || !Array.isArray(receipt.message) || receipt.message[0] !== 2 ||
+          receipt.message[1] !== ingress.correlationId || receipt.message[2] !== 'StatusNotification' ||
+          !isDeepStrictEqual(receipt.message[3], originalPayload)) {
+        throw new Error('STATUS_INGRESS_RECEIPT_MISMATCH');
+      }
+      const replay = await StatusNotification.findOne({ where: { ingressMessageId: receipt.id }, transaction });
+      if (replay) return false;
+      const observedAt = Date.parse(status.timestamp ?? receipt.timestamp);
+      if (!Number.isFinite(observedAt)) throw new Error('STATUS_INGRESS_INVALID_TIMESTAMP');
+      const isOcpp16 = receipt.protocol === OCPPVersion.OCPP1_6;
+      // Keep the original broadcast CALL, and derive only real commissioned
+      // connector observations. All share one immutable original receipt.
+      const targets: Array<{ status: Record<string, unknown>; connector?: Connector }> = [];
+      if (broadcast) {
+        await StatusNotification.create({ ...status.get(), tenantId, stationId: owner.id,
+          ocppConnectionName: station, ingressMessageId: receipt.id }, { transaction });
+        const commissioned = await Connector.findAll({ where: { tenantId, stationId: owner.id }, transaction });
+        for (const target of commissioned) {
+          // Connector 0 is the station broadcast address, never a second
+          // physical target of its own original connector-0 observation.
+          if (target.connectorId === 0) continue;
+          if (!Number.isInteger(target.connectorId) || target.connectorId < 0) {
+            throw new Error('STATUS_INGRESS_BROADCAST_TOPOLOGY_MISSING');
+          }
+          const evse = await Evse.findOne({ where: { id: target.evseId, tenantId, stationId: owner.id }, transaction });
+          if (!evse) throw new Error('STATUS_INGRESS_BROADCAST_TOPOLOGY_MISSING');
+          targets.push({ status: { ...status.get(), connectorId: target.connectorId,
+            evseId: evse.evseTypeId },
+          connector: { ...connector, ...target.get(), status: connector?.status,
+            timestamp: connector?.timestamp } as Connector });
+        }
+      } else {
+        targets.push({ status: status.get(), connector });
+      }
+      let applied = false;
+      for (const target of targets) {
+        const connectorId = target.status['connectorId'];
+        // In 1.6 an EVSE may have been absent on the first legacy row.
+        // Replace all same-connector pointers, including those NULL aliases.
+        const where = { connectorId, ...(isOcpp16 ? {} : { evseId: target.status['evseId'] ?? null }) };
+        const currentPointers = await LatestStatusNotification.findAll({
+          where: { tenantId, ocppConnectionName: station },
+          include: [{ model: StatusNotification, where, required: true }], transaction,
+        });
+        const wins = currentPointers.every((pointer) => {
+          const current = pointer.statusNotification as StatusNotification;
+          return statusIngressWins({ observedAt, messageId: receipt.id }, {
+            observedAt: Date.parse(current.timestamp ?? current.createdAt.toISOString()),
+            messageId: current.ingressMessageId ?? null,
+          });
+        });
+        const saved = await StatusNotification.create({ ...target.status, tenantId,
+          ocppConnectionName: station, stationId: owner.id, ingressMessageId: receipt.id,
+        }, { transaction });
+        if (!wins || owner.statusIngressConnection !== ingress.connection) continue;
+        if (target.connector) {
+          const values = { ...target.connector, tenantId, stationId: owner.id };
+          const [row, created] = await Connector.findOrCreate({ where: {
+            tenantId, ocppConnectionName: station, connectorId: target.connector.connectorId,
+          }, defaults: values, transaction });
+          if (!created) await row.update(values, { transaction });
+        }
+        await LatestStatusNotification.destroy({ where: {
+          tenantId, ocppConnectionName: station, id: { [Op.in]: currentPointers.map((row) => row.id) },
+        }, transaction });
+        await LatestStatusNotification.create({ tenantId, stationId: owner.id,
+          ocppConnectionName: station, statusNotificationId: saved.id,
+        }, { transaction });
+        applied = true;
+      }
+      if (applied) {
+        // Status-derived AvailabilityState must commit under this same station
+        // lock; an older consumer may not update it after a newer status wins.
+        for (const effect of deviceModelEffects) {
+          const where = { tenantId, ocppConnectionName: station, componentId: effect.componentId,
+            variableId: effect.variableId, type: 'Actual' };
+          const values = { ...where, value: effect.value, generatedAt: effect.generatedAt,
+            evseDatabaseId: effect.evseDatabaseId ?? null, mutability: 'ReadWrite',
+            persistent: false, constant: false, dataType: null };
+          const [attribute, created] = await VariableAttribute.findOrCreate({ where, defaults: values, transaction });
+          if (!created) await attribute.update({ value: effect.value, generatedAt: effect.generatedAt }, { transaction });
+        }
+      }
+      return applied;
+    });
   }
 
   async addStatusNotificationToChargingStation(

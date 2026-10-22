@@ -22,6 +22,7 @@ export interface IMessageRouter extends IModule {
     tenantId: number,
     ocppConnectionName: string,
     protocol: string,
+    statusIngressConnection?: string,
   ): Promise<boolean>;
   deregisterConnection(tenantId: number, ocppConnectionName: string): Promise<boolean>;
 
@@ -54,5 +55,6 @@ export interface IMessageRouter extends IModule {
     message: string,
     timestamp: Date,
     protocol: string,
+    statusIngressConnection?: string,
   ): Promise<boolean>;
 }

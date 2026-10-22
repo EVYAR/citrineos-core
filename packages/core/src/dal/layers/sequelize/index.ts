@@ -65,6 +65,8 @@ export { OCPPMessage } from './model/OCPPMessage.js';
 export { Reservation } from './model/Reservation.js';
 export { ChargingStationSecurityInfo } from './model/ChargingStationSecurityInfo.js';
 export { ChangeConfiguration } from './model/ChangeConfiguration.js';
+export { ChargingAdmissionCallout } from './model/ChargingAdmissionCallout.js';
+export type { ChargingCalloutState } from './model/ChargingAdmissionCallout.js';
 export { Tenant } from './model/Tenant.js';
 export { TenantPartner } from './model/TenantPartner.js';
 export type { PaginatedParams } from './model/AsyncJob/index.js';
