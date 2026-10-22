@@ -4,12 +4,15 @@ on:
     branches: [dev, prod]
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
+concurrency:
+  group: component-version-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
   policy:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, linux, x64, evjex]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
