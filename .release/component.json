@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "name": "citrineos-core",
+  "kind": "upstream",
+  "versionFile": "package.json",
+  "baselineVersion": "2.0.0-alpha3",
+  "developmentBranch": "dev",
+  "productionBranch": "prod",
+  "upstream": true
+}
