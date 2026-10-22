@@ -33,7 +33,7 @@ def write_json(path, value):
 
 
 def semver(value):
-    match = SEMVER.fullmatch(value or '')
+    match = SEMVER.fullmatch(value if isinstance(value, str) else '')
     if not match:
         fail('Invalid SemVer: ' + str(value))
     if match[4] and any(x.isdigit() and len(x) > 1 and x.startswith('0') for x in match[4].split('.')):
@@ -110,7 +110,7 @@ def check(base, release=False):
         if cfg.get('upstream'):
             fail('Upstream components require a reviewed upstream release; do not rewrite vendor versions')
         history = read_json(f'.release/history/{current}.json')
-        snapshot = history.get('sourceCommit', '')
+        snapshot = history.get('sourceCommit') or ''
         if not re.fullmatch(r'[0-9a-f]{40}', snapshot):
             fail('Release history needs its frozen dev source commit')
         if subprocess.run(['git', 'merge-base', '--is-ancestor', snapshot, 'HEAD'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
@@ -252,12 +252,16 @@ def validate_manifest(path, promotable):
         if c.get('version') is not None and not c.get('upstream'):
             semver(c['version'])
         if promotable:
-            if not c.get('version') or not re.fullmatch(r'[0-9a-f]{40}', c.get('sourceCommit', '')):
+            if not c.get('version') or not re.fullmatch(r'[0-9a-f]{40}', c.get('sourceCommit') or ''):
                 fail(name + ': exact component version and source commit are required')
-            if not re.fullmatch(r'sha256:[0-9a-f]{64}', c.get('artifactDigest', '')):
+            if not re.fullmatch(r'sha256:[0-9a-f]{64}', c.get('artifactDigest') or ''):
                 fail(name + ': immutable artifact digest is required')
             if not c.get('validation') or not c.get('rollback') or not isinstance(c.get('migrations'), list) or not isinstance(c.get('configuration'), list):
                 fail(name + ': validation, rollback, migration and configuration evidence required')
+    if promotable and Path('.release/components.json').exists():
+        expected = {c['name'] for c in read_json('.release/components.json')['components']}
+        if names != expected:
+            fail('Platform manifest must account for every registered component, including unchanged artifacts')
     if promotable and (data.get('status') != 'approved' or data.get('blockers')):
         fail('Only an approved manifest without blockers is promotable')
     print(json.dumps({'manifest': str(path), 'version': data['version'], 'components': len(names), 'promotable': promotable}))

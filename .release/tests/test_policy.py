@@ -66,7 +66,7 @@ class PolicyTests(unittest.TestCase):
         self.change('major')
         with self.assertRaisesRegex(ValueError, 'migration'): policy.prepare()
     def test_draft_manifest_cannot_promote(self):
-        policy.write_json('manifest.json', {'schemaVersion': 1, 'version': '1.1.0', 'status': 'draft', 'components': [{'name': 'test', 'version': '1.0.0'}]})
+        policy.write_json('manifest.json', {'schemaVersion': 1, 'version': '1.1.0', 'status': 'draft', 'components': [{'name': 'test', 'version': '1.0.0', 'sourceCommit': self.base, 'artifactDigest': None}]})
         policy.validate_manifest('manifest.json', False)
         with self.assertRaises(ValueError): policy.validate_manifest('manifest.json', True)
     def test_metadata_records_exact_source_and_dirty_state(self):
