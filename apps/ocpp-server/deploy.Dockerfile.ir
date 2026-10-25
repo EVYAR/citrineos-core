@@ -38,6 +38,9 @@ WORKDIR /usr/local/apps/citrineos
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
 
+ARG COMMIT_SHA
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
+
 EXPOSE ${PORT}
 
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]

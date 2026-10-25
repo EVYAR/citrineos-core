@@ -331,8 +331,8 @@ export const systemConfigInputSchema = z.object({
       enabled: z.boolean().default(false),
       adapterBaseUrl: z.string().url().optional(),
       webhookToken: z.string().min(32).optional(),
-      /** Core integer tenant id (as string) -> canonical tenant UUID known to the adapter. Unmapped tenants never emit a receipt. */
-      tenantMap: z.record(z.string(), z.string().uuid()).default({}),
+      /** Core integer tenant id -> canonical platform tenant GUID. Platform-assigned IDs need not encode RFC UUID version bits; unmapped tenants never emit a receipt. */
+      tenantMap: z.record(z.string(), z.guid()).default({}),
       fenceSeconds: z.number().int().min(1).max(3600).default(30),
       declineRetryBaseMs: z.number().int().min(100).max(60000).default(1000),
       declineRetryMaxMs: z.number().int().min(1000).max(3600000).default(300000),
@@ -677,15 +677,23 @@ export const systemConfigSchema = z
         enabled: z.boolean().default(false),
         adapterBaseUrl: z.string().url().optional(),
         webhookToken: z.string().min(32).optional(),
-        /** Core integer tenant id (as string) -> canonical tenant UUID known to the adapter. Unmapped tenants never emit a receipt. */
-        tenantMap: z.record(z.string(), z.string().uuid()).default({}),
+        /** Core integer tenant id -> canonical platform tenant GUID. Platform-assigned IDs need not encode RFC UUID version bits; unmapped tenants never emit a receipt. */
+        tenantMap: z.record(z.string(), z.guid()).default({}),
         fenceSeconds: z.number().int().min(1).max(3600).default(30),
         declineRetryBaseMs: z.number().int().min(100).max(60000).default(1000),
         declineRetryMaxMs: z.number().int().min(1000).max(3600000).default(300000),
         declineMaxAttempts: z.number().int().min(1).max(1000).default(50),
         declineRequestTimeoutMs: z.number().int().min(100).max(30000).default(3000),
       })
-      .default({ enabled: false, tenantMap: {}, fenceSeconds: 30, declineRetryBaseMs: 1000, declineRetryMaxMs: 300000, declineMaxAttempts: 50, declineRequestTimeoutMs: 3000 }),
+      .default({
+        enabled: false,
+        tenantMap: {},
+        fenceSeconds: 30,
+        declineRetryBaseMs: 1000,
+        declineRetryMaxMs: 300000,
+        declineMaxAttempts: 50,
+        declineRequestTimeoutMs: 3000,
+      }),
     notReadyThresholdSeconds: z.number().int().min(1).default(60),
   })
   .refine((obj) => obj.maxCachingSeconds >= obj.maxCallLengthSeconds, {
