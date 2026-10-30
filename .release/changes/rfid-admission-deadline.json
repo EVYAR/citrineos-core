@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Bound ordinary RFID admission cold authentication and HTTP/body parsing with one supported eight-second Core callback deadline; preserve decline-before-power fencing. Bound the existing filtered Docker build to a2GiB heap and one workspace at a time without changing runtime heap or dynamic source labels."
+}
