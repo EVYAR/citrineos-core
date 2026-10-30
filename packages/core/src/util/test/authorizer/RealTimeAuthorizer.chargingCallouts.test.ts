@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
+import { OidcTokenProvider } from '../../authorization/OidcTokenProvider.js';
 import {
   AuthorizationStatusEnum,
   AuthorizationWhitelistEnum,
@@ -11,7 +12,7 @@ import {
 } from '@citrineos/base';
 import type { Authorization } from '@dal/layers/sequelize/index.js';
 import type { ILocationRepository } from '@dal/interfaces/repositories.js';
-import { beforeEach, describe, expect, it, type Mocked, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, type Mocked, vi } from 'vitest';
 import { RealTimeAuthorizer } from '../../authorizer/RealTimeAuthorizer.js';
 import { InMemoryChargingCalloutStore } from '../../authorizer/ChargingCalloutLedger.js';
 import type { ChargingCalloutDeclineNotifier } from '../../authorizer/ChargingCalloutDeclineNotifier.js';
@@ -70,13 +71,27 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
   let notifier: { flush: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
   let fetchMock: ReturnType<typeof vi.fn>;
 
-  const build = (cfg: SystemConfig = config()) =>
-    getTestInstance(container, RealTimeAuthorizer, {
+  const build = (cfg: SystemConfig = config(), provider?: { getToken: () => Promise<string> }) => {
+    if (provider)
+      vi.spyOn(OidcTokenProvider.prototype, 'getToken').mockImplementation(provider.getToken);
+    return getTestInstance(container, RealTimeAuthorizer, {
       locationRepository: repo(),
-      config: cfg,
+      config: provider
+        ? {
+            ...cfg,
+            oidcClient: {
+              tokenUrl: 'http://iam.test/token',
+              clientId: 'test',
+              clientSecret: 'fixture',
+              audience: 'adapter',
+            },
+          }
+        : cfg,
       chargingCalloutStore: store,
       declineNotifier: notifier as unknown as ChargingCalloutDeclineNotifier,
     });
+  };
+  afterEach(() => vi.restoreAllMocks());
   const onlyRow = () => [...store.rows.values()][0]!;
 
   beforeEach(() => {
@@ -354,5 +369,141 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(await build().authorize(authorization(), context(), evse, connector)).toBe(
       AuthorizationStatusEnum.Invalid,
     );
+  });
+  it('includes hung cold authentication in the deadline and durably declines before any downstream fetch', async () => {
+    let resolve!: (token: string) => void;
+    const token = new Promise<string>((r) => {
+      resolve = r;
+    });
+    const result = await build(config({ realTimeAuthRequestTimeoutMs: 100 }), {
+      getToken: () => token,
+    }).authorize(authorization(), context(), evse, connector);
+    expect(result).not.toBe(AuthorizationStatusEnum.Accepted);
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+    expect(fetchMock).not.toHaveBeenCalled();
+    resolve('late-valid-oauth');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+  });
+  it('isolates an expired caller from another target awaiting the same valid OAuth promise', async () => {
+    let resolve!: (token: string) => void;
+    const token = new Promise<string>((r) => {
+        resolve = r;
+      }),
+      provider = { getToken: () => token };
+    const first = build(config({ realTimeAuthRequestTimeoutMs: 100 }), provider).authorize(
+      authorization(),
+      context(),
+      evse,
+      connector,
+    );
+    const second = build(config({ realTimeAuthRequestTimeoutMs: 500 }), provider).authorize(
+      authorization({ id: 43 }),
+      { ...context(), ocppConnectionName: 'CP-002' },
+      evse,
+      connector,
+    );
+    expect(await first).not.toBe(AuthorizationStatusEnum.Accepted);
+    resolve('shared-valid-oauth');
+    expect(await second).toBe(AuthorizationStatusEnum.Accepted);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect([...store.rows.values()].find((r) => r.ocppConnectionName === 'CP-001')?.state).toBe(
+      'DECLINED_BEFORE_POWER',
+    );
+    expect([...store.rows.values()].find((r) => r.ocppConnectionName === 'CP-002')?.state).toBe(
+      'AUTHORIZED',
+    );
+  });
+  it('bounds a stalled response body and never turns a late approval into power', async () => {
+    let finish!: (value: unknown) => void;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: () =>
+        new Promise((r) => {
+          finish = r;
+        }),
+    });
+    const result = await build(config({ realTimeAuthRequestTimeoutMs: 100 })).authorize(
+      authorization(),
+      context(),
+      evse,
+      connector,
+    );
+    expect(result).not.toBe(AuthorizationStatusEnum.Accepted);
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+    finish({ data: { allowed: 'ALLOWED' } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+  });
+  it('propagates positive remaining milliseconds after cold authentication only as a header', async () => {
+    await build(config({ realTimeAuthRequestTimeoutMs: 500 }), {
+      getToken: async () => {
+        await new Promise((r) => setTimeout(r, 60));
+        return 'valid';
+      },
+    }).authorize(authorization(), context(), evse, connector);
+    const options = fetchMock.mock.calls[0]![1];
+    expect(Number(options.headers['x-evyar-request-budget-ms'])).toBeLessThan(470);
+    expect(Number(options.headers['x-evyar-request-budget-ms'])).toBeGreaterThan(0);
+    expect(JSON.parse(options.body)).not.toHaveProperty('x-evyar-request-budget-ms');
+  });
+
+  it('retains fail-closed OIDC errors even for a non-target AllowedOffline credential', async () => {
+    const result = await build(config(), {
+      getToken: async () => {
+        throw new Error('IAM unavailable');
+      },
+    }).authorize(
+      authorization({ realTimeAuth: AuthorizationWhitelistEnum.AllowedOffline }),
+      context(),
+    );
+    expect(result).toBe(AuthorizationStatusEnum.Invalid);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it('reserves50ms return margin and does not dispatch a callback after cold auth spends it', async () => {
+    const result = await build(config({ realTimeAuthRequestTimeoutMs: 150 }), {
+      getToken: async () => {
+        await new Promise((r) => setTimeout(r, 125));
+        return 'valid-oauth';
+      },
+    }).authorize(authorization(), context(), evse, connector);
+    expect(result).not.toBe(AuthorizationStatusEnum.Accepted);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
+  });
+  it('keeps the real provider transport and completed OAuth cache alive when only caller A expires', async () => {
+    let finish!: (v: { access_token: string; expires_in: number }) => void;
+    const body = new Promise<{ access_token: string; expires_in: number }>((r) => {
+      finish = r;
+    });
+    fetchMock.mockImplementation(async (url: string) =>
+      url === 'http://iam.test/token' ? { ok: true, json: () => body } : allowed('ALLOWED'),
+    );
+    const provider = new OidcTokenProvider({
+        tokenUrl: 'http://iam.test/token',
+        clientId: 'fixture',
+        clientSecret: 'fixture',
+        audience: 'adapter',
+      }),
+      realGet = provider.getToken.bind(provider),
+      shared = realGet();
+    const first = build(config({ realTimeAuthRequestTimeoutMs: 100 }), {
+      getToken: () => shared,
+    }).authorize(authorization(), context(), evse, connector);
+    const second = build(config({ realTimeAuthRequestTimeoutMs: 600 }), {
+      getToken: () => shared,
+    }).authorize(
+      authorization({ id: 43 }),
+      { ...context(), ocppConnectionName: 'CP-002' },
+      evse,
+      connector,
+    );
+    expect(await first).not.toBe(AuthorizationStatusEnum.Accepted);
+    finish({ access_token: 'real-owner-oauth', expires_in: 600 });
+    expect(await second).toBe(AuthorizationStatusEnum.Accepted);
+    expect(await realGet()).toBe('real-owner-oauth');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]![1].signal.aborted).toBe(false);
   });
 });

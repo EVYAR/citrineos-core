@@ -21,7 +21,7 @@ ENV npm_config_nodedir=/usr/local
 COPY . .
 
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter "@citrineos/ocpp-server..." build
+RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm --workspace-concurrency=1 --filter "@citrineos/ocpp-server..." build
 
 FROM ${NODE_IMAGE} AS runtime
 

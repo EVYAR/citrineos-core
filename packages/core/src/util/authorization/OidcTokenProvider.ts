@@ -17,6 +17,19 @@ interface OidcToken {
   expiresAt: number;
 }
 
+/** This owner timer bounds transport work; individual callers only cancel their own wait. */
+function beforeTokenAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener('abort', aborted, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+  });
+}
+
 export class OidcTokenProvider {
   private oidcToken?: OidcToken;
   private readonly _logger: Logger<ILogObj>;
@@ -37,26 +50,36 @@ export class OidcTokenProvider {
     }
 
     this._logger.debug('Fetching new OIDC token');
-    const response = await fetch(this.config.tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: this.config.clientId,
-        client_secret: this.config.clientSecret,
-        audience: this.config.audience,
+    const expiresAt = Date.now() + 8000;
+    const deadline = AbortSignal.timeout(8000);
+    const response = await beforeTokenAbort(
+      fetch(this.config.tokenUrl, {
+        method: 'POST',
+        signal: deadline,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: this.config.clientId,
+          client_secret: this.config.clientSecret,
+          audience: this.config.audience,
+        }),
       }),
-    });
+      deadline,
+    );
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await beforeTokenAbort(response.text(), deadline);
+      deadline.throwIfAborted();
+      if (Date.now() >= expiresAt) throw new Error('OIDC transport deadline exceeded');
       this._logger.error('Failed to fetch OIDC token:', errorText);
       throw new Error(`Failed to fetch OIDC token: ${response.statusText}`);
     }
 
-    const tokenData = await response.json();
+    const tokenData = await beforeTokenAbort(response.json(), deadline);
+    deadline.throwIfAborted();
+    if (Date.now() >= expiresAt) throw new Error('OIDC transport deadline exceeded');
     this.oidcToken = {
       accessToken: tokenData.access_token,
       // Set expiry to 1 minute before actual expiration to be safe

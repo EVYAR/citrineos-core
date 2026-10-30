@@ -54,6 +54,19 @@ export interface RealTimeAuthorizationResponse {
   };
 }
 
+/** A timed-out waiter must not cancel a shared OIDC request used by another caller. */
+function beforeAuthorizationAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    void work.catch(() => undefined);
+    return Promise.reject(signal.reason);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener('abort', aborted, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+  });
+}
+
 export class RealTimeAuthorizer implements IAuthorizer {
   private _locationRepository: ILocationRepository;
   private _config: SystemConfig;
@@ -131,6 +144,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
     let ocppConnectorId: number | undefined = undefined;
     let result: AuthorizationStatusEnumType = AuthorizationStatusEnum.Invalid;
     let chargingCalloutRef: string | undefined;
+    let oidcFailed = false;
     let requiresLiveTarget = Boolean(this._calloutStore && (evse || connector));
     try {
       const chargingStation = await this._locationRepository.readChargingStationByStationId(
@@ -216,7 +230,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
             connectorId,
           },
           new Date(),
-          (this._config.realTimeAuthRequestTimeoutMs ?? 3000) * 2,
+          (this._config.realTimeAuthRequestTimeoutMs ?? 8000) * 2,
           callouts.fenceSeconds * 1000,
         );
         if (begun.kind === 'FENCED_DECLINED') {
@@ -250,28 +264,41 @@ export class RealTimeAuthorizer implements IAuthorizer {
         'Content-Type': 'application/json',
       };
 
+      const expiresAt = Date.now() + (this._config.realTimeAuthRequestTimeoutMs ?? 8000);
+      const deadline = AbortSignal.timeout(this._config.realTimeAuthRequestTimeoutMs ?? 8000);
       if (this._oidcTokenProvider) {
         try {
-          const token = await this._oidcTokenProvider.getToken();
+          const token = await beforeAuthorizationAbort(
+            this._oidcTokenProvider.getToken(),
+            deadline,
+          );
           headers['Authorization'] = `Bearer ${token}`;
         } catch (error) {
-          this._logger.error('Failed to get OIDC token:', error);
-          return AuthorizationStatusEnum.Invalid;
+          oidcFailed = true;
+          throw error;
         }
       }
-
-      const response = await fetch(authorization.realTimeAuthUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(this._config.realTimeAuthRequestTimeoutMs ?? 3000),
-      });
+      deadline.throwIfAborted();
+      const remaining = Math.floor(expiresAt - Date.now()) - 50;
+      if (remaining <= 0) throw new Error('Real-Time Auth deadline exceeded');
+      headers['x-evyar-request-budget-ms'] = String(remaining);
+      const response = await beforeAuthorizationAbort(
+        fetch(authorization.realTimeAuthUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: deadline,
+        }),
+        deadline,
+      );
 
       if ('ok' in response && !response.ok) {
         throw new Error(`Realtime Auth returned HTTP ${response.status}`);
       }
 
-      const responseJson = await response.json();
+      const responseJson = await beforeAuthorizationAbort(response.json(), deadline);
+      deadline.throwIfAborted();
+      if (Date.now() >= expiresAt) throw new Error('Real-Time Auth deadline exceeded');
 
       const realTimeAuth: RealTimeAuthorizationResponse =
         responseJson as RealTimeAuthorizationResponse;
@@ -304,7 +331,8 @@ export class RealTimeAuthorizer implements IAuthorizer {
       this._logger.error(`Real-Time Auth failed: ${error}`);
       if (
         authorization.realTimeAuth === AuthorizationWhitelistEnum.AllowedOffline &&
-        !requiresLiveTarget
+        !requiresLiveTarget &&
+        !oidcFailed
       ) {
         result = AuthorizationStatusEnum.Accepted;
       }

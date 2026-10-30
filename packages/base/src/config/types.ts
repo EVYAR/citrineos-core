@@ -319,7 +319,7 @@ export const systemConfigInputSchema = z.object({
   rbacRulesDir: z.string().optional(),
   realTimeAuthDefaultTimeoutSeconds: z.number().int().min(1).default(15).optional(),
   // Hard bound on the synchronous real-time authorization callout (ms). The callout used to have no timeout.
-  realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(3000).optional(),
+  realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(8000).optional(),
   // false = never answer a start from the last real-time attempt; every callout is made. Required when an
   // external admission authority (e.g. eMSP package admission) must see each start.
   realTimeAuthReplayLastAttempt: z.boolean().default(true).optional(),
@@ -667,7 +667,7 @@ export const systemConfigSchema = z
     rbacRulesDir: z.string().optional(),
     oidcClient: oidcClientConfigSchema,
     realTimeAuthDefaultTimeoutSeconds: z.number().int().min(1).default(15),
-    realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(3000),
+    realTimeAuthRequestTimeoutMs: z.number().int().min(100).max(10000).default(8000),
     realTimeAuthReplayLastAttempt: z.boolean().default(true),
     // CGP-0012 durable decline-before-power receipts. Disabled by default; when enabled, every target-specific real-time
     // authorization callout is pinned to a Core-generated chargingCalloutRef and a declined/unknown outcome is committed
