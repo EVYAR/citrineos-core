@@ -16,7 +16,8 @@ Relevant sources: `packages/base/src/interfaces/api/AbstractModuleApi.ts` regist
 
 Parent EVYAR/evyar#405; Core repair issue EVYAR/evyar#407 (Core owner repository disables issues). Validation includes cold-auth timeout, independent callers sharing valid OAuth, stalled/late body rejection, no callback after expiry, supported defaults and existing durable decline/fence tests.
 
-
 ## Build scope and memory
 
 The Iran Dockerfile retains the same frozen dependency install and filtered `@citrineos/ocpp-server...` graph (base, core, server). Only that build command sets `NODE_OPTIONS=--max-old-space-size=2048` and `--workspace-concurrency=1`; runtime heap/environment, dependencies and versions are untouched. The runtime OCI revision still comes from the existing dynamic `COMMIT_SHA` build argument. A manual prebuild must supply the exact checkout SHA on that one command and attest the resulting label; do not persist a static revision build argument when restoring ordinary auto-deployment.
+
+The OIDC provider also owns an independent fixed 8 s transport deadline across token fetch and both error/success body reads, with a final expiry check before updating its existing completed-token cache. Caller A's shorter authorization deadline only releases A's wait; it does not abort provider transport needed by caller B. Provider timeout leaves no late token cached. No new in-flight cache, refresh path, configuration key or financial approval cache is introduced.

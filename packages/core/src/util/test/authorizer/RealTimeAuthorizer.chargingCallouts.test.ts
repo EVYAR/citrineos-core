@@ -472,4 +472,38 @@ describe('RealTimeAuthorizer durable charging callouts (CGP-0012)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(onlyRow().state).toBe('DECLINED_BEFORE_POWER');
   });
+  it('keeps the real provider transport and completed OAuth cache alive when only caller A expires', async () => {
+    let finish!: (v: { access_token: string; expires_in: number }) => void;
+    const body = new Promise<{ access_token: string; expires_in: number }>((r) => {
+      finish = r;
+    });
+    fetchMock.mockImplementation(async (url: string) =>
+      url === 'http://iam.test/token' ? { ok: true, json: () => body } : allowed('ALLOWED'),
+    );
+    const provider = new OidcTokenProvider({
+        tokenUrl: 'http://iam.test/token',
+        clientId: 'fixture',
+        clientSecret: 'fixture',
+        audience: 'adapter',
+      }),
+      realGet = provider.getToken.bind(provider),
+      shared = realGet();
+    const first = build(config({ realTimeAuthRequestTimeoutMs: 100 }), {
+      getToken: () => shared,
+    }).authorize(authorization(), context(), evse, connector);
+    const second = build(config({ realTimeAuthRequestTimeoutMs: 600 }), {
+      getToken: () => shared,
+    }).authorize(
+      authorization({ id: 43 }),
+      { ...context(), ocppConnectionName: 'CP-002' },
+      evse,
+      connector,
+    );
+    expect(await first).not.toBe(AuthorizationStatusEnum.Accepted);
+    finish({ access_token: 'real-owner-oauth', expires_in: 600 });
+    expect(await second).toBe(AuthorizationStatusEnum.Accepted);
+    expect(await realGet()).toBe('real-owner-oauth');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]![1].signal.aborted).toBe(false);
+  });
 });
