@@ -159,16 +159,25 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
         throw new Error('STATUS_INGRESS_CONNECTION_CLAIM_MISMATCH');
       }
       await this._locationRepository.setStatusIngressConnection(
-        tenantId, ocppConnectionName, statusIngressConnection, async () => {
+        tenantId,
+        ocppConnectionName,
+        statusIngressConnection,
+        async () => {
           let timer: ReturnType<typeof setTimeout> | undefined;
           try {
             const latest = await Promise.race([
-              this._cache.get<string>(createIdentifier(tenantId, ocppConnectionName), CacheNamespace.Connections),
+              this._cache.get<string>(
+                createIdentifier(tenantId, ocppConnectionName),
+                CacheNamespace.Connections,
+              ),
               new Promise<never>((_resolve, reject) => {
                 timer = setTimeout(() => reject(new Error('STATUS_INGRESS_CLAIM_TIMEOUT')), 2000);
               }),
             ]);
-            return latest ? (JSON.parse(latest) as IWebsocketConnection).statusIngressConnection === statusIngressConnection : false;
+            return latest
+              ? (JSON.parse(latest) as IWebsocketConnection).statusIngressConnection ===
+                  statusIngressConnection
+              : false;
           } finally {
             if (timer) clearTimeout(timer);
           }
@@ -322,11 +331,20 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
             // before cache/permission/persistence awaits can reorder tied frames.
             await this._statusIngressQueue.run(identifier, async () => {
               const cached = await this._cache.get<string>(identifier, CacheNamespace.Connections);
-              const current = cached ? JSON.parse(cached) as IWebsocketConnection : null;
-              if (!statusIngressConnection || current?.statusIngressConnection !== statusIngressConnection) {
+              const current = cached ? (JSON.parse(cached) as IWebsocketConnection) : null;
+              if (
+                !statusIngressConnection ||
+                current?.statusIngressConnection !== statusIngressConnection
+              ) {
                 throw new Error('STATUS_INGRESS_RETIRED_CONNECTION');
               }
-              await this._onCall(identifier, rpcMessage as Call, timestamp, protocol, statusIngressConnection);
+              await this._onCall(
+                identifier,
+                rpcMessage as Call,
+                timestamp,
+                protocol,
+                statusIngressConnection,
+              );
             });
           } else {
             await this._onCall(identifier, rpcMessage as Call, timestamp, protocol);
@@ -460,14 +478,11 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
 
     if (await this._cache.existsAnyInNamespace(transactionNamespace)) {
       this._logger.info('Call already in progress, throwing retry exception', identifier, message);
-      await this._dispatchCommandFailureCallback(
-        correlationId,
-        ocppConnectionName,
-        action,
-        'DISPATCH_FAILED',
-        'CALL_ALREADY_IN_PROGRESS',
-        'Another OCPP call is already in progress for this charging station',
-      );
+      // RabbitMqReceiver requeues RetryMessageError. This is not a terminal
+      // command result: consuming the callback URL here would report failure
+      // while that same queued command later succeeds at the charger.
+      // Keep it registered until an actual send failure, charger result/error
+      // or response timeout settles the command.
       throw new RetryMessageError('Call already in progress');
     }
 
@@ -733,7 +748,13 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
 
     try {
       // Route call
-      const confirmation = await this._routeCall(identifier, message, timestamp, protocol, statusIngressConnection);
+      const confirmation = await this._routeCall(
+        identifier,
+        message,
+        timestamp,
+        protocol,
+        statusIngressConnection,
+      );
 
       if (!confirmation.success) {
         throw new OcppError(messageId, ErrorCode.InternalError, 'Call failed', {
@@ -1102,7 +1123,9 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     if (action === OCPP_CallAction.StatusNotification) {
       if (!statusIngressConnection) throw new Error('STATUS_INGRESS_CONNECTION_REQUIRED');
       const receipt = await this._webhookDispatcher.reserveStatusIngress(
-        _message, message, statusIngressConnection,
+        _message,
+        message,
+        statusIngressConnection,
       );
       _message.context.statusIngressMessageId = receipt.id;
       _message.context.statusIngressConnection = statusIngressConnection;
