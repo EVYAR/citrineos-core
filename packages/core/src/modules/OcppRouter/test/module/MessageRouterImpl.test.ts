@@ -636,22 +636,48 @@ describe('MessageRouterImpl', () => {
       expect(sentMessage[2]).toBe(action);
     });
 
-    it('should throw RetryMessageError when call is already in progress', async () => {
-      cache.get.mockResolvedValue(null); // not rejected
-      cache.existsAnyInNamespace.mockResolvedValue(true); // call in progress
-
+    it('requeues a busy station without publishing a terminal callback', async () => {
+      cache.get.mockResolvedValue(null);
+      cache.existsAnyInNamespace.mockResolvedValue(true);
       await expect(
         router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID),
       ).rejects.toThrow(RetryMessageError);
-      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(
-        CORRELATION_ID,
+      expect(dispatcher.dispatchCallbackUrl).not.toHaveBeenCalled();
+      expect(networkHook).not.toHaveBeenCalled();
+    });
+
+    it('preserves the callback across a busy retry and reports only the real charger result', async () => {
+      cache.existsAnyInNamespace.mockResolvedValueOnce(true).mockResolvedValue(false);
+      await expect(
+        router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID),
+      ).rejects.toThrow(RetryMessageError);
+      expect(dispatcher.dispatchCallbackUrl).not.toHaveBeenCalled();
+      const sent = await router.sendCall(
         STATION_ID,
-        expect.objectContaining({
-          success: false,
-          outcome: 'DISPATCH_FAILED',
-          error: expect.objectContaining({ code: 'CALL_ALREADY_IN_PROGRESS' }),
-        }),
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+        CORRELATION_ID,
       );
+      expect(sent.success).toBe(true);
+      expect(networkHook).toHaveBeenCalledTimes(1);
+      const at = new Date();
+      cache.get.mockImplementation(async (key, namespace) =>
+        key === CORRELATION_ID && namespace === CacheNamespace.Transactions + IDENTIFIER
+          ? `${action}@${at.toISOString()}`
+          : null,
+      );
+      await router.onMessage(
+        IDENTIFIER,
+        JSON.stringify([MessageTypeId.CallResult, CORRELATION_ID, { status: 'Accepted' }]),
+        at,
+        PROTOCOL,
+      );
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledTimes(1);
+      expect(dispatcher.dispatchCallbackUrl).toHaveBeenCalledWith(CORRELATION_ID, STATION_ID, {
+        status: 'Accepted',
+      });
     });
 
     it('should return success false when boot status is Rejected', async () => {
