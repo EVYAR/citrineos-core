@@ -5,6 +5,7 @@ import {
   type ICache,
   type IModule,
   loggerDefaults,
+  MASKED_LOG_KEYS,
   MemoryCache,
   RedisCache,
 } from '@citrineos/base';
@@ -122,7 +123,24 @@ export class CitrineOSServer {
 
   private initLogger() {
     this._logger = new Logger<ILogObj>({
-      ...loggerDefaults(this.ocpiConfig!.env, this.ocpiConfig!.logRedaction),
+      ...loggerDefaults(this.ocpiConfig!.env, {
+        ...this.ocpiConfig!.logRedaction,
+        keys: [
+          ...new Set([
+            ...(this.ocpiConfig!.logRedaction?.keys ?? MASKED_LOG_KEYS),
+            'headers',
+            'coreHeaders',
+            'coreAuth',
+            'token',
+            'credentials',
+            'serverCredentials',
+            'authorization',
+            'clientSecret',
+            'access_token',
+            'x-hasura-admin-secret',
+          ]),
+        ],
+      }),
       name: 'CitrineOS Logger',
       minLevel: this.ocpiConfig!.logLevel,
       // Disable colors for cloud deployment as some cloud logging environments such as cloudwatch can not interpret colors

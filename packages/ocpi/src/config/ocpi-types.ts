@@ -10,6 +10,15 @@ import { z } from 'zod';
  * This schema defines the configuration structure specific to OCPI modules only.
  * It excludes all citrineos-core-specific settings.
  */
+const coreMachineAuthSchema = z.object({
+  tokenUrl: z.string().url(),
+  coreUrl: z.string().url(),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+  issuer: z.string().min(1),
+  timeoutMs: z.number().int().min(1).max(30000).optional(),
+});
+
 export const oidcConfigSchema = z
   .object({
     jwksUri: z.string(),
@@ -158,6 +167,7 @@ export const ocpiConfigInputSchema = z.object({
     timeout: z.number().int().positive().default(30).optional(),
     ocpiBaseUrl: z.string().default('http://localhost:8085/ocpi').optional(),
     coreHeaders: z.record(z.string(), z.string()).optional(),
+    coreAuth: coreMachineAuthSchema.optional(),
     ocpp1_6: z.object({
       remoteStartTransactionRequestUrl: z.string(),
       remoteStopTransactionRequestUrl: z.string(),
@@ -319,6 +329,7 @@ export const ocpiConfigSchema = z.object({
     timeout: z.number().int().positive(),
     ocpiBaseUrl: z.string(),
     coreHeaders: z.record(z.string(), z.string()).optional(),
+    coreAuth: coreMachineAuthSchema.optional(),
     ocpp1_6: z.object({
       remoteStartTransactionRequestUrl: z.string(),
       remoteStopTransactionRequestUrl: z.string(),

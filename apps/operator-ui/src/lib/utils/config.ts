@@ -24,6 +24,7 @@ const getConfig: () => {
   adminEmail?: string;
   adminPassword?: string;
   authProvider: AuthProviderType;
+  coreTransport: 'client' | 'server';
   keycloakUrl?: string; // The publicly accessible Keycloak URL that user browsers will be redirected to for login.
   keycloakServerUrl?: string; // If your application server needs to use a different URL to reach Keycloak (e.g., an internal service URL in Kubernetes), set this. Otherwise, the server will use KEYCLOAK_URL.
   keycloakRealm?: string;
@@ -74,6 +75,7 @@ const getConfig: () => {
       process.env.NEXT_PUBLIC_ADMIN_EMAIL,
     adminPassword: process.env.OPERATOR_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD,
     authProvider,
+    coreTransport: process.env.NEXT_PUBLIC_CORE_TRANSPORT === 'server' ? 'server' : 'client',
     keycloakUrl: process.env.NEXT_PUBLIC_KEYCLOAK_URL,
     keycloakServerUrl: process.env.KEYCLOAK_SERVER_URL,
     keycloakRealm: process.env.KEYCLOAK_REALM,

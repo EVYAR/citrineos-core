@@ -421,14 +421,14 @@ describe('OcpiGraphqlClient', () => {
     expect(requestMock).toHaveBeenCalledWith(GET_LOCATIONS_QUERY, undefined);
   });
 
-  it('request surfaces GraphQLClient rejections unchanged', async () => {
+  it('request sanitizes upstream errors that could contain service credentials', async () => {
     const client = new OcpiGraphqlClient(ENDPOINT, HEADERS);
     requestMock.mockRejectedValueOnce(
       new Error('invalid x-hasura-admin-secret/x-hasura-access-key'),
     );
 
     await expect(client.request(GET_TENANT_BY_ID, { id: 7 })).rejects.toThrow(
-      'invalid x-hasura-admin-secret/x-hasura-access-key',
+      'OCPI GraphQL request failed',
     );
     expect(requestMock).toHaveBeenCalledTimes(1);
   });

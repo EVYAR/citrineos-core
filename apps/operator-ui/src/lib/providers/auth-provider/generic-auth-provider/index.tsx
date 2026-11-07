@@ -19,7 +19,7 @@ import config from '@lib/utils/config';
 import { HasuraHeader, HasuraRole } from '@lib/utils/hasura-types';
 import { useLogin, useTranslate, type AuthProvider } from '@refinedev/core';
 import React, { useEffect, useState } from 'react';
-import { signIn } from 'next-auth/react';
+import { getSession, signIn, signOut } from 'next-auth/react';
 import { fetchDevRoles, fetchDevToken, isStaleDevSession } from '@lib/utils/dev-client';
 import { useQuery } from '@tanstack/react-query';
 
@@ -53,7 +53,7 @@ const LoginPage: React.FC = () => {
   const [role, setRole] = useState('');
   const { data: devRoles = [] } = useQuery({
     queryKey: ['dev', 'roles'],
-    queryFn: fetchDevRoles,
+    queryFn: config.coreTransport === 'server' ? async () => [] : fetchDevRoles,
     staleTime: Infinity,
     retry: false,
   });
@@ -182,6 +182,7 @@ export const createGenericAuthProvider = (
    * Get token from storage
    */
   const getToken = async (): Promise<string | undefined> => {
+    if (config.coreTransport === 'server') return undefined;
     return localStorage.getItem(tokenKey) || undefined;
   };
 
@@ -209,6 +210,10 @@ export const createGenericAuthProvider = (
    * Get permissions
    */
   const getPermissions = async () => {
+    if (config.coreTransport === 'server') {
+      const session = await getSession();
+      return { roles: session?.user?.roles ?? [] };
+    }
     const user = getUser();
     return {
       roles: user?.roles || [],
@@ -264,6 +269,19 @@ export const createGenericAuthProvider = (
         };
       }
 
+      if (config.coreTransport === 'server') {
+        const session = await getSession();
+        if (!session?.user?.roles?.some((role) => role === 'admin' || role === 'operator')) {
+          return {
+            success: false,
+            error: { name: 'Authentication Error', message: 'Operator session required' },
+          };
+        }
+        localStorage.removeItem(tokenKey);
+        saveUser({ ...genericAdminUser, email, roles: session.user.roles });
+        window.location.href = result.url || '/overview';
+        return { success: true, redirectTo: '/overview' };
+      }
       const chosenRoles: string[] = roles?.length ? roles : ['admin'];
       // Only returns in localDevMode where the route is registered
       const token = await fetchDevToken(chosenRoles);
@@ -280,6 +298,7 @@ export const createGenericAuthProvider = (
     },
 
     logout: async () => {
+      if (config.coreTransport === 'server') await signOut({ redirect: false });
       localStorage.removeItem(tokenKey);
       localStorage.removeItem(userKey);
 
@@ -290,6 +309,15 @@ export const createGenericAuthProvider = (
     },
 
     check: async () => {
+      if (config.coreTransport === 'server') {
+        const session = await getSession();
+        const authenticated =
+          !session?.error &&
+          session?.user?.roles?.some((role) => role === 'admin' || role === 'operator');
+        return authenticated
+          ? { authenticated: true }
+          : { authenticated: false, redirectTo: '/login', logout: true };
+      }
       const token = await getToken();
 
       if (token && !sessionChecked) {
@@ -343,6 +371,16 @@ export const createGenericAuthProvider = (
     },
 
     getIdentity: async () => {
+      if (config.coreTransport === 'server') {
+        const session = await getSession();
+        if (!session?.user?.sub) return null;
+        return {
+          id: session.user.sub,
+          name: session.user.name ?? 'Admin User',
+          email: session.user.email ?? undefined,
+          roles: session.user.roles ?? [],
+        };
+      }
       const user = getUser();
       if (!user) return null;
       return user;
