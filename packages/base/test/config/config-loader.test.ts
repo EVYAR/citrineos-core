@@ -118,6 +118,21 @@ describe('ConfigLoader', () => {
       expect(config.host).toBe('1.2.3.4');
     });
 
+    it('never prints raw credentials while mapping string environment values', async () => {
+      const secret = 'synthetic-password-that-must-not-be-logged';
+      const broker = 'amqp://synthetic-user:broker-secret@unit.invalid:5672';
+      process.env.CITRINEOS_DATABASE_PASSWORD = secret;
+      process.env.CITRINEOS_MESSAGEBROKER_AMQP_URL = broker;
+      const config = await ConfigLoader.loadConfig();
+      expect(config.database.password).toBe(secret);
+      expect(config.messageBroker.amqp.url).toBe(broker);
+      const diagnostics = vi.mocked(console.debug).mock.calls.flat().map(String).join(' ');
+      expect(diagnostics).toContain('CITRINEOS_DATABASE_PASSWORD');
+      expect(diagnostics).not.toContain(secret);
+      expect(diagnostics).not.toContain(broker);
+      expect(diagnostics).not.toContain('broker-secret');
+    });
+
     it('matches leaf keys case-insensitively against their camelCase schema key', async () => {
       process.env.CITRINEOS_LOGLEVEL = '5';
 
