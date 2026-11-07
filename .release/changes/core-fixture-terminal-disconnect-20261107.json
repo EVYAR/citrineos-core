@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Keep database fixtures strict while allowing already-idle, exact-owner connections from a successful terminal migration CLI to finish disconnecting within two seconds."
+}

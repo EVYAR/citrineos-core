@@ -261,7 +261,7 @@ function makeFixture(grant) {
     }
     return name;
   };
-  const quiescent = async (name) => {
+  const quiescent = async (name, terminalCliStartedAt) => {
     assert.ok(owned.has(name));
     const c = await connect(name);
     try {
@@ -272,12 +272,42 @@ function makeFixture(grant) {
       ).rows[0];
       assert.equal(identity.name, name);
       assert.equal(identity.marker, marker);
-      const others = (
-        await c.query(
-          'SELECT count(*)::integer n FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()',
-        )
-      ).rows[0].n;
-      assert.equal(others, 0, 'All fixture clients must stop before migration');
+      const deadline = Date.now() + 2000;
+      let closing;
+      for (;;) {
+        const others = (
+          await c.query(
+            'SELECT pid,usename,application_name,state,backend_start FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() ORDER BY pid',
+          )
+        ).rows;
+        if (others.length === 0) break;
+        // A successful CLI process can exit before PostgreSQL observes its socket FIN.
+        // Only its already-idle, exact-owner connections may finish disconnecting.
+        // Pre-migration checks remain immediate; active or unfamiliar clients fail.
+        assert.ok(
+          terminalCliStartedAt &&
+            others.every(
+              (row) =>
+                row.usename === grant.user &&
+                row.application_name === marker &&
+                row.state === 'idle' &&
+                row.backend_start.getTime() >= terminalCliStartedAt,
+            ),
+          'All fixture clients must stop before migration: ' + JSON.stringify(others),
+        );
+        const identities = others.map((row) => `${row.pid}:${row.backend_start.toISOString()}`);
+        if (!closing) {
+          closing = new Set(identities);
+          report.terminalCliDisconnects ??= [];
+          report.terminalCliDisconnects.push({ database: name, clients: others });
+        }
+        assert.ok(
+          identities.every((identity) => closing.has(identity)),
+          'New client appeared after CLI exit',
+        );
+        assert.ok(Date.now() < deadline, 'Terminal CLI connections did not disconnect');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
     } finally {
       await c.end();
     }
@@ -302,6 +332,7 @@ function makeFixture(grant) {
       }),
       { mode: 0o600 },
     );
+    const terminalCliStartedAt = Date.now();
     const command = spawnSync(
       process.execPath,
       [
@@ -329,7 +360,7 @@ function makeFixture(grant) {
     );
     fs.unlinkSync(config);
     assert.equal(command.status, 0, `${tag} migration failed; inspect private fixture log`);
-    await quiescent(name);
+    await quiescent(name, terminalCliStartedAt);
     const c = await connect(name);
     try {
       return (await c.query('SELECT name FROM "SequelizeMeta" ORDER BY name')).rows.map(
