@@ -583,11 +583,11 @@ async function exercisePartitionIdentityAndRetention(f, name, frame) {
         .rows[0].ingressMessageId,
       94001,
     );
-    await db.query(`INSERT INTO "Transactions" (id,"tenantId","createdAt","updatedAt","isActive") VALUES
-      (191001,1,date_trunc('day',now()),now(),false),
-      (191001,1,date_trunc('day',now())+interval '1 hour',now(),false)`);
-    await db.query(`INSERT INTO "StartTransactions" ("transactionDatabaseId","transactionCreatedAt","tenantId","createdAt","updatedAt")
-      SELECT id,"createdAt",1,now(),now() FROM "Transactions" WHERE id=191001`);
+    await db.query(`INSERT INTO "Transactions" (id,"transactionId","tenantId","createdAt","updatedAt","isActive") VALUES
+      (191001,'synthetic-id-a',1,date_trunc('day',now()),now(),false),
+      (191001,'synthetic-id-b',1,date_trunc('day',now())+interval '1 hour',now(),false)`);
+    await db.query(`INSERT INTO "StartTransactions" ("transactionDatabaseId","transactionCreatedAt","tenantId","createdAt","updatedAt","connectorDatabaseId","meterStart",timestamp)
+      SELECT id,"createdAt",1,now(),now(),90001,0,now() FROM "Transactions" WHERE id=191001`);
     assert.equal(
       (
         await db.query(
@@ -597,8 +597,8 @@ async function exercisePartitionIdentityAndRetention(f, name, frame) {
       2,
     );
     await assert.rejects(
-      db.query(`INSERT INTO "StartTransactions" ("transactionDatabaseId","transactionCreatedAt","tenantId","createdAt","updatedAt")
-      VALUES (191001,date_trunc('day',now())+interval '2 hours',1,now(),now())`),
+      db.query(`INSERT INTO "StartTransactions" ("transactionDatabaseId","transactionCreatedAt","tenantId","createdAt","updatedAt","connectorDatabaseId","meterStart",timestamp)
+      VALUES (191001,date_trunc('day',now())+interval '2 hours',1,now(),now(),90001,0,now())`),
       (error) => error.code === '23503',
     );
     await db.query(
