@@ -215,8 +215,8 @@ async function notifications(f, name) {
       );
       await db.query(
         `INSERT INTO "MeterValues"
-        (id,"tenantId","transactionDatabaseId","transactionCreatedAt","createdAt","updatedAt","sampledValue")
-        VALUES ($1,$2,919001,$3,now(),now(),'[]')`,
+        (id,"tenantId","transactionDatabaseId","transactionCreatedAt","timestamp","createdAt","updatedAt","sampledValue")
+        VALUES ($1,$2,919001,$3,now(),now(),now(),'[]')`,
         [919100 + index, w.tenantId, w.createdAt],
       );
     }
