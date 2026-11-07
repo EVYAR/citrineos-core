@@ -29,6 +29,8 @@ export interface JwtAuthConfig {
   audience?: string;
   rolesClaim: string;
   tenantClaim: string;
+  /** Require the configured claim to contain a positive PostgreSQL integer tenant ID. No fallback. */
+  requiredTenantClaim?: boolean;
   defaultTenantId: string;
   cacheTime?: number;
   rateLimit?: boolean;
@@ -131,14 +133,24 @@ export class JwtAuthProvider implements IApiAuthProvider {
         ...(this._config.audience && { audience: this._config.audience }),
       }) as JwtPayload;
 
+      const tenantClaim = readClaim(payload, this._config.tenantClaim);
+      if (this._config.requiredTenantClaim) {
+        const numericTenant =
+          typeof tenantClaim === 'number'
+            ? tenantClaim
+            : typeof tenantClaim === 'string' && /^[1-9][0-9]*$/.test(tenantClaim)
+              ? Number(tenantClaim)
+              : NaN;
+        if (!Number.isInteger(numericTenant) || numericTenant < 1 || numericTenant > 2147483647) {
+          throw new Error(`Missing or invalid required tenant claim: ${this._config.tenantClaim}`);
+        }
+      }
       const user: UserInfo = {
         id: payload.sub as string,
         name: payload.preferred_username || payload.name || payload.sub,
         email: payload.email || '',
         roles: this.extractRoles(payload),
-        tenantId: String(
-          readClaim(payload, this._config.tenantClaim) ?? this._config.defaultTenantId,
-        ),
+        tenantId: String(tenantClaim ?? this._config.defaultTenantId),
         metadata: {
           firstName: payload.given_name,
           lastName: payload.family_name,
@@ -160,12 +172,16 @@ export class JwtAuthProvider implements IApiAuthProvider {
   async authorizeUser(user: UserInfo, request: FastifyRequest): Promise<ApiAuthorizationResult> {
     try {
       const tenantId = user.tenantId;
-      const requestedTenantId =
-        (request.query as { tenantId?: string }).tenantId ??
-        (request.body as { tenantId?: number | string } | undefined)?.tenantId;
-      if (notNull(requestedTenantId) && String(requestedTenantId) !== tenantId) {
+      const requestedTenantIds = [
+        (request.query as { tenantId?: string }).tenantId,
+        (request.body as { tenantId?: number | string } | undefined)?.tenantId,
+      ];
+      const conflictingTenantId = requestedTenantIds.find(
+        (requestedTenantId) => notNull(requestedTenantId) && String(requestedTenantId) !== tenantId,
+      );
+      if (notNull(conflictingTenantId)) {
         return ApiAuthorizationResult.failure(
-          `Token tenant ${tenantId} may not act on tenant ${requestedTenantId}`,
+          `Token tenant ${tenantId} may not act on tenant ${conflictingTenantId}`,
         );
       }
 

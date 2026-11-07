@@ -285,6 +285,7 @@ export const configSchema = z.object({
           audience: z.string().optional(),
           rolesClaim: z.string().default('roles'),
           tenantClaim: z.string().default('tenant_id'),
+          requiredTenantClaim: z.boolean().optional(),
           cacheTimeSeconds: z.number().int().min(1).optional(),
           rateLimit: z.boolean().default(true),
         })

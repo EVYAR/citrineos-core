@@ -42,3 +42,13 @@ Still required before acceptance: execute/fix both lanes; add device-availabilit
 ## Release/ownership handoff
 
 The runtime corrections need a parent-owned appropriate release-impact record; this owner does not edit `.release`. Vendor versions and package manifests stay unchanged. Apps/integrated OCPI/operator UI and release governance belong to other owners. Local scoped commits are allowed; no push/merge/PR/deploy is performed here.
+
+## Dedicated external Core JWT boundary (prepared; not executed)
+
+`auth.jwt.requiredTenantClaim` is optional and opt-in. In `auth.mode=jwt`, set issuer/JWKS to the reviewed IAM issuer, audience `citrineos-core`, tenantClaim `core_tenant_id`, rolesClaim `core_roles`, and requiredTenantClaim `true`. After signature/issuer/audience verification, the private tenant claim must be a positive PostgreSQL integer ID (number or canonical decimal string, range1..2147483647). Missing/null/UUID/object/boolean/fractional/noncanonical/out-of-range claims fail authentication with no default tenant. The canonical IAM UUID `tenant_id` remains a separate product claim. This is validation of signed authority, not mapping UUIDs or granting issuer bindings.
+
+Upstream localDev construction does not forward this flag and keeps default-tenant behavior; external JWT configurations that omit the flag keep existing fallback semantics. Both query and body tenant IDs must match the signed Core tenant; a valid query cannot hide a conflicting body. Public wire/DTO contracts are unchanged.
+
+The OCPP resource role seed now includes only the adapter handoff's `evyar-adapter` role:49 exact permissions, empty UI resources, no wildcard/admin. Contract snapshot provenance: sibling adapter `docs/upgrades/core-api-machine-policy.json`. Ordinary `roles` or IAM scopes do not substitute for `core_roles`. Parent owns actual issuer grants, credential provisioning and runtime deployment configuration; these source changes enable enforcement but do not activate it in a live deployment.
+
+Prepared `evyar-core-jwt-boundary.test.ts` uses bounded local ES256 signing keys, real signature verification, actual PolicyStore and mocked role loading, and in-memory Fastify injection with pre-access network/database traps. It covers missing/malformed claims, valid integer claims, wrong audience/issuer/signature, opt-out fallback, exact machine permissions and cross-tenant query/body conflicts. No suite/build/install/container was launched for this follow-up while apps holds the resource window. Types must rebuild before its config/typecheck runs; do not mistake stale built declarations for source acceptance.
