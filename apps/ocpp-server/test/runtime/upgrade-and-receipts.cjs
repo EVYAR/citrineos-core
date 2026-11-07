@@ -571,6 +571,9 @@ async function exerciseReceipts(f, name) {
     await exerciseReceipts(f, fresh);
     await f.cleanup();
     success = true;
+  } catch (error) {
+    f.report.failure = { message: String(error.message), stack: String(error.stack) };
+    throw error;
   } finally {
     f.report.success = success;
     fs.writeFileSync(path.join(f.artifacts, 'result.json'), JSON.stringify(f.report, null, 2), {
