@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Resolve Next ESLint plugins from their declaring package under the pinned pnpm workspace layout."
+}
