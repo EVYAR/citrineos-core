@@ -561,9 +561,9 @@ async function exercisePartitionIdentityAndRetention(f, name, frame) {
   const db = await f.connect(name);
   try {
     await db.query(
-      `INSERT INTO "OCPPMessages" (id,"tenantId","stationId","correlationId",origin,state,protocol,action,message,timestamp,"createdAt","updatedAt")
-      VALUES (94001,1,90001,'old-bound-call','cs','1','ocpp1.6','StatusNotification',$1::jsonb,'2020-01-01',date_trunc('week',now())-interval '6 days',now())`,
-      [JSON.stringify(frame)],
+      `INSERT INTO "OCPPMessages" (id,"tenantId","stationId","correlationId",origin,state,protocol,action,message,raw,timestamp,"createdAt","updatedAt")
+      VALUES (94001,1,90001,'old-bound-call','cs','1','ocpp1.6','StatusNotification',$1::jsonb,$2,'2020-01-01',date_trunc('week',now())-interval '6 days',now())`,
+      [JSON.stringify(frame), JSON.stringify(frame)],
     );
     assert.equal(
       (await db.query('SELECT count(*)::int n FROM "OCPPMessages" WHERE id=94001')).rows[0].n,
