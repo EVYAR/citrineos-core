@@ -79,6 +79,20 @@ async function exerciseBridgePreflight(f, name, current, frame) {
     await query('UPDATE "OCPPMessages" SET message=$1::jsonb WHERE id=94001', [
       JSON.stringify(frame),
     ]);
+    await query('UPDATE "OCPPMessages" SET "statusIngressConnection"=NULL WHERE id=94001');
+    await assert.rejects(
+      bridge.up(db.getQueryInterface()),
+      /STATUS_INGRESS_MISSING_OR_CROSS_TENANT_WITNESS/,
+    );
+    await query('UPDATE "OCPPMessages" SET "statusIngressConnection"=$1 WHERE id=94001', [
+      connection,
+    ]);
+    await query(
+      `INSERT INTO "Tenants" (id,name,"createdAt","updatedAt") VALUES (90002,'SYNTHETIC-NEGATIVE-TENANT',now(),now())`,
+    );
+    await query('UPDATE "OCPPMessages" SET "tenantId"=90002 WHERE id=94001');
+    await assert.rejects(bridge.up(db.getQueryInterface()), /STATUS_INGRESS_INVALID_SOURCE_ROWS/);
+    await query('UPDATE "OCPPMessages" SET "tenantId"=1 WHERE id=94001');
     await bridge.up(db.getQueryInterface());
     await query(
       `UPDATE "StatusIngressReceipts" SET frame='[2,"corrupted","StatusNotification",{}]'::jsonb WHERE id=94001`,
@@ -99,6 +113,8 @@ async function exerciseBridgePreflight(f, name, current, frame) {
         'DDL rollback preserves old FK',
         'same ID with divergent content rejects',
         'exact identity repeat succeeds without duplicate witness',
+        'missing receipt source rejects before swap',
+        'cross-tenant station/source reference rejects',
       ],
     });
   } finally {
@@ -320,6 +336,82 @@ async function exerciseReceipts(f, name) {
       ).applied,
       false,
     );
+    const devices = await import(
+      pathToFileURL(path.join(f.root, 'packages/dal/dist/src/models/device-model/index.js')).href
+    );
+    const component = await devices.Component.create({ tenantId: 1, name: 'SYNTHETIC-EVSE' });
+    const variable = await devices.Variable.create({ tenantId: 1, name: 'AvailabilityState' });
+    const effectPayload = {
+      ...available,
+      status: 'Unavailable',
+      timestamp: '2026-11-07T12:02:30.000Z',
+    };
+    const effectReceipt = await reserve('device-effect', effectPayload);
+    const factCount = await models.StatusNotification.count({ where: { stationId: station.id } });
+    await first.reload();
+    const previousPointer = first.latestStatusNotificationId;
+    const effect = {
+      componentId: component.id,
+      variableId: variable.id,
+      value: 'Unavailable',
+      generatedAt: effectPayload.timestamp,
+    };
+    await assert.rejects(
+      ingress.apply(
+        1,
+        station.ocppConnectionName,
+        status(effectPayload),
+        connector(first, effectPayload),
+        effectPayload,
+        effectReceipt,
+        false,
+        [{ ...effect, variableId: -2147483647 }],
+      ),
+      (error) => error.original?.code === '23503',
+    );
+    await first.reload();
+    assert.equal(
+      first.latestStatusNotificationId,
+      previousPointer,
+      'failed effect rolls back projection',
+    );
+    assert.equal(
+      await models.StatusNotification.count({ where: { stationId: station.id } }),
+      factCount,
+      'failed effect rolls back status fact',
+    );
+    assert.equal(await devices.VariableAttribute.count({ where: { stationId: station.id } }), 0);
+    assert.equal(
+      (
+        await ingress.apply(
+          1,
+          station.ocppConnectionName,
+          status(effectPayload),
+          connector(first, effectPayload),
+          effectPayload,
+          effectReceipt,
+          false,
+          [effect],
+        )
+      ).applied,
+      true,
+    );
+    assert.equal(
+      (
+        await devices.VariableAttribute.findOne({
+          where: { stationId: station.id, componentId: component.id, variableId: variable.id },
+        })
+      ).value,
+      'Unavailable',
+    );
+    f.report.assertions.push({
+      name: 'device-effects-atomicity',
+      cases: [
+        'real FK failure rolls back fact and connector pointer',
+        'same receipt retries after rollback',
+        'availability attribute commits with winning projection',
+      ],
+    });
     const retired = { ...available, timestamp: '2026-11-07T12:03:00Z' };
     const retiredId = await reserve('retired', retired);
     const replacement = '00000000-0000-4000-8000-000000000002';
@@ -422,7 +514,29 @@ async function exerciseReceipts(f, name) {
         'tenant isolation',
       ],
     });
-    await assert.rejects(station.destroy(), /foreign key|violates|constraint/i);
+    const receiptOwner = await models.ChargingStation.create({
+      tenantId: 1,
+      ocppConnectionName: 'SYNTHETIC-RECEIPT-ONLY-OWNER',
+      protocol: 'ocpp1.6',
+      statusIngressConnection: connection,
+    });
+    await ingress.reserve(
+      1,
+      receiptOwner.ocppConnectionName,
+      connection,
+      'owner-only',
+      'ocpp1.6',
+      [2, 'owner-only', 'StatusNotification', available],
+      new Date(at),
+    );
+    assert.equal(await models.Connector.count({ where: { stationId: receiptOwner.id } }), 0);
+    assert.equal(await models.Evse.count({ where: { stationId: receiptOwner.id } }), 0);
+    await assert.rejects(
+      receiptOwner.destroy(),
+      (error) =>
+        error.original?.code === '23503' &&
+        error.original?.constraint === 'StatusIngressReceipts_stationId_fkey',
+    );
     f.report.assertions.push({
       name: 'actual-built-DAL',
       cases: [
@@ -435,11 +549,94 @@ async function exerciseReceipts(f, name) {
         'registration fence',
         'caller rollback',
         'bounded sequence pool',
-        'owner deletion restrict',
+        'receipt-only owner deletion exact StatusIngressReceipts_stationId_fkey',
       ],
     });
   } finally {
     await sequelize.close();
+  }
+}
+async function exercisePartitionIdentityAndRetention(f, name, frame) {
+  f.guard('partition-identity-retention');
+  const db = await f.connect(name);
+  try {
+    await db.query(
+      `INSERT INTO "OCPPMessages" (id,"tenantId","stationId","correlationId",origin,state,protocol,action,message,timestamp,"createdAt","updatedAt")
+      VALUES (94001,1,90001,'old-bound-call','cs','1','ocpp1.6','StatusNotification',$1::jsonb,'2020-01-01',date_trunc('week',now())-interval '6 days',now())`,
+      [JSON.stringify(frame)],
+    );
+    assert.equal(
+      (await db.query('SELECT count(*)::int n FROM "OCPPMessages" WHERE id=94001')).rows[0].n,
+      1,
+    );
+    await db.query('CALL rotate_ocpp_messages_partitions(1,0,false)');
+    assert.equal(
+      (await db.query('SELECT count(*)::int n FROM "OCPPMessages" WHERE id=94001')).rows[0].n,
+      0,
+    );
+    assert.deepEqual(
+      (await db.query('SELECT frame FROM "StatusIngressReceipts" WHERE id=94001')).rows[0].frame,
+      frame,
+    );
+    assert.equal(
+      (await db.query('SELECT "ingressMessageId" FROM "StatusNotifications" WHERE id=95001'))
+        .rows[0].ingressMessageId,
+      94001,
+    );
+    await db.query(`INSERT INTO "Transactions" (id,"tenantId","createdAt","updatedAt","isActive") VALUES
+      (191001,1,date_trunc('day',now()),now(),false),
+      (191001,1,date_trunc('day',now())+interval '1 hour',now(),false)`);
+    await db.query(`INSERT INTO "StartTransactions" ("transactionDatabaseId","transactionCreatedAt","tenantId","createdAt","updatedAt")
+      SELECT id,"createdAt",1,now(),now() FROM "Transactions" WHERE id=191001`);
+    assert.equal(
+      (
+        await db.query(
+          'SELECT count(*)::int n FROM "StartTransactions" WHERE "transactionDatabaseId"=191001',
+        )
+      ).rows[0].n,
+      2,
+    );
+    await assert.rejects(
+      db.query(`INSERT INTO "StartTransactions" ("transactionDatabaseId","transactionCreatedAt","tenantId","createdAt","updatedAt")
+      VALUES (191001,date_trunc('day',now())+interval '2 hours',1,now(),now())`),
+      (error) => error.code === '23503',
+    );
+    await db.query(
+      `DELETE FROM "Transactions" WHERE id=191001 AND "createdAt"=date_trunc('day',now())`,
+    );
+    assert.equal(
+      (await db.query('SELECT count(*)::int n FROM "Transactions" WHERE id=191001')).rows[0].n,
+      1,
+    );
+    assert.equal(
+      (
+        await db.query(
+          'SELECT count(*)::int n FROM "StartTransactions" WHERE "transactionDatabaseId"=191001',
+        )
+      ).rows[0].n,
+      1,
+      'composite FK deletion leaves other same-id transaction child',
+    );
+    await db.query(`INSERT INTO "Transactions" (id,"tenantId","stationId","transactionId","createdAt","updatedAt","isActive")
+      VALUES (193001,1,90001,'synthetic-protocol-key',now(),now(),false)`);
+    await assert.rejects(
+      db.query(`INSERT INTO "Transactions" (id,"tenantId","stationId","transactionId","createdAt","updatedAt","isActive")
+      VALUES (193002,1,90001,'synthetic-protocol-key',now()+interval '1 hour',now(),false)`),
+      (error) => error.code === '23505',
+    );
+    f.report.assertions.push({
+      name: 'real-partition-retention-composite-identity',
+      cases: [
+        'actual old message partition dropped by retention procedure',
+        'receipt/frame and projection FK survive',
+        'same numeric transaction id with distinct createdAt',
+        'child requires exact composite parent',
+        'delete one composite parent leaves other identity and child',
+        'station protocol TransactionKeys duplicate rejects',
+      ],
+    });
+  } finally {
+    await db.end();
   }
 }
 (async () => {
@@ -571,6 +768,7 @@ async function exerciseReceipts(f, name) {
         'offline pre-upgrade dump restored exact schema/history/witness',
       ],
     });
+    await exercisePartitionIdentityAndRetention(f, legacy, frame);
     await exerciseReceipts(f, fresh);
     await f.cleanup();
     success = true;
