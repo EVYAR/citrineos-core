@@ -193,7 +193,12 @@ export class TransactionService {
           ));
       }
 
-      const result = await this._applyAuthorizers(authorization, messageContext, evse, connector);
+      const result = await this._applyAuthorizers(
+        authorization,
+        { ...messageContext, requiresExplicitAuthorizationTarget: transactionEvent.evse != null },
+        evse,
+        connector,
+      );
       response.idTokenInfo = this._mapAuthorizationDtoToIdTokenInfo(authorization, result);
     }
     this._logger.debug('idToken Authorization final status:', response.idTokenInfo.status);
@@ -280,7 +285,12 @@ export class TransactionService {
           ));
       }
 
-      const result = await this._applyAuthorizers(authorization, messageContext, evse, connector);
+      const result = await this._applyAuthorizers(
+        authorization,
+        { ...messageContext, requiresExplicitAuthorizationTarget: transactionEvent.evse != null },
+        evse,
+        connector,
+      );
       response.idTokenInfo = this._mapAuthorizationDtoToIdTokenInfo(authorization, result);
     }
 
@@ -402,7 +412,12 @@ export class TransactionService {
         );
       response.idTagInfo.status =
         OCPP1_6_Mapper.AuthorizationMapper.toStartTransactionResponseStatus(
-          await this._applyAuthorizers(authorization, context, connector?.evse, connector),
+          await this._applyAuthorizers(
+            authorization,
+            { ...context, requiresExplicitAuthorizationTarget: true },
+            connector?.evse,
+            connector,
+          ),
         );
       if (response.idTagInfo.status !== OCPP1_6.StartTransactionResponseStatus.Accepted) {
         return response;

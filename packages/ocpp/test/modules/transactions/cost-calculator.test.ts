@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
+import '@test/unit-isolation.js';
 import { DEFAULT_TENANT_ID } from '@citrineos/base';
 import { type ITariffRepository } from '@citrineos/dal';
 import type { TariffDto } from '@citrineos/types';
@@ -12,13 +13,14 @@ import { aTransaction } from './providers/transaction-provider.js';
 
 describe('CostCalculator', () => {
   const { container } = createTestContainer();
-  let tariffRepository: Mocked<ITariffRepository>;
+  let tariffRepository: Pick<Mocked<ITariffRepository>, 'findByConnectorId' | 'findById'>;
   let costCalculator: CostCalculator;
 
   beforeEach(() => {
     tariffRepository = {
       findByConnectorId: vi.fn(),
-    } as unknown as Mocked<ITariffRepository>;
+      findById: vi.fn(),
+    };
 
     costCalculator = getTestInstance(container, CostCalculator, {
       tariffRepository,
@@ -27,6 +29,118 @@ describe('CostCalculator', () => {
 
   afterEach(() => {
     tariffRepository.findByConnectorId.mockReset();
+  });
+
+  describe('calculateTotalCostByTariffId', () => {
+    it('uses the immutable transaction tariff instead of the current connector assignment', async () => {
+      tariffRepository.findById.mockResolvedValue(aTariff({ pricePerKwh: 0.47 }));
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
+      ).resolves.toBe(9.86);
+      expect(tariffRepository.findById).toHaveBeenCalledWith(DEFAULT_TENANT_ID, 42);
+      expect(tariffRepository.findByConnectorId).not.toHaveBeenCalled();
+    });
+
+    it('returns zero for an explicit free tariff', async () => {
+      tariffRepository.findById.mockResolvedValue(aTariff({ pricePerKwh: 0 }));
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
+      ).resolves.toBe(0);
+    });
+
+    it('returns undefined when the locked tariff cannot be found', async () => {
+      tariffRepository.findById.mockResolvedValue(undefined);
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 20.99),
+      ).resolves.toBeUndefined();
+    });
+
+    it('uses legacy energy, time, fixed and payment fields and applies legacy tax', async () => {
+      tariffRepository.findById.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 2,
+          pricePerMin: 0.5,
+          pricePerSession: 3,
+          paymentFee: 1,
+          taxRate: 10,
+          authorizationAmount: 999,
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 4, {
+          chargingDurationSeconds: 600,
+          sessionDurationSeconds: 600,
+        }),
+      ).resolves.toBe(18.7);
+    });
+
+    it('prefers structured prices, applies component tax, and clamps to maxCost', async () => {
+      tariffRepository.findById.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 999,
+          pricePerMin: 999,
+          pricePerSession: 999,
+          energy: { prices: [{ priceKwh: 2 }], taxRates: [{ type: 'VAT', tax: 10 }] },
+          chargingTime: { prices: [{ priceMinute: 0.5 }] },
+          fixedFee: { prices: [{ priceFixed: 3 }] },
+          maxCost: { inclTax: 15 },
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 4, {
+          chargingDurationSeconds: 600,
+          sessionDurationSeconds: 600,
+        }),
+      ).resolves.toBe(15);
+    });
+
+    it('does not add idle fees unless a reliable idle duration is supplied', async () => {
+      tariffRepository.findById.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 0,
+          idleTime: { prices: [{ priceMinute: 2 }] },
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 0, {
+          sessionDurationSeconds: 600,
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 0, {
+          sessionDurationSeconds: 600,
+          idleDurationSeconds: 120,
+        }),
+      ).resolves.toBe(4);
+    });
+
+    it('applies tax stacks sequentially and duration conditions in seconds', async () => {
+      tariffRepository.findById.mockResolvedValue(
+        aTariff({
+          pricePerKwh: 0,
+          chargingTime: {
+            prices: [{ priceMinute: 1, conditions: { minChargingTime: 60, maxChargingTime: 121 } }],
+            taxRates: [
+              { type: 'VAT', tax: 10, stack: 0 },
+              { type: 'LOCAL', tax: 10, stack: 1 },
+            ],
+          },
+        }),
+      );
+
+      await expect(
+        costCalculator.calculateTotalCostByTariffId(DEFAULT_TENANT_ID, 42, 0, {
+          chargingDurationSeconds: 120,
+          sessionDurationSeconds: 120,
+        }),
+      ).resolves.toBe(2.42);
+    });
   });
 
   describe('calculateTotalCost', () => {
@@ -59,15 +173,13 @@ describe('CostCalculator', () => {
     });
 
     it('should add time cost using minutes converted from timeSpentCharging seconds', async () => {
-      givenTariff(aTariff({ pricePerKwh: undefined, pricePerMin: 0.3, pricePerSession: null }));
+      givenTariff(aTariff({ pricePerKwh: 0, pricePerMin: 0.3, pricePerSession: null }));
       const transaction = aChargingTransaction(0, 120);
       expect(await costCalculator.calculateTotalCost(DEFAULT_TENANT_ID, transaction)).toBe(0.6);
     });
 
     it('should add per-session cost', async () => {
-      givenTariff(
-        aTariff({ pricePerKwh: undefined, pricePerMin: undefined, pricePerSession: 1.5 }),
-      );
+      givenTariff(aTariff({ pricePerKwh: 0, pricePerMin: null, pricePerSession: 1.5 }));
       const transaction = aChargingTransaction(0, 0);
       expect(await costCalculator.calculateTotalCost(DEFAULT_TENANT_ID, transaction)).toBe(1.5);
     });
@@ -99,11 +211,11 @@ describe('CostCalculator', () => {
       expect(await costCalculator.calculateTotalCost(DEFAULT_TENANT_ID, transaction)).toBe(0);
     });
 
-    it('should return 0 when timeSpentCharging is not set', async () => {
+    it('preserves evidenced energy pricing when charging duration is unknown', async () => {
       givenTariff(anEnergyTariff(0.61));
       const transaction = aChargingTransaction(20);
       transaction.timeSpentCharging = null;
-      expect(await costCalculator.calculateTotalCost(DEFAULT_TENANT_ID, transaction)).toBe(0);
+      expect(await costCalculator.calculateTotalCost(DEFAULT_TENANT_ID, transaction)).toBe(12.2);
     });
 
     it('should return 0 when pricePerKwh is 0', async () => {

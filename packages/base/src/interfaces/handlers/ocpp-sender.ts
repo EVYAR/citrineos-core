@@ -104,7 +104,7 @@ export class OcppSender implements IOcppSender {
         const stored = await this._cache.set(
           _correlationId,
           callbackUrl,
-          this.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
+          this.CALLBACK_URL_CACHE_PREFIX + identifier,
           this._config.timeouts.maxCachingSeconds,
         );
         if (!stored) {
@@ -132,7 +132,6 @@ export class OcppSender implements IOcppSender {
         );
       }
     }
-    // TODO: Future - Compound key with tenantId
     return this._cache
       .get<string>(identifier, CacheNamespace.Connections)
       .then(async (connection) => {
@@ -144,10 +143,7 @@ export class OcppSender implements IOcppSender {
               identifier,
             );
             if (callbackUrl) {
-              await this._cache.remove(
-                _correlationId,
-                this.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
-              );
+              await this._cache.remove(_correlationId, this.CALLBACK_URL_CACHE_PREFIX + identifier);
             }
             return Promise.resolve(
               this._commandFailureConfirmation(

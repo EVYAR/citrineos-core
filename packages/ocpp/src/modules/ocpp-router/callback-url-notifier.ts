@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { AbstractModule, childLogger, type ICache } from '@citrineos/base';
+import { AbstractModule, childLogger, createIdentifier, type ICache } from '@citrineos/base';
 import type { SystemConfig } from '@citrineos/types';
 import { OidcTokenProvider } from '@/apis/index.js';
 import type { ILogObj, Logger } from 'tslog';
@@ -33,10 +33,15 @@ export class CallbackUrlNotifier {
     }
   }
 
-  async notify(correlationId: string, ocppConnectionName: string, payload: any): Promise<void> {
+  async notify(
+    tenantId: number,
+    correlationId: string,
+    ocppConnectionName: string,
+    payload: unknown,
+  ): Promise<void> {
     const url: string | null = await this._cache.remove<string>(
       correlationId,
-      AbstractModule.CALLBACK_URL_CACHE_PREFIX + ocppConnectionName,
+      AbstractModule.CALLBACK_URL_CACHE_PREFIX + createIdentifier(tenantId, ocppConnectionName),
     );
     if (!url) return;
 

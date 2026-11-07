@@ -12,6 +12,8 @@ export interface IMessageContext {
   /** Original durable StatusNotification CALL, persisted before module fanout. */
   statusIngressMessageId?: number;
   statusIngressConnection?: string;
+  /** Internal admission evidence: a named physical target must not fall back to a station guess. */
+  requiresExplicitAuthorizationTarget?: boolean;
   tenantId: number;
   ocppConnectionName: string;
   timestamp: string; // Iso Timestamp

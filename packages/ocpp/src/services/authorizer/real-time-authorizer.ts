@@ -58,7 +58,11 @@ export class RealTimeAuthorizer implements IAuthorizer {
         return undefined;
       }
     };
-    const chargingCalloutStore = optional(() => dependencies.chargingCalloutStore);
+    const callouts = config.realTimeAuthChargingCallouts;
+    const chargingCalloutStore = callouts?.enabled ? dependencies.chargingCalloutStore : undefined;
+    if (callouts?.enabled && !chargingCalloutStore) {
+      throw new Error('Enabled charging callouts require a durable chargingCalloutStore');
+    }
     const declineNotifier = optional(() => dependencies.declineNotifier);
     this._chargingStationRepository = chargingStationRepository;
     this._authorizationRepository = authorizationRepository;
@@ -67,7 +71,6 @@ export class RealTimeAuthorizer implements IAuthorizer {
     if (config.oidcClient) {
       this._oidcTokenProvider = new OidcTokenProvider(config.oidcClient, this._logger);
     }
-    const callouts = config.realTimeAuthChargingCallouts;
     if (callouts?.enabled && chargingCalloutStore) {
       this._calloutStore = chargingCalloutStore;
       this._declineNotifier =
@@ -111,7 +114,9 @@ export class RealTimeAuthorizer implements IAuthorizer {
     let result: AuthorizationStatusEnumType = AuthorizationStatusEnum.Invalid;
     let chargingCalloutRef: string | undefined;
     let oidcFailed = false;
-    let requiresLiveTarget = Boolean(this._calloutStore && (evse || connector));
+    let requiresLiveTarget = Boolean(
+      this._calloutStore && (evse || connector || context.requiresExplicitAuthorizationTarget),
+    );
     try {
       const chargingStation =
         await this._chargingStationRepository.readChargingStationByOcppConnectionName(

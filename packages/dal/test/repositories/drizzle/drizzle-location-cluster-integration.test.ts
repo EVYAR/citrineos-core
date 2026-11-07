@@ -750,6 +750,7 @@ describe('location cluster row-to-DTO mappers', () => {
     const dto = toChargingStationDto(
       preMigrationRow<ChargingStationEntity>({
         id: 3,
+        statusIngressConnection: null,
         ocppConnectionName: null,
         isOnline: null,
         protocol: 'ocpp1.6',

@@ -600,6 +600,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
             onExpire: () => {
               if (!this._isShutDown) {
                 void this._dispatchCommandFailureCallback(
+                  tenantId,
                   correlationId,
                   ocppConnectionName,
                   action,
@@ -677,6 +678,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
         }
         if (!successTimestamp) {
           const failure = await this._dispatchCommandFailureCallback(
+            tenantId,
             correlationId,
             ocppConnectionName,
             action,
@@ -698,6 +700,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     } else {
       recordOcppCallSent(String(action), protocol, CallSentOutcome.Rejected);
       const failure = await this._dispatchCommandFailureCallback(
+        tenantId,
         correlationId,
         ocppConnectionName,
         action,
@@ -1543,6 +1546,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
   }
 
   private async _dispatchCommandFailureCallback(
+    tenantId: number,
     correlationId: string,
     ocppConnectionName: string,
     action: CallAction,
@@ -1558,7 +1562,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
       action,
       error: { code, description, details },
     };
-    await this._callbackUrlNotifier.notify(correlationId, ocppConnectionName, payload);
+    await this._callbackUrlNotifier.notify(tenantId, correlationId, ocppConnectionName, payload);
     return payload;
   }
 
@@ -1630,7 +1634,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     );
 
     this._callbackUrlNotifier
-      .notify(messageId, ocppConnectionName, payload)
+      .notify(tenantId, messageId, ocppConnectionName, payload)
       .catch((err) => this._logger.error('callback url notification failed', err));
 
     return this.emitMessage(_message);
@@ -1661,7 +1665,7 @@ export class MessageRouterImpl extends AbstractMessageRouter implements IMessage
     );
 
     this._callbackUrlNotifier
-      .notify(messageId, ocppConnectionName, {
+      .notify(tenantId, messageId, ocppConnectionName, {
         success: false,
         outcome: 'CALL_ERROR',
         correlationId: messageId,

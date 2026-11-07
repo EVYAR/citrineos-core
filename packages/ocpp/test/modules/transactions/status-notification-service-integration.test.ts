@@ -7,9 +7,11 @@ import {
   DefaultSequelizeInstance,
   SequelizeLocationRepository,
   SequelizeTenantRepository,
+  SequelizeStatusIngressRepository,
   type ITenantRepository,
 } from '@citrineos/dal';
 import type { SystemConfig } from '@citrineos/types';
+import { aSystemConfig } from '@test/providers/system-config.js';
 import { StatusNotificationService } from '@modules/transactions/status-notification-service.js';
 import { QueryTypes } from 'sequelize';
 import type { Sequelize } from 'sequelize-typescript';
@@ -170,6 +172,10 @@ describe('StatusNotificationService.processOcpp16StatusNotification end-to-end (
       chargingStationRepository: locationRepository,
       evseRepository: locationRepository,
       statusNotificationRepository: locationRepository,
+      statusIngressRepository: new SequelizeStatusIngressRepository({
+        config: aSystemConfig(),
+        sequelizeInstance,
+      }),
       cache,
       networkAlertService: { recordConnectorStatus: vi.fn() },
     });
@@ -235,6 +241,10 @@ describe('StatusNotificationService.processOcpp16StatusNotification end-to-end (
       chargingStationRepository: locationRepository,
       evseRepository: locationRepository,
       statusNotificationRepository: locationRepository,
+      statusIngressRepository: new SequelizeStatusIngressRepository({
+        config: aSystemConfig(),
+        sequelizeInstance,
+      }),
       cache,
       networkAlertService: { recordConnectorStatus: vi.fn() },
     });
@@ -312,6 +322,10 @@ describe('StatusNotificationService.processOcpp16StatusNotification end-to-end (
       chargingStationRepository: locationRepository,
       evseRepository: locationRepository,
       statusNotificationRepository: locationRepository,
+      statusIngressRepository: new SequelizeStatusIngressRepository({
+        config: aSystemConfig(),
+        sequelizeInstance,
+      }),
       cache,
       networkAlertService: { recordConnectorStatus: vi.fn() },
     });
@@ -358,6 +372,10 @@ describe('StatusNotificationService.processStatusNotification end-to-end (2.0.1 
       chargingStationRepository: locationRepository,
       evseRepository: locationRepository,
       statusNotificationRepository: locationRepository,
+      statusIngressRepository: new SequelizeStatusIngressRepository({
+        config: aSystemConfig(),
+        sequelizeInstance,
+      }),
       cache,
       networkAlertService: { recordConnectorStatus: vi.fn() },
     });

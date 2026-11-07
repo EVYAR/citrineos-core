@@ -1,115 +1,92 @@
 // SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
-//
 // SPDX-License-Identifier: Apache-2.0
-
-import { AbstractModule, type ICache } from '@citrineos/base';
-import type { SystemConfig } from '@citrineos/types';
+import '@test/unit-isolation.js';
+import { AbstractModule, MemoryCache } from '@citrineos/base';
 import { CallbackUrlNotifier } from '@modules/ocpp-router/callback-url-notifier.js';
-import { createTestContainer, getTestInstance } from '@test/test-container.js';
+import { aSystemConfig } from '@test/providers/system-config.js';
+import { createTestContainer } from '@test/test-container.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const CORRELATION_ID = 'msg-123';
-const STATION_ID = 'CS001';
-const URL = 'https://example.test/callback';
-
-describe('CallbackUrlNotifier', () => {
-  const { container, logger } = createTestContainer();
-  let cache: { get: ReturnType<typeof vi.fn> };
-  let fetchMock: ReturnType<typeof vi.fn>;
-  let notifier: CallbackUrlNotifier;
-
-  function buildNotifier(config?: Partial<SystemConfig>): CallbackUrlNotifier {
-    return getTestInstance(container, CallbackUrlNotifier, {
-      cache: cache as unknown as ICache,
-      config: config as SystemConfig,
-    });
-  }
-
-  function initOf(call = 0): RequestInit {
-    return fetchMock.mock.calls[call][1];
-  }
-
-  beforeEach(() => {
-    cache = { get: vi.fn().mockResolvedValue(URL) };
-    fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      text: () => Promise.resolve(''),
-    } as Response);
-    vi.stubGlobal('fetch', fetchMock);
-    notifier = buildNotifier();
+const namespace = AbstractModule.CALLBACK_URL_CACHE_PREFIX + '1:station';
+const url = 'http://adapter.test/callback';
+let cache: MemoryCache;
+let notifier: CallbackUrlNotifier;
+let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
+beforeEach(async () => {
+  const { logger } = createTestContainer();
+  cache = new MemoryCache(logger);
+  notifier = new CallbackUrlNotifier({ cache, logger, config: aSystemConfig() });
+  await cache.set('command', url, namespace);
+  fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ accepted: true }));
+  vi.stubGlobal('fetch', fetchMock);
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+describe('terminal callback delivery', () => {
+  it('atomically claims one terminal outcome when charger response races timeout', async () => {
+    await Promise.all([
+      notifier.notify(1, 'command', 'station', { status: 'Accepted' }),
+      notifier.notify(1, 'command', 'station', { outcome: 'TIMED_OUT' }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(await cache.get('command', namespace)).toBeNull();
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ status: 'Accepted' });
   });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.clearAllMocks();
+  it('does nothing when there is no registered callback', async () => {
+    await notifier.notify(1, 'missing', 'station', {});
+    expect(fetchMock).not.toHaveBeenCalled();
   });
-
-  // ─── lookup ────────────────────────────────────────────────────────────────
-
-  describe('callback url lookup', () => {
-    it('should look the url up under the callback prefix for the station', async () => {
-      await notifier.notify(CORRELATION_ID, STATION_ID, { status: 'Accepted' });
-
-      expect(cache.get).toHaveBeenCalledWith(
-        CORRELATION_ID,
-        AbstractModule.CALLBACK_URL_CACHE_PREFIX + STATION_ID,
-      );
-    });
-
-    it('should do nothing when the request carried no callback url', async () => {
-      cache.get.mockResolvedValue(null);
-
-      await notifier.notify(CORRELATION_ID, STATION_ID, {});
-
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
-  });
-
-  // ─── posting ───────────────────────────────────────────────────────────────
-
-  describe('notify', () => {
-    it('should POST the payload as JSON to the cached url', async () => {
-      const payload = { status: 'Accepted' };
-
-      await notifier.notify(CORRELATION_ID, STATION_ID, payload);
-
-      expect(fetchMock).toHaveBeenCalledWith(URL, expect.anything());
-      expect(initOf()).toMatchObject({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+  it.each([408, 429, 500, 503])(
+    'retries retryable HTTP %i using the same terminal body',
+    async (status) => {
+      vi.useFakeTimers();
+      fetchMock.mockResolvedValueOnce(new Response('', { status }));
+      const sending = notifier.notify(1, 'command', 'station', {
+        outcome: 'CALL_ERROR',
+        correlationId: 'command',
       });
-      expect(JSON.parse(String(initOf().body))).toEqual(payload);
-    });
-
-    it('should not send an Authorization header when no OIDC client is configured', async () => {
-      await notifier.notify(CORRELATION_ID, STATION_ID, {});
-
-      expect(initOf().headers).toEqual({ 'Content-Type': 'application/json' });
-    });
+      await vi.runAllTimersAsync();
+      await sending;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0]?.[1]?.body).toEqual(fetchMock.mock.calls[1]?.[1]?.body);
+    },
+  );
+  it('never retries a permanent HTTP rejection', async () => {
+    fetchMock.mockResolvedValue(new Response('', { status: 400 }));
+    await notifier.notify(1, 'command', 'station', {});
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
-
-  // ─── failure containment ───────────────────────────────────────────────────
-
-  describe('failure containment', () => {
-    it('should log a non-2xx response without throwing', async () => {
-      fetchMock.mockResolvedValue({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-        text: () => Promise.resolve('boom'),
-      } as Response);
-
-      await expect(notifier.notify(CORRELATION_ID, STATION_ID, {})).resolves.toBeUndefined();
-      expect(logger.error).toHaveBeenCalled();
-    });
-
-    it('should swallow a transport failure, because a caller endpoint must not break OCPP', async () => {
-      fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
-
-      await expect(notifier.notify(CORRELATION_ID, STATION_ID, {})).resolves.toBeUndefined();
-      expect(logger.error).toHaveBeenCalled();
-    });
+  it('bounds transport retries to three without resurrecting the callback', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockRejectedValue(new Error('unreachable'));
+    const sending = notifier.notify(1, 'command', 'station', {});
+    await vi.runAllTimersAsync();
+    await sending;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(await cache.get('command', namespace)).toBeNull();
+  });
+  it('keeps terminal callbacks isolated by correlation and station', async () => {
+    await cache.set(
+      'command',
+      'http://adapter.test/other',
+      AbstractModule.CALLBACK_URL_CACHE_PREFIX + '1:other',
+    );
+    await notifier.notify(1, 'command', 'station', {});
+    expect(await cache.get('command', AbstractModule.CALLBACK_URL_CACHE_PREFIX + '1:other')).toBe(
+      'http://adapter.test/other',
+    );
+  });
+  it('does not claim another tenant callback with the same station and caller correlation', async () => {
+    const otherNamespace = AbstractModule.CALLBACK_URL_CACHE_PREFIX + '2:station';
+    await cache.set('command', 'http://adapter.test/tenant-2', otherNamespace);
+    await notifier.notify(1, 'command', 'station', {});
+    expect(await cache.get('command', otherNamespace)).toBe('http://adapter.test/tenant-2');
+    await notifier.notify(2, 'command', 'station', {});
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
+      url,
+      'http://adapter.test/tenant-2',
+    ]);
   });
 });
