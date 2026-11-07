@@ -734,7 +734,7 @@ describe('BaseClientApi.request wire behavior', () => {
     const noToken = aProfile({ credentials: {} });
 
     await expect(api.getSession('DE', 'CPO', 'NL', 'MSP', noToken)).rejects.toThrow(
-      /TenantPartner missing server token/,
+      /TenantPartner outbound token is missing/,
     );
     expect(getRaw).not.toHaveBeenCalled();
   });

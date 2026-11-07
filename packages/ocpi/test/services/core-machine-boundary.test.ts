@@ -4,7 +4,7 @@
 
 import { Buffer } from 'node:buffer';
 import { Ajv } from 'ajv';
-import { Logger } from 'tslog';
+import { Logger, type ILogObj } from 'tslog';
 import { describe, expect, it, vi } from 'vitest';
 import { OCPPVersion } from '@citrineos/types';
 import type { TenantPartnerDto } from '@citrineos/types';
@@ -86,7 +86,7 @@ function build(headers: Record<string, string> = {}) {
   const postCommandResult = vi
     .fn<CommandsClientApi['postCommandResult']>()
     .mockResolvedValue(OcpiEmptyResponseSchema.parse({ status_code: 1000, timestamp: new Date() }));
-  const logger = new Logger({ type: 'hidden' });
+  const logger = new Logger<ILogObj>({ type: 'hidden' });
   const debug = vi.spyOn(logger, 'debug');
   const handler = new Handler({
     config: config(headers),
