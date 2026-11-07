@@ -11,11 +11,11 @@ import dataProvider from '@lib/providers/data-provider';
 import liveProvider from '@lib/providers/live-provider';
 import { createNotificationProvider } from '@lib/providers/notification-provider';
 import ReduxProvider from '@lib/providers/redux-provider';
-import { setUserLocale } from '@lib/server/hooks/getUserLocale';
+import { setUserLocale } from '@lib/server/hooks/get-user-locale';
 import { resources } from '@lib/utils/resources';
 import type { I18nProvider } from '@refinedev/core';
 import { Refine } from '@refinedev/core';
-import routerProvider from '@refinedev/nextjs-router';
+import { routerProvider } from '@lib/providers/router-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SessionProvider } from 'next-auth/react';
 import { useLocale, useTranslations } from 'next-intl';
@@ -34,15 +34,6 @@ export function Providers({
     setMounted(true);
   }, []);
 
-  const accessControlProvider = useMemo(
-    () =>
-      createAccessProvider({
-        getPermissions: authProvider.getPermissions!,
-        getUserRole: authProvider.getUserRole!,
-      }),
-    [],
-  );
-
   const queryClient: QueryClient = useMemo(() => {
     return new QueryClient({
       defaultOptions: {
@@ -53,6 +44,8 @@ export function Providers({
       },
     });
   }, []);
+
+  const accessControlProvider = useMemo(() => createAccessProvider(queryClient), [queryClient]);
 
   const t = useTranslations();
 

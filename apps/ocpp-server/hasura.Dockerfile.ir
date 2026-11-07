@@ -6,4 +6,4 @@ FROM ${HASURA_IMAGE}
 
 # Bundle metadata into the image so Dokploy Dockerfile mode works
 # without compose bind mounts.
-COPY ./hasura-metadata /hasura-metadata
+COPY ./db/hasura-metadata /hasura-metadata

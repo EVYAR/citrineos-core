@@ -5,8 +5,8 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { test, expect } from '../../fixtures';
 import type { ApiClient } from '../../fixtures/api-client';
-import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.page';
-import { ModalHarness } from '../../pages/components/modal.po';
+import { ChargingStationDetailPage } from '../../pages/charging-stations/detail-page';
+import { ModalHarness } from '../../pages/components/modal-po';
 import { simulatePlugIn, simulateUnplug } from '../../fixtures/everest';
 
 // The suite's flagship live journey: a real charging session driven end-to-end
@@ -50,7 +50,10 @@ async function pollActiveTransaction(
     }>(
       `query ActiveTxn($name: String!) {
          Transactions(
-           where: { ocppConnectionName: { _eq: $name }, isActive: { _eq: true } }
+           where: {
+             ChargingStation: { ocppConnectionName: { _eq: $name } }
+             isActive: { _eq: true }
+           }
            limit: 1
          ) { id transactionId }
        }`,
@@ -93,7 +96,7 @@ test.describe('charging-stations › live charging session @everest', () => {
       // Navigate first so a cold route compile is paid before the vehicle
       // plugs in (keeping the RemoteStart inside the 120 s auth window).
       const detail = new ChargingStationDetailPage(page);
-      await detail.goto(everestStation.id);
+      await detail.goto(everestStation.ocppConnectionName);
       await expect(detail.commandBar.remoteStartButton.first()).toBeVisible({
         timeout: 60_000,
       });
@@ -157,7 +160,7 @@ test.describe('charging-stations › live charging session @everest', () => {
 
       // The UI has no live updates; reload to surface the started transaction,
       // which flips the command bar from RemoteStart to RemoteStop.
-      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
       await detail.expectLoaded();
       await expect(detail.commandBar.remoteStopButton).toBeVisible({
         timeout: 30_000,

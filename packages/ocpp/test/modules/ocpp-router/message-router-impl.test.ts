@@ -1,0 +1,2031 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import {
+  CacheNamespace,
+  Call,
+  CallError,
+  CallResult,
+  createIdentifier,
+  type ICache,
+  type IMessageHandler,
+  type IMessageSender,
+  OcppError,
+  RequestBuilder,
+} from '@citrineos/base';
+import type { IChargingStationRepository } from '@citrineos/dal';
+import {
+  type CallAction,
+  ErrorCode,
+  EventGroup,
+  MessageOrigin,
+  MessageState,
+  MessageTypeId,
+  NO_ACTION,
+  OCPP1_6,
+  OCPP2_0_1,
+  OCPP_CallAction,
+  type OcppRequest,
+  type OcppResponse,
+  OCPPVersion,
+  type OCPPVersionType,
+  type RawCall,
+  type RawCallError,
+  type RawCallResult,
+  RetryMessageError,
+  type SystemConfig,
+} from '@citrineos/types';
+import { MessageRouterImpl } from '@modules/ocpp-router/router.js';
+import { BootNotificationService } from '@modules/configuration/boot-notification-service.js';
+import { MemoryCache } from '@citrineos/base';
+import type { CallbackUrlNotifier } from '@modules/ocpp-router/callback-url-notifier.js';
+import type { MessagesExchangeSink } from '@/transport/index.js';
+import { createTestContainer, getTestInstance } from '@test/test-container.js';
+import { ConnectionNotFoundError } from '@/transport/index.js';
+import {
+  aMockDeadLetterPublisher,
+  aMockReemitter,
+  type MockDeadLetterPublisher,
+  type MockReemitter,
+} from '../../providers/rabbit-mq-provider.js';
+import { afterEach, beforeEach, describe, expect, it, type Mocked, vi } from 'vitest';
+
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+
+const TENANT_ID = 1;
+const STATION_ID = 'CS001';
+const IDENTIFIER = createIdentifier(TENANT_ID, STATION_ID);
+const PROTOCOL = OCPPVersion.OCPP2_0_1;
+const CORRELATION_ID = 'msg-123';
+
+function buildConfig(overrides?: Partial<SystemConfig['timeouts']>): any {
+  return {
+    logLevel: 0,
+    ocpp: { maxPendingCallsPerStation: 5 },
+    timeouts: {
+      maxCallLengthSeconds: 30,
+      maxCachingSeconds: 60,
+      staleCallMaxAgeSeconds: 40,
+      shutdownGracePeriodSeconds: 30,
+      realTimeAuthDefaultTimeoutSeconds: 15,
+      notReadyThresholdSeconds: 60,
+      ...overrides,
+    },
+  };
+}
+
+function buildMockCache(): Mocked<ICache> {
+  return {
+    exists: vi.fn().mockResolvedValue(false),
+    existsAnyInNamespace: vi.fn().mockResolvedValue(false),
+    remove: vi.fn().mockResolvedValue(true),
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue(true),
+    setIfNotExist: vi.fn().mockResolvedValue(true),
+    onChange: vi.fn().mockResolvedValue(null),
+    getAndRemove: vi.fn().mockResolvedValue(null),
+  } as unknown as Mocked<ICache>;
+}
+
+function buildMockSender(): Mocked<IMessageSender> {
+  return {
+    send: vi.fn().mockResolvedValue({ success: true }),
+    sendRequest: vi.fn().mockResolvedValue({ success: true }),
+    sendResponse: vi.fn().mockResolvedValue({ success: true }),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Mocked<IMessageSender>;
+}
+
+function buildMockHandler(): Mocked<IMessageHandler> {
+  return {
+    subscribe: vi.fn().mockResolvedValue(true),
+    unsubscribe: vi.fn().mockResolvedValue(true),
+    handle: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+    module: undefined,
+  } as unknown as Mocked<IMessageHandler>;
+}
+
+function buildMockSink(): Mocked<MessagesExchangeSink> {
+  return {
+    record: vi.fn().mockResolvedValue({ delivered: true }),
+  } as unknown as Mocked<MessagesExchangeSink>;
+}
+
+function buildMockNotifier(): Mocked<CallbackUrlNotifier> {
+  return {
+    notify: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Mocked<CallbackUrlNotifier>;
+}
+
+function recorded(sink: Mocked<MessagesExchangeSink>, kind: 'frame' | 'connection') {
+  return sink.record.mock.calls.map((call) => call[0]).filter((event: any) => event.kind === kind);
+}
+
+function frames(sink: Mocked<MessagesExchangeSink>, direction: 'inbound' | 'outbound') {
+  return recorded(sink, 'frame').filter((event: any) => event.direction === direction);
+}
+
+function buildMockLocationRepository(): Mocked<IChargingStationRepository> {
+  return {
+    setChargingStationIsOnlineAndOCPPVersion: vi.fn().mockResolvedValue(undefined),
+    readChargingStationByOcppConnectionName: vi.fn().mockResolvedValue(undefined),
+    updateChargingStationTimestamp: vi.fn().mockResolvedValue(undefined),
+  } as unknown as Mocked<IChargingStationRepository>;
+}
+
+// ─── Test Suite ────────────────────────────────────────────────────────────────
+
+describe('MessageRouterImpl', () => {
+  const { container } = createTestContainer();
+  let config: any;
+  let cache: Mocked<ICache>;
+  let sender: Mocked<IMessageSender>;
+  let handler: Mocked<IMessageHandler>;
+  let sink: Mocked<MessagesExchangeSink>;
+  let notifier: Mocked<CallbackUrlNotifier>;
+  let networkHook: ReturnType<typeof vi.fn>;
+  let chargingStationRepository: Mocked<IChargingStationRepository>;
+  let reemitter: MockReemitter;
+  let deadLetterPublisher: MockDeadLetterPublisher;
+  let router: MessageRouterImpl;
+
+  beforeEach(() => {
+    reemitter = aMockReemitter();
+    deadLetterPublisher = aMockDeadLetterPublisher();
+    config = buildConfig();
+    cache = buildMockCache();
+    sender = buildMockSender();
+    handler = buildMockHandler();
+    sink = buildMockSink();
+    notifier = buildMockNotifier();
+    networkHook = vi.fn().mockResolvedValue(undefined);
+    chargingStationRepository = buildMockLocationRepository();
+
+    router = getTestInstance(container, MessageRouterImpl, {
+      config,
+      cache,
+      routerSender: sender,
+      routerHandler: handler,
+      messagesExchangeSink: sink,
+      callbackUrlNotifier: notifier,
+      networkHook,
+      ocppValidator: undefined,
+      chargingStationRepository,
+      reemitter,
+      deadLetterPublisher,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // ─── Constructor ───────────────────────────────────────────────────────────
+
+  describe('constructor', () => {
+    it('should use provided chargingStationRepository', () => {
+      // Verify it doesn't try to create a default one by checking our mock is used
+      expect(router['_chargingStationRepository']).toBe(chargingStationRepository);
+    });
+  });
+
+  // ─── registerConnection ────────────────────────────────────────────────────
+
+  describe('registerConnection', () => {
+    it('should publish a connection event, subscribe request and response, and set charger online', async () => {
+      const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+      expect(recorded(sink, 'connection')).toEqual([
+        expect.objectContaining({
+          tenantId: TENANT_ID,
+          ocppConnectionName: STATION_ID,
+          state: 'connected',
+          protocol: PROTOCOL,
+        }),
+      ]);
+
+      expect(handler.subscribe).toHaveBeenCalledTimes(2);
+      // Request subscription
+      expect(handler.subscribe).toHaveBeenCalledWith(IDENTIFIER, undefined, {
+        tenantId: TENANT_ID.toString(),
+        ocppConnectionName: STATION_ID,
+        state: MessageState.Request.toString(),
+        origin: MessageOrigin.ChargingStationManagementSystem.toString(),
+      });
+      // Response subscription
+      expect(handler.subscribe).toHaveBeenCalledWith(IDENTIFIER, undefined, {
+        tenantId: TENANT_ID.toString(),
+        ocppConnectionName: STATION_ID,
+        state: MessageState.Response.toString(),
+        origin: MessageOrigin.ChargingStationManagementSystem.toString(),
+      });
+
+      expect(
+        chargingStationRepository.setChargingStationIsOnlineAndOCPPVersion,
+      ).toHaveBeenCalledWith(TENANT_ID, STATION_ID, true, PROTOCOL, undefined);
+
+      expect(result).toBe(true);
+    });
+
+    it('should return false when both subscriptions fail', async () => {
+      handler.subscribe.mockResolvedValue(false);
+
+      const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+      expect(result).toBe(false);
+    });
+
+    it('should return false when request subscription fails', async () => {
+      handler.subscribe
+        .mockResolvedValueOnce(false) // request
+        .mockResolvedValueOnce(true); // response
+
+      const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+      expect(result).toBe(false);
+    });
+
+    it('should return false on error and log the error', async () => {
+      handler.subscribe.mockRejectedValue(new Error('subscribe failed'));
+
+      const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+      expect(result).toBe(false);
+    });
+
+    describe('when registration only partly succeeds', () => {
+      const setOnline = () => chargingStationRepository.setChargingStationIsOnlineAndOCPPVersion;
+
+      it('should not publish a connected event', async () => {
+        handler.subscribe.mockRejectedValueOnce(new Error('channel closed'));
+
+        await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+        expect(recorded(sink, 'connection')).toEqual([]);
+      });
+
+      it('should mark the station offline again and unbind what it bound', async () => {
+        handler.subscribe
+          .mockRejectedValueOnce(new Error('channel closed')) // request
+          .mockResolvedValueOnce(true); // response
+
+        const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL, 'ws-0');
+
+        expect(result).toBe(false);
+        expect(handler.unsubscribe).toHaveBeenCalledWith(IDENTIFIER);
+        expect(setOnline().mock.calls).toEqual([
+          [TENANT_ID, STATION_ID, true, PROTOCOL, 'ws-0'],
+          [TENANT_ID, STATION_ID, false, PROTOCOL, null],
+        ]);
+      });
+
+      it('should wait for an online write still in flight before marking the station offline', async () => {
+        let finishOnlineWrite!: () => void;
+        setOnline().mockImplementationOnce(
+          () => new Promise((resolve) => (finishOnlineWrite = () => resolve(undefined))),
+        );
+        handler.subscribe.mockRejectedValueOnce(new Error('channel closed'));
+
+        const registering = router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(setOnline()).toHaveBeenCalledTimes(1);
+
+        finishOnlineWrite();
+        await registering;
+
+        expect(setOnline()).toHaveBeenCalledTimes(2);
+        expect(setOnline().mock.calls[1][2]).toBe(false);
+      });
+
+      it('should only unbind when the online write is what failed', async () => {
+        setOnline().mockRejectedValueOnce(new Error('database down'));
+
+        const result = await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+        expect(result).toBe(false);
+        expect(handler.unsubscribe).toHaveBeenCalledWith(IDENTIFIER);
+        expect(setOnline()).toHaveBeenCalledTimes(1);
+        expect(recorded(sink, 'connection')).toEqual([]);
+      });
+
+      it('should not unbind when nothing was bound', async () => {
+        handler.subscribe.mockRejectedValue(new Error('channel closed'));
+
+        await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+
+        expect(handler.unsubscribe).not.toHaveBeenCalled();
+      });
+
+      it('should still return false when the rollback itself fails', async () => {
+        handler.subscribe.mockRejectedValueOnce(new Error('channel closed'));
+        setOnline()
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValueOnce(new Error('database down'));
+        handler.unsubscribe.mockRejectedValueOnce(new Error('channel closed'));
+
+        await expect(router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL)).resolves.toBe(
+          false,
+        );
+      });
+    });
+  });
+
+  // ─── deregisterConnection ─────────────────────────────────────────────────
+
+  describe('deregisterConnection', () => {
+    it('should publish a close event, set charger offline, and unsubscribe handler', async () => {
+      chargingStationRepository.readChargingStationByOcppConnectionName.mockResolvedValue({
+        protocol: PROTOCOL,
+      } as any);
+
+      const result = await router.deregisterConnection(TENANT_ID, STATION_ID);
+
+      expect(recorded(sink, 'connection')).toEqual([
+        expect.objectContaining({
+          tenantId: TENANT_ID,
+          ocppConnectionName: STATION_ID,
+          state: 'closed',
+        }),
+      ]);
+      expect(
+        chargingStationRepository.readChargingStationByOcppConnectionName,
+      ).toHaveBeenCalledWith(TENANT_ID, STATION_ID);
+      expect(
+        chargingStationRepository.setChargingStationIsOnlineAndOCPPVersion,
+      ).toHaveBeenCalledWith(TENANT_ID, STATION_ID, false, PROTOCOL, null);
+      expect(handler.unsubscribe).toHaveBeenCalledWith(IDENTIFIER);
+      expect(result).toBe(true);
+    });
+
+    it('should set protocol to null when charging station is not found', async () => {
+      chargingStationRepository.readChargingStationByOcppConnectionName.mockResolvedValue(
+        undefined,
+      );
+
+      await router.deregisterConnection(TENANT_ID, STATION_ID);
+
+      expect(
+        chargingStationRepository.setChargingStationIsOnlineAndOCPPVersion,
+      ).toHaveBeenCalledWith(TENANT_ID, STATION_ID, false, null, null);
+    });
+
+    it('should set protocol to null when readChargingStation throws', async () => {
+      chargingStationRepository.readChargingStationByOcppConnectionName.mockRejectedValue(
+        new Error('db error'),
+      );
+
+      await router.deregisterConnection(TENANT_ID, STATION_ID);
+
+      expect(
+        chargingStationRepository.setChargingStationIsOnlineAndOCPPVersion,
+      ).toHaveBeenCalledWith(TENANT_ID, STATION_ID, false, null, null);
+    });
+
+    it('should not throw when publishing the close event fails', async () => {
+      sink.record.mockRejectedValue(new Error('publish failed'));
+
+      // Should not throw
+      const result = await router.deregisterConnection(TENANT_ID, STATION_ID);
+
+      expect(handler.unsubscribe).toHaveBeenCalledWith(IDENTIFIER);
+      expect(result).toBe(true);
+    });
+  });
+
+  // ─── onMessage ─────────────────────────────────────────────────────────────
+
+  describe('onMessage', () => {
+    const timestamp = new Date('2025-01-01T00:00:00Z');
+
+    describe('Call messages (MessageTypeId.Call)', () => {
+      it('should process a valid Call message', async () => {
+        // Stub the internal validation to pass
+        vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
+        // Stub _onCallIsAllowed
+        cache.exists.mockResolvedValue(false); // not blacklisted
+
+        const callMessage: RawCall = [
+          MessageTypeId.Call,
+          CORRELATION_ID,
+          OCPP_CallAction.BootNotification,
+          { chargingStation: { model: 'Model', vendorName: 'Vendor' }, reason: 'PowerUp' },
+        ];
+        const rawMessage = JSON.stringify(callMessage);
+
+        const result = await router.onMessage(IDENTIFIER, rawMessage, timestamp, PROTOCOL);
+
+        expect(result).toBe(true);
+        expect(recorded(sink, 'frame')).toHaveLength(1);
+      });
+
+      it('should return false and send CallError for invalid JSON', async () => {
+        const result = await router.onMessage(IDENTIFIER, 'not-json', timestamp, PROTOCOL);
+
+        expect(result).toBe(false);
+        expect(frames(sink, 'inbound')).toEqual([expect.objectContaining({ parsed: false })]);
+      });
+
+      it('should return false and send CallError for unknown message type id', async () => {
+        const badMessage = JSON.stringify([99, CORRELATION_ID, 'SomeAction', {}]);
+
+        const result = await router.onMessage(IDENTIFIER, badMessage, timestamp, PROTOCOL);
+
+        expect(result).toBe(false);
+        // Should send a CallError back via network hook
+        expect(networkHook).toHaveBeenCalled();
+        expect(frames(sink, 'inbound')).toEqual([expect.objectContaining({ parsed: false })]);
+      });
+
+      it('should send CallError with FormationViolation for ocpp1.6 unknown message type', async () => {
+        const badMessage = JSON.stringify([99, CORRELATION_ID, 'SomeAction', {}]);
+
+        await router.onMessage(IDENTIFIER, badMessage, timestamp, 'ocpp1.6');
+
+        expect(networkHook).toHaveBeenCalled();
+        const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+        expect(sentMessage[2]).toBe(ErrorCode.FormatViolation);
+      });
+
+      it('should send CallError with FormatViolation for ocpp2.0.1 unknown message type', async () => {
+        const badMessage = JSON.stringify([99, CORRELATION_ID, 'SomeAction', {}]);
+
+        await router.onMessage(IDENTIFIER, badMessage, timestamp, 'ocpp2.0.1');
+
+        expect(networkHook).toHaveBeenCalled();
+        const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+        expect(sentMessage[2]).toBe(ErrorCode.FormatViolation);
+      });
+
+      it('should not send CallError for failed CallResult processing', async () => {
+        // CallResult that will fail processing (no cached action)
+        const callResultMessage = JSON.stringify([MessageTypeId.CallResult, CORRELATION_ID, {}]);
+
+        await router.onMessage(IDENTIFIER, callResultMessage, timestamp, PROTOCOL);
+
+        // CallResult errors should not trigger a CallError response
+        expect(networkHook).not.toHaveBeenCalled();
+        // The networkHook should be called with a CallError
+        expect(recorded(sink, 'frame')).toHaveLength(1);
+      });
+
+      it('should not send CallError for failed CallError processing', async () => {
+        const callErrorMessage = JSON.stringify([
+          MessageTypeId.CallError,
+          CORRELATION_ID,
+          ErrorCode.InternalError,
+          'Something failed',
+          {},
+        ]);
+
+        await router.onMessage(IDENTIFIER, callErrorMessage, timestamp, PROTOCOL);
+
+        expect(recorded(sink, 'frame')).toHaveLength(1);
+      });
+    });
+
+    describe('CallResult messages', () => {
+      it('should process a valid CallResult message', async () => {
+        // Set up cached action for the correlation id (new format: action@isoTimestamp)
+        cache.get.mockResolvedValue(`BootNotification@${new Date().toISOString()}`);
+        vi.spyOn(router as any, '_validateCallResult').mockReturnValue({ isValid: true });
+
+        const callResultMessage: RawCallResult = [MessageTypeId.CallResult, CORRELATION_ID, {}];
+        const rawMessage = JSON.stringify(callResultMessage);
+
+        const result = await router.onMessage(IDENTIFIER, rawMessage, timestamp, PROTOCOL);
+
+        expect(result).toBe(true);
+        expect(cache.remove).toHaveBeenCalledWith(
+          CORRELATION_ID,
+          CacheNamespace.Transactions + IDENTIFIER,
+        );
+      });
+    });
+
+    describe('CallError messages', () => {
+      it('should process a valid CallError message', async () => {
+        cache.get.mockResolvedValue(`BootNotification@${new Date().toISOString()}`);
+
+        const callErrorMessage: RawCallError = [
+          MessageTypeId.CallError,
+          CORRELATION_ID,
+          ErrorCode.InternalError,
+          'Something failed',
+          {},
+        ];
+        const rawMessage = JSON.stringify(callErrorMessage);
+
+        const result = await router.onMessage(IDENTIFIER, rawMessage, timestamp, PROTOCOL);
+
+        expect(result).toBe(true);
+        expect(cache.remove).toHaveBeenCalledWith(
+          CORRELATION_ID,
+          CacheNamespace.Transactions + IDENTIFIER,
+        );
+      });
+    });
+
+    it('should always dispatch webhook even on error', async () => {
+      await router.onMessage(IDENTIFIER, 'invalid-json', timestamp, PROTOCOL);
+
+      expect(frames(sink, 'inbound')).toEqual([
+        expect.objectContaining({
+          tenantId: TENANT_ID,
+          ocppConnectionName: STATION_ID,
+          origin: MessageOrigin.ChargingStation,
+          raw: 'invalid-json',
+          timestamp: timestamp.toISOString(),
+          protocol: PROTOCOL,
+          action: NO_ACTION,
+          type: undefined,
+          parsed: false,
+        }),
+      ]);
+    });
+
+    it('should leave latestOcppMessageTimestamp to the messages module', async () => {
+      vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
+      cache.exists.mockResolvedValue(false);
+
+      const callMessage = JSON.stringify([
+        MessageTypeId.Call,
+        CORRELATION_ID,
+        OCPP_CallAction.Heartbeat,
+        {},
+      ]);
+
+      await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+      expect(chargingStationRepository.updateChargingStationTimestamp).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── _onCall (tested indirectly through onMessage) ─────────────────────────
+
+  describe('_onCall (via onMessage)', () => {
+    const timestamp = new Date('2025-01-01T00:00:00Z');
+
+    it('should send CallError when action is blacklisted', async () => {
+      cache.exists.mockResolvedValue(true); // action is blacklisted
+
+      const callMessage = JSON.stringify([
+        MessageTypeId.Call,
+        CORRELATION_ID,
+        OCPP_CallAction.Heartbeat,
+        {},
+      ]);
+
+      const result = await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+      expect(result).toBe(false);
+      expect(networkHook).toHaveBeenCalled();
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[0]).toBe(MessageTypeId.CallError);
+      expect(sentMessage[2]).toBe(ErrorCode.SecurityError);
+    });
+
+    /**
+     * OCPP-J 4.3: "NotImplemented - Requested Action is not known by receiver." InternalError is
+     * "an internal error occurred and the receiver was not able to process the requested Action",
+     * which is what a station was told when it merely spoke a newer dialect.
+     */
+    it.each([
+      ['an action no version defines', 'NotAnAction', OCPPVersion.OCPP2_0_1],
+      ['a 2.1 action on a 2.0.1 connection', 'NotifyPriorityCharging', OCPPVersion.OCPP2_0_1],
+      ['a 2.x action on a 1.6 connection', 'TransactionEvent', OCPPVersion.OCPP1_6],
+    ])('answers %s with NotImplemented', async (_label, action, protocol) => {
+      const callMessage = JSON.stringify([MessageTypeId.Call, CORRELATION_ID, action, {}]);
+
+      const result = await router.onMessage(IDENTIFIER, callMessage, timestamp, protocol);
+
+      expect(result).toBe(false);
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[0]).toBe(MessageTypeId.CallError);
+      expect(sentMessage[1]).toBe(CORRELATION_ID);
+      expect(sentMessage[2]).toBe(ErrorCode.NotImplemented);
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it('still records a Call whose action it does not know', async () => {
+      const callMessage = JSON.stringify([MessageTypeId.Call, CORRELATION_ID, 'NotAnAction', {}]);
+
+      await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+      expect(frames(sink, 'inbound')).toEqual([
+        expect.objectContaining({
+          tenantId: TENANT_ID,
+          ocppConnectionName: STATION_ID,
+          origin: MessageOrigin.ChargingStation,
+          raw: callMessage,
+          timestamp: timestamp.toISOString(),
+          protocol: PROTOCOL,
+          action: 'NotAnAction',
+          type: MessageTypeId.Call,
+          parsed: true,
+        }),
+      ]);
+    });
+
+    it('should send CallError when validation fails', async () => {
+      cache.exists.mockResolvedValue(false);
+      vi.spyOn(router as any, '_validateCall').mockReturnValue({
+        isValid: false,
+        errors: [{ message: 'bad format' }],
+      });
+
+      const callMessage = JSON.stringify([
+        MessageTypeId.Call,
+        CORRELATION_ID,
+        OCPP_CallAction.BootNotification,
+        {},
+      ]);
+
+      const result = await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+      expect(result).toBe(false);
+      expect(networkHook).toHaveBeenCalled();
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[2]).toBe(ErrorCode.FormatViolation);
+    });
+
+    it('answers a 1.6 Call that fails validation with FormationViolation', async () => {
+      cache.exists.mockResolvedValue(false);
+      vi.spyOn(router as any, '_validateCall').mockReturnValue({
+        isValid: false,
+        errors: [{ message: 'bad format' }],
+      });
+
+      const callMessage = JSON.stringify([
+        MessageTypeId.Call,
+        CORRELATION_ID,
+        OCPP_CallAction.BootNotification,
+        {},
+      ]);
+
+      const result = await router.onMessage(
+        IDENTIFIER,
+        callMessage,
+        timestamp,
+        OCPPVersion.OCPP1_6,
+      );
+
+      expect(result).toBe(false);
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[0]).toBe(MessageTypeId.CallError);
+      expect(sentMessage[2]).toBe(ErrorCode.FormationViolation);
+    });
+
+    it('should send CallError when _routeCall fails', async () => {
+      cache.exists.mockResolvedValue(false);
+      vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
+      sender.send.mockResolvedValue({ success: false, payload: 'routing failed' });
+
+      const callMessage = JSON.stringify([
+        MessageTypeId.Call,
+        CORRELATION_ID,
+        OCPP_CallAction.Heartbeat,
+        {},
+      ]);
+
+      await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+      // The error is handled asynchronously via sendCallError, so success is still true from onMessage
+      // but the call itself will trigger sendCallError
+      expect(sender.send).toHaveBeenCalled();
+    });
+  });
+
+  // ─── action attribution ────────────────────────────────────────────────────
+
+  describe('action attribution', () => {
+    const timestamp = new Date('2025-01-01T00:00:00Z');
+
+    describe('getActionFromIncompletelyParsedRpcMessage', () => {
+      const getAction = (rpcMessage: any, messageTypeId?: MessageTypeId) =>
+        (router as any).getActionFromIncompletelyParsedRpcMessage(rpcMessage, messageTypeId);
+
+      it('should read the action off a Call frame that carries one', () => {
+        expect(
+          getAction(
+            [MessageTypeId.Call, CORRELATION_ID, OCPP_CallAction.Heartbeat, {}],
+            MessageTypeId.Call,
+          ),
+        ).toBe(OCPP_CallAction.Heartbeat);
+      });
+
+      it('should fall back to NO_ACTION for a Call frame truncated before the action', () => {
+        expect(getAction([MessageTypeId.Call, CORRELATION_ID], MessageTypeId.Call)).toBe(NO_ACTION);
+      });
+
+      it('should fall back to NO_ACTION when the frame itself could not be parsed', () => {
+        expect(getAction(undefined, MessageTypeId.Call)).toBe(NO_ACTION);
+      });
+
+      it('should fall back to NO_ACTION for a CallResult frame', () => {
+        expect(
+          getAction([MessageTypeId.CallResult, CORRELATION_ID, {}], MessageTypeId.CallResult),
+        ).toBe(NO_ACTION);
+      });
+
+      it('should fall back to NO_ACTION for a CallError frame', () => {
+        expect(
+          getAction(
+            [MessageTypeId.CallError, CORRELATION_ID, ErrorCode.InternalError, 'boom', {}],
+            MessageTypeId.CallError,
+          ),
+        ).toBe(NO_ACTION);
+      });
+
+      it('should fall back to NO_ACTION when the messageTypeId could not be read', () => {
+        expect(getAction(undefined, undefined)).toBe(NO_ACTION);
+      });
+
+      it('should fall back to NO_ACTION for an unknown messageTypeId even if slot 2 looks like an action', () => {
+        expect(
+          getAction([99, CORRELATION_ID, OCPP_CallAction.Heartbeat, {}], 99 as MessageTypeId),
+        ).toBe(NO_ACTION);
+      });
+    });
+
+    describe('unparsed messages (via onMessage)', () => {
+      it('should attribute both the record and the CallError reply to a malformed Call action', async () => {
+        // Payload missing ⇒ the Call model rejects the frame, but the action is still readable.
+        const malformedCall = JSON.stringify([
+          MessageTypeId.Call,
+          CORRELATION_ID,
+          OCPP_CallAction.Heartbeat,
+        ]);
+
+        const result = await router.onMessage(IDENTIFIER, malformedCall, timestamp, PROTOCOL);
+
+        expect(result).toBe(false);
+        expect(frames(sink, 'inbound')).toEqual([
+          expect.objectContaining({
+            tenantId: TENANT_ID,
+            ocppConnectionName: STATION_ID,
+            raw: malformedCall,
+            timestamp: timestamp.toISOString(),
+            protocol: PROTOCOL,
+            action: OCPP_CallAction.Heartbeat,
+            type: MessageTypeId.Call,
+            parsed: false,
+          }),
+        ]);
+        expect(frames(sink, 'outbound')).toEqual([
+          expect.objectContaining({
+            origin: MessageOrigin.ChargingStationManagementSystem,
+            protocol: PROTOCOL,
+            type: MessageTypeId.CallError,
+            action: OCPP_CallAction.Heartbeat,
+            parsed: true,
+          }),
+        ]);
+      });
+
+      it('should leave the action undefined on the CallError reply to an unparseable frame', async () => {
+        await router.onMessage(IDENTIFIER, 'not-json', timestamp, PROTOCOL);
+
+        expect(frames(sink, 'outbound')).toEqual([
+          expect.objectContaining({
+            protocol: PROTOCOL,
+            type: MessageTypeId.CallError,
+            action: NO_ACTION,
+          }),
+        ]);
+      });
+
+      it('should leave the action undefined for an unknown messageTypeId', async () => {
+        const badMessage = JSON.stringify([99, CORRELATION_ID, OCPP_CallAction.Heartbeat, {}]);
+
+        await router.onMessage(IDENTIFIER, badMessage, timestamp, PROTOCOL);
+
+        expect(frames(sink, 'inbound')).toEqual([
+          expect.objectContaining({
+            raw: badMessage,
+            timestamp: timestamp.toISOString(),
+            protocol: PROTOCOL,
+            action: NO_ACTION,
+            type: 99,
+            parsed: false,
+          }),
+        ]);
+      });
+
+      it('should leave the action undefined for a malformed CallResult and send no reply', async () => {
+        // Payload is a string, not an object ⇒ the CallResult model rejects the frame.
+        const malformedCallResult = JSON.stringify([
+          MessageTypeId.CallResult,
+          CORRELATION_ID,
+          'not-an-object',
+        ]);
+
+        const result = await router.onMessage(IDENTIFIER, malformedCallResult, timestamp, PROTOCOL);
+
+        expect(result).toBe(false);
+        // A CallResult is never answered with a CallError.
+        expect(networkHook).not.toHaveBeenCalled();
+        expect(frames(sink, 'outbound')).toHaveLength(0);
+        expect(frames(sink, 'inbound')).toEqual([
+          expect.objectContaining({
+            raw: malformedCallResult,
+            timestamp: timestamp.toISOString(),
+            protocol: PROTOCOL,
+            action: NO_ACTION,
+            type: MessageTypeId.CallResult,
+            parsed: false,
+          }),
+        ]);
+      });
+    });
+
+    describe('parsed messages (via onMessage)', () => {
+      it('should record a Call with its own action', async () => {
+        vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
+        cache.exists.mockResolvedValue(false);
+
+        const callMessage = JSON.stringify([
+          MessageTypeId.Call,
+          CORRELATION_ID,
+          OCPP_CallAction.Heartbeat,
+          {},
+        ]);
+
+        await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+        expect(frames(sink, 'inbound')).toEqual([
+          expect.objectContaining({
+            tenantId: TENANT_ID,
+            ocppConnectionName: STATION_ID,
+            timestamp: timestamp.toISOString(),
+            protocol: PROTOCOL,
+            raw: callMessage,
+            type: MessageTypeId.Call,
+            action: OCPP_CallAction.Heartbeat,
+            parsed: true,
+          }),
+        ]);
+      });
+
+      it('should record a CallResult without an action, leaving correlation to supply it', async () => {
+        cache.get.mockResolvedValue(
+          `${OCPP_CallAction.BootNotification}@${timestamp.toISOString()}`,
+        );
+        vi.spyOn(router as any, '_validateCallResult').mockReturnValue({ isValid: true });
+
+        const callResultMessage = JSON.stringify([MessageTypeId.CallResult, CORRELATION_ID, {}]);
+
+        await router.onMessage(IDENTIFIER, callResultMessage, timestamp, PROTOCOL);
+
+        expect(frames(sink, 'inbound')).toEqual([
+          expect.objectContaining({
+            timestamp: timestamp.toISOString(),
+            protocol: PROTOCOL,
+            raw: callResultMessage,
+            type: MessageTypeId.CallResult,
+            action: undefined,
+            parsed: true,
+          }),
+        ]);
+      });
+
+      it('should record a CallError without an action, leaving correlation to supply it', async () => {
+        cache.get.mockResolvedValue(
+          `${OCPP_CallAction.BootNotification}@${timestamp.toISOString()}`,
+        );
+
+        const callErrorMessage = JSON.stringify([
+          MessageTypeId.CallError,
+          CORRELATION_ID,
+          ErrorCode.InternalError,
+          'boom',
+          {},
+        ]);
+
+        await router.onMessage(IDENTIFIER, callErrorMessage, timestamp, PROTOCOL);
+
+        expect(frames(sink, 'inbound')).toEqual([
+          expect.objectContaining({
+            timestamp: timestamp.toISOString(),
+            protocol: PROTOCOL,
+            raw: callErrorMessage,
+            type: MessageTypeId.CallError,
+            action: undefined,
+            parsed: true,
+          }),
+        ]);
+      });
+
+      it('should attribute the CallError reply to the action of the Call it rejects', async () => {
+        cache.exists.mockResolvedValue(true); // blacklisted ⇒ _onCall throws back out to onMessage
+
+        const callMessage = JSON.stringify([
+          MessageTypeId.Call,
+          CORRELATION_ID,
+          OCPP_CallAction.Heartbeat,
+          {},
+        ]);
+
+        await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+        expect(frames(sink, 'outbound')).toEqual([
+          expect.objectContaining({
+            protocol: PROTOCOL,
+            type: MessageTypeId.CallError,
+            action: OCPP_CallAction.Heartbeat,
+          }),
+        ]);
+      });
+    });
+
+    describe('outbound messages', () => {
+      it('should attribute a sent Call to its action', async () => {
+        cache.get.mockResolvedValue(null);
+
+        await router.sendCall(
+          STATION_ID,
+          TENANT_ID,
+          PROTOCOL,
+          OCPP_CallAction.GetBaseReport,
+          { requestId: 1, reportBase: 'FullInventory' } as unknown as OcppRequest,
+          CORRELATION_ID,
+        );
+
+        expect(frames(sink, 'outbound')).toEqual([
+          expect.objectContaining({
+            tenantId: TENANT_ID,
+            ocppConnectionName: STATION_ID,
+            origin: MessageOrigin.ChargingStationManagementSystem,
+            protocol: PROTOCOL,
+            type: MessageTypeId.Call,
+            action: OCPP_CallAction.GetBaseReport,
+            parsed: true,
+          }),
+        ]);
+      });
+
+      it('should attribute a sent CallResult to the cached action of the Call it answers', async () => {
+        const action = OCPP_CallAction.BootNotification;
+        cache.get.mockResolvedValue(`${action}@${timestamp.toISOString()}`);
+
+        await router.sendCallResult(CORRELATION_ID, STATION_ID, TENANT_ID, PROTOCOL, action, {
+          status: 'Accepted',
+        } as unknown as OcppResponse);
+
+        expect(frames(sink, 'outbound')).toEqual([
+          expect.objectContaining({
+            origin: MessageOrigin.ChargingStationManagementSystem,
+            protocol: PROTOCOL,
+            type: MessageTypeId.CallResult,
+            action,
+            parsed: true,
+          }),
+        ]);
+      });
+
+      it('should attribute a sent CallError to the cached action of the Call it answers', async () => {
+        const action = OCPP_CallAction.BootNotification;
+        cache.get.mockResolvedValue(`${action}@${timestamp.toISOString()}`);
+
+        await router.sendCallError(
+          CORRELATION_ID,
+          STATION_ID,
+          TENANT_ID,
+          PROTOCOL,
+          action,
+          new OcppError(CORRELATION_ID, ErrorCode.InternalError, 'boom', {}),
+        );
+
+        expect(frames(sink, 'outbound')).toEqual([
+          expect.objectContaining({
+            origin: MessageOrigin.ChargingStationManagementSystem,
+            protocol: PROTOCOL,
+            type: MessageTypeId.CallError,
+            action,
+            parsed: true,
+          }),
+        ]);
+      });
+    });
+  });
+
+  // ─── sendCall ──────────────────────────────────────────────────────────────
+
+  describe('sendCall', () => {
+    const action = OCPP_CallAction.GetBaseReport;
+    const payload = { requestId: 1, reportBase: 'FullInventory' } as unknown as OcppRequest;
+
+    it('should send a Call message successfully', async () => {
+      // Not rejected boot status, no ongoing call
+      cache.get.mockResolvedValue(null);
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(true);
+      expect(networkHook).toHaveBeenCalledWith(IDENTIFIER, expect.any(String));
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[0]).toBe(MessageTypeId.Call);
+      expect(sentMessage[1]).toBe(CORRELATION_ID);
+      expect(sentMessage[2]).toBe(action);
+    });
+
+    it('should throw RetryMessageError when call is already in progress', async () => {
+      cache.get.mockResolvedValue(null); // not rejected
+      cache.setIfNotExist.mockResolvedValue(false); // call in progress
+
+      await expect(
+        router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID),
+      ).rejects.toThrow(RetryMessageError);
+    });
+
+    it('should return success false when boot status is Rejected', async () => {
+      cache.get.mockResolvedValue(OCPP2_0_1.RegistrationStatusEnumType.Rejected);
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(false);
+      expect(networkHook).not.toHaveBeenCalled();
+    });
+
+    it('should allow TriggerMessage<BootNotification> even when Rejected', async () => {
+      cache.get.mockResolvedValue(OCPP2_0_1.RegistrationStatusEnumType.Rejected);
+
+      const triggerPayload = {
+        requestedMessage: OCPP2_0_1.MessageTriggerEnumType.BootNotification,
+      } as unknown as OcppRequest;
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.TriggerMessage,
+        triggerPayload,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(true);
+      expect(networkHook).toHaveBeenCalled();
+    });
+
+    it('should return success false when networkHook fails', async () => {
+      cache.get.mockResolvedValue(null);
+      networkHook.mockRejectedValue(new Error('network error'));
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(false);
+      expect(cache.remove).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        CacheNamespace.Transactions + IDENTIFIER,
+      );
+    });
+
+    it('should publish the sent frame on a successful send', async () => {
+      cache.get.mockResolvedValue(null);
+
+      await router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID);
+
+      expect(recorded(sink, 'frame').some((e: any) => e.direction === 'outbound')).toBe(true);
+    });
+
+    it('should set cache entry with correlationId key and action@timestamp value', async () => {
+      cache.get.mockResolvedValue(null);
+
+      await router.sendCall(STATION_ID, TENANT_ID, PROTOCOL, action, payload, CORRELATION_ID);
+
+      expect(cache.set).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        expect.stringMatching(new RegExp(`^${action}@`)),
+        CacheNamespace.Transactions + IDENTIFIER,
+        { seconds: config.timeouts.maxCallLengthSeconds, onExpire: expect.any(Function) },
+      );
+    });
+  });
+
+  // ─── handle (stale Call TTL) ─────────────────────────────────────────────────
+
+  describe('handle stale Call TTL', () => {
+    const action = OCPP_CallAction.GetBaseReport;
+    const payload = { requestId: 1, reportBase: 'FullInventory' } as unknown as OcppRequest;
+
+    function buildRequestMessage(ageMs: number) {
+      return RequestBuilder.buildCall(
+        STATION_ID,
+        CORRELATION_ID,
+        TENANT_ID,
+        action,
+        payload,
+        EventGroup.Reporting,
+        MessageOrigin.ChargingStationManagementSystem,
+        PROTOCOL,
+        new Date(Date.now() - ageMs),
+      );
+    }
+
+    async function aConnectedRouter(timeouts: Partial<SystemConfig['timeouts']>) {
+      const connected = getTestInstance(container, MessageRouterImpl, {
+        config: buildConfig(timeouts),
+        cache,
+        routerSender: sender,
+        routerHandler: handler,
+        messagesExchangeSink: sink,
+        callbackUrlNotifier: notifier,
+        networkHook,
+        ocppValidator: undefined,
+        chargingStationRepository,
+        reemitter,
+        deadLetterPublisher,
+      });
+      await connected.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+      return connected;
+    }
+
+    it('should dead-letter a Call older than staleCallMaxAgeSeconds instead of sending it', async () => {
+      const guarded = await aConnectedRouter({ staleCallMaxAgeSeconds: 30 });
+      const sendCallSpy = vi.spyOn(guarded, 'sendCall');
+      const message = buildRequestMessage(60_000);
+
+      await guarded.handle(message);
+
+      expect(sendCallSpy).not.toHaveBeenCalled();
+      expect(networkHook).not.toHaveBeenCalled();
+      expect(deadLetterPublisher.publishMessage).toHaveBeenCalledWith(message, 'stale', 'router');
+    });
+
+    it('should route a Call still within staleCallMaxAgeSeconds', async () => {
+      const guarded = await aConnectedRouter({ staleCallMaxAgeSeconds: 30 });
+      const sendCallSpy = vi.spyOn(guarded, 'sendCall');
+
+      await guarded.handle(buildRequestMessage(0));
+
+      expect(sendCallSpy).toHaveBeenCalledTimes(1);
+      expect(deadLetterPublisher.publishMessage).not.toHaveBeenCalled();
+    });
+
+    it('should route an aged Call when staleCallMaxAgeSeconds is 0', async () => {
+      const unguarded = await aConnectedRouter({ staleCallMaxAgeSeconds: 0 });
+      const sendCallSpy = vi.spyOn(unguarded, 'sendCall');
+
+      await unguarded.handle(buildRequestMessage(60_000));
+
+      expect(sendCallSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── handle (stations this router does not hold) ───────────────────────────
+
+  describe('handle for a station whose websocket is not here', () => {
+    const payload = { requestId: 1, reportBase: 'FullInventory' } as unknown as OcppRequest;
+
+    function aCall(correlationId: string = CORRELATION_ID) {
+      return RequestBuilder.buildCall(
+        STATION_ID,
+        correlationId,
+        TENANT_ID,
+        OCPP_CallAction.GetBaseReport,
+        payload,
+        EventGroup.Reporting,
+        MessageOrigin.ChargingStationManagementSystem,
+        PROTOCOL,
+      );
+    }
+
+    it('should re-emit a Call when the network connection has no websocket for the station', async () => {
+      networkHook.mockRejectedValueOnce(new ConnectionNotFoundError(IDENTIFIER));
+      const message = aCall();
+
+      await router.handle(message);
+
+      expect(reemitter.reemit).toHaveBeenCalledWith(message);
+    });
+
+    it('should forget the Call it could not send, so the station is free for the next one', async () => {
+      networkHook.mockRejectedValueOnce(new ConnectionNotFoundError(IDENTIFIER));
+
+      await router.handle(aCall());
+
+      const namespace = CacheNamespace.Transactions + IDENTIFIER;
+      expect(cache.remove).toHaveBeenCalledWith(CORRELATION_ID, namespace);
+      expect(cache.remove).toHaveBeenCalledWith('outstanding-csms-call', namespace);
+    });
+
+    it("should re-emit a response and keep the station's Call for the router that answers it", async () => {
+      const namespace = CacheNamespace.Transactions + IDENTIFIER;
+      cache.get.mockResolvedValue(`${OCPP_CallAction.Heartbeat}@2026-09-01T12:00:00.000Z`);
+      networkHook.mockRejectedValueOnce(new ConnectionNotFoundError(IDENTIFIER));
+      const response = RequestBuilder.buildCallResult(
+        STATION_ID,
+        CORRELATION_ID,
+        TENANT_ID,
+        OCPP_CallAction.Heartbeat,
+        { currentTime: '2026-09-01T12:00:00.000Z' } as unknown as OcppResponse,
+        EventGroup.Configuration,
+        MessageOrigin.ChargingStationManagementSystem,
+        PROTOCOL,
+      );
+
+      await router.handle(response);
+
+      expect(reemitter.reemit).toHaveBeenCalledWith(response);
+      expect(cache.remove).not.toHaveBeenCalledWith(CORRELATION_ID, namespace);
+    });
+
+    it('should drop, not re-emit, a Call whose send failed for another reason', async () => {
+      networkHook.mockRejectedValueOnce(new Error('socket write failed'));
+
+      await router.handle(aCall());
+
+      expect(reemitter.reemit).not.toHaveBeenCalled();
+    });
+
+    it('should hold messages that arrive while the station unbinds and re-emit them after', async () => {
+      await router.registerConnection(TENANT_ID, STATION_ID, PROTOCOL);
+      let finishUnbind: (value: boolean) => void = () => {};
+      handler.unsubscribe.mockReturnValueOnce(
+        new Promise<boolean>((resolve) => (finishUnbind = resolve)),
+      );
+      const deregistered = router.deregisterConnection(TENANT_ID, STATION_ID);
+      const message = aCall();
+
+      await router.handle(message);
+      expect(reemitter.reemit).not.toHaveBeenCalled();
+      expect(networkHook).not.toHaveBeenCalled();
+
+      finishUnbind(true);
+      await deregistered;
+      expect(reemitter.reemit).toHaveBeenCalledWith(message);
+    });
+  });
+
+  // ─── sendCallResult ────────────────────────────────────────────────────────
+
+  describe('sendCallResult', () => {
+    const action = OCPP_CallAction.BootNotification;
+    const payload = {
+      currentTime: '2025-01-01T00:00:00Z',
+      interval: 300,
+      status: 'Accepted',
+    } as unknown as OcppResponse;
+
+    it('should send a CallResult message successfully when cache matches', async () => {
+      // New format: action@isoTimestamp, key is correlationId
+      cache.get.mockResolvedValue(`${action}@${new Date().toISOString()}`);
+
+      const result = await router.sendCallResult(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+      );
+
+      expect(result.success).toBe(true);
+      expect(networkHook).toHaveBeenCalled();
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[0]).toBe(MessageTypeId.CallResult);
+      expect(sentMessage[1]).toBe(CORRELATION_ID);
+      expect(cache.remove).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        CacheNamespace.Transactions + IDENTIFIER,
+      );
+    });
+
+    it('should return success false when no cached entry exists', async () => {
+      cache.get.mockResolvedValue(null);
+
+      const result = await router.sendCallResult(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+      );
+
+      expect(result.success).toBe(false);
+      expect(networkHook).not.toHaveBeenCalled();
+    });
+
+    it('should return success false when cached action does not match', async () => {
+      cache.get.mockResolvedValue(`DifferentAction@${new Date().toISOString()}`);
+
+      const result = await router.sendCallResult(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+      );
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should handle timestamps containing colons (ISO format)', async () => {
+      // ISO timestamps contain colons (e.g. 2026-01-01T12:34:56.000Z) — delimiter is @ so this is safe
+      cache.get.mockResolvedValue(`${action}@${new Date().toISOString()}`);
+
+      const result = await router.sendCallResult(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        payload,
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should dispatch webhook on successful send', async () => {
+      cache.get.mockResolvedValue(`${action}@${new Date().toISOString()}`);
+
+      await router.sendCallResult(CORRELATION_ID, STATION_ID, TENANT_ID, PROTOCOL, action, payload);
+
+      expect(recorded(sink, 'frame').some((e: any) => e.direction === 'outbound')).toBe(true);
+    });
+  });
+
+  // ─── sendCallError ─────────────────────────────────────────────────────────
+
+  describe('sendCallError', () => {
+    const action = OCPP_CallAction.BootNotification;
+    const ocppError = new OcppError(
+      CORRELATION_ID,
+      ErrorCode.InternalError,
+      'Something went wrong',
+      {},
+    );
+
+    it('should send a CallError message successfully when cache matches', async () => {
+      // New format: action@isoTimestamp, key is correlationId
+      cache.get.mockResolvedValue(`${action}@${new Date().toISOString()}`);
+
+      const result = await router.sendCallError(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        ocppError,
+      );
+
+      expect(result.success).toBe(true);
+      expect(networkHook).toHaveBeenCalled();
+      const sentMessage = JSON.parse(networkHook.mock.calls[0][1]);
+      expect(sentMessage[0]).toBe(MessageTypeId.CallError);
+      expect(sentMessage[1]).toBe(CORRELATION_ID);
+      expect(sentMessage[2]).toBe(ErrorCode.InternalError);
+      expect(cache.remove).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        CacheNamespace.Transactions + IDENTIFIER,
+      );
+    });
+
+    it('should return success false when no cached entry exists', async () => {
+      cache.get.mockResolvedValue(null);
+
+      const result = await router.sendCallError(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        ocppError,
+      );
+
+      expect(result.success).toBe(false);
+      expect(networkHook).not.toHaveBeenCalled();
+    });
+
+    it('should return success false when cached action does not match', async () => {
+      cache.get.mockResolvedValue(`DifferentAction@${new Date().toISOString()}`);
+
+      const result = await router.sendCallError(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        ocppError,
+      );
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should handle timestamps containing colons (ISO format)', async () => {
+      // ISO timestamps contain colons — delimiter is @ so this is safe
+      cache.get.mockResolvedValue(`${action}@${new Date().toISOString()}`);
+
+      const result = await router.sendCallError(
+        CORRELATION_ID,
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        action,
+        ocppError,
+      );
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  // ─── shutdown ──────────────────────────────────────────────────────────────
+
+  describe('shutdown', () => {
+    it('should shut down both sender and handler', async () => {
+      await router.shutdown();
+
+      expect(sender.shutdown).toHaveBeenCalled();
+      expect(handler.shutdown).toHaveBeenCalled();
+    });
+  });
+
+  // ─── _sendMessage (tested indirectly) ──────────────────────────────────────
+
+  describe('_sendMessage (via sendCall)', () => {
+    it('should return false and not dispatch webhook when networkHook throws', async () => {
+      cache.get.mockResolvedValue(null);
+      networkHook.mockRejectedValue(new Error('connection lost'));
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.GetBaseReport,
+        { requestId: 1, reportBase: 'FullInventory' } as unknown as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(false);
+      expect(recorded(sink, 'frame').some((e: any) => e.direction === 'outbound')).toBe(false);
+    });
+
+    it('should not throw when publishing the sent frame fails after a successful send', async () => {
+      cache.get.mockResolvedValue(null);
+      sink.record.mockRejectedValue(new Error('publish failed'));
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.GetBaseReport,
+        { requestId: 1, reportBase: 'FullInventory' } as unknown as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  // ─── _sendCallIsAllowed (tested indirectly via sendCall) ───────────────────
+
+  describe('_sendCallIsAllowed (via sendCall)', () => {
+    it('should allow non-Rejected boot status', async () => {
+      cache.get.mockResolvedValue(OCPP2_0_1.RegistrationStatusEnumType.Accepted);
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.GetBaseReport,
+        {} as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should allow Pending boot status', async () => {
+      cache.get.mockResolvedValue(OCPP2_0_1.RegistrationStatusEnumType.Pending);
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.GetBaseReport,
+        {} as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should allow when no boot status is cached', async () => {
+      cache.get.mockResolvedValue(null);
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.GetBaseReport,
+        {} as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(true);
+    });
+
+    it('should block non-TriggerMessage<BootNotification> when Rejected', async () => {
+      cache.get.mockResolvedValue(OCPP2_0_1.RegistrationStatusEnumType.Rejected);
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.GetBaseReport,
+        {} as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should block TriggerMessage with non-BootNotification requestedMessage when Rejected', async () => {
+      cache.get.mockResolvedValue(OCPP2_0_1.RegistrationStatusEnumType.Rejected);
+
+      const result = await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.TriggerMessage,
+        {
+          requestedMessage: OCPP2_0_1.MessageTriggerEnumType.Heartbeat,
+        } as unknown as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('a station message the CSMS triggered while the boot is Pending', () => {
+    const timestamp = new Date('2025-01-01T00:00:00Z');
+    let memoryCache: MemoryCache;
+
+    beforeEach(() => {
+      memoryCache = new MemoryCache();
+      router = getTestInstance(container, MessageRouterImpl, {
+        config,
+        cache: memoryCache,
+        routerSender: sender,
+        routerHandler: handler,
+        messagesExchangeSink: sink,
+        callbackUrlNotifier: notifier,
+        networkHook,
+        ocppValidator: undefined,
+        chargingStationRepository,
+        reemitter,
+        deadLetterPublisher,
+      });
+      vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
+    });
+
+    async function bootPending(protocol: OCPPVersionType) {
+      const bootService = getTestInstance(container, BootNotificationService, {
+        bootRepository: {},
+        cache: memoryCache,
+        config: {},
+      });
+      if (protocol === OCPPVersion.OCPP1_6) {
+        await bootService.cacheOcpp16ChargerActionsPermissions(
+          IDENTIFIER,
+          null,
+          OCPP1_6.BootNotificationResponseStatus.Pending,
+        );
+      } else {
+        await bootService.cacheChargerActionsPermissions(
+          IDENTIFIER,
+          null,
+          OCPP2_0_1.RegistrationStatusEnumType.Pending,
+        );
+      }
+      await memoryCache.set(
+        CacheNamespace.BootStatus,
+        OCPP2_0_1.RegistrationStatusEnumType.Pending,
+        IDENTIFIER,
+      );
+    }
+
+    function callErrorsSent() {
+      return networkHook.mock.calls
+        .map(([, raw]) => JSON.parse(raw as string))
+        .filter((frame) => frame[0] === MessageTypeId.CallError);
+    }
+
+    const triggers: [string, OCPPVersionType, CallAction, object, CallAction][] = [
+      [
+        'TriggerMessage(StatusNotification)',
+        OCPPVersion.OCPP2_0_1,
+        OCPP_CallAction.TriggerMessage,
+        { requestedMessage: OCPP2_0_1.MessageTriggerEnumType.StatusNotification },
+        OCPP_CallAction.StatusNotification,
+      ],
+      [
+        'TriggerMessage(SignChargingStationCertificate)',
+        OCPPVersion.OCPP2_0_1,
+        OCPP_CallAction.TriggerMessage,
+        { requestedMessage: OCPP2_0_1.MessageTriggerEnumType.SignChargingStationCertificate },
+        OCPP_CallAction.SignCertificate,
+      ],
+      [
+        'TriggerMessage(SignCombinedCertificate)',
+        OCPPVersion.OCPP2_1,
+        OCPP_CallAction.TriggerMessage,
+        { requestedMessage: OCPP2_0_1.MessageTriggerEnumType.SignCombinedCertificate },
+        OCPP_CallAction.SignCertificate,
+      ],
+      [
+        'GetReport',
+        OCPPVersion.OCPP2_0_1,
+        OCPP_CallAction.GetReport,
+        { requestId: 1 },
+        OCPP_CallAction.NotifyReport,
+      ],
+      [
+        'GetBaseReport',
+        OCPPVersion.OCPP2_0_1,
+        OCPP_CallAction.GetBaseReport,
+        { requestId: 1, reportBase: OCPP2_0_1.ReportBaseEnumType.FullInventory },
+        OCPP_CallAction.NotifyReport,
+      ],
+      [
+        'OCPP 1.6 TriggerMessage(MeterValues)',
+        OCPPVersion.OCPP1_6,
+        OCPP_CallAction.TriggerMessage,
+        { requestedMessage: OCPP1_6.TriggerMessageRequestRequestedMessage.MeterValues },
+        OCPP_CallAction.MeterValues,
+      ],
+    ];
+
+    it.each(triggers)(
+      'answers the message a %s asked for (B02.FR.09)',
+      async (_label, protocol, action, payload, triggeredAction) => {
+        await bootPending(protocol);
+        await router.sendCall(
+          STATION_ID,
+          TENANT_ID,
+          protocol,
+          action,
+          payload as OcppRequest,
+          CORRELATION_ID,
+        );
+
+        await router.onMessage(
+          IDENTIFIER,
+          JSON.stringify([MessageTypeId.Call, 'triggered-1', triggeredAction, {}]),
+          timestamp,
+          protocol,
+        );
+
+        expect(callErrorsSent()).toEqual([]);
+      },
+    );
+
+    it('still refuses a message the CSMS did not ask for', async () => {
+      await bootPending(OCPPVersion.OCPP2_0_1);
+      await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        OCPPVersion.OCPP2_0_1,
+        OCPP_CallAction.TriggerMessage,
+        {
+          requestedMessage: OCPP2_0_1.MessageTriggerEnumType.StatusNotification,
+        } as unknown as OcppRequest,
+        CORRELATION_ID,
+      );
+
+      await router.onMessage(
+        IDENTIFIER,
+        JSON.stringify([MessageTypeId.Call, 'untriggered-1', OCPP_CallAction.Heartbeat, {}]),
+        timestamp,
+        OCPPVersion.OCPP2_0_1,
+      );
+
+      expect(callErrorsSent()).toEqual([
+        [
+          MessageTypeId.CallError,
+          'untriggered-1',
+          ErrorCode.SecurityError,
+          expect.any(String),
+          expect.anything(),
+        ],
+      ]);
+    });
+  });
+
+  // ─── _routeCall ────────────────────────────────────────────────────────────
+
+  describe('_routeCall', () => {
+    it('should build and send a Call IMessage via sender', async () => {
+      const message = new Call(CORRELATION_ID, OCPP_CallAction.BootNotification, {
+        chargingStation: { model: 'M', vendorName: 'V' },
+        reason: 'PowerUp',
+      } as OcppRequest);
+      const timestamp = new Date();
+
+      const buildCallSpy = vi.spyOn(RequestBuilder, 'buildCall');
+
+      await (router as any)._routeCall(IDENTIFIER, message, timestamp, PROTOCOL);
+
+      expect(buildCallSpy).toHaveBeenCalledWith(
+        STATION_ID,
+        CORRELATION_ID,
+        TENANT_ID,
+        OCPP_CallAction.BootNotification,
+        message.payload,
+        EventGroup.Router,
+        MessageOrigin.ChargingStation,
+        PROTOCOL,
+        timestamp,
+      );
+      expect(sender.send).toHaveBeenCalled();
+    });
+  });
+
+  describe('a response to a Call the CSMS sent', () => {
+    const timestamp = new Date('2025-01-01T00:00:00Z');
+    const request = { requestedMessage: 'StatusNotification' } as OcppRequest;
+    let memoryCache: MemoryCache;
+
+    beforeEach(async () => {
+      memoryCache = new MemoryCache();
+      router = getTestInstance(container, MessageRouterImpl, {
+        config,
+        cache: memoryCache,
+        routerSender: sender,
+        routerHandler: handler,
+        messagesExchangeSink: sink,
+        callbackUrlNotifier: notifier,
+        networkHook,
+        ocppValidator: undefined,
+        chargingStationRepository,
+        reemitter,
+        deadLetterPublisher,
+      });
+      vi.spyOn(router as any, '_validateCallResult').mockReturnValue({ isValid: true });
+      await router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.TriggerMessage,
+        request,
+        CORRELATION_ID,
+      );
+    });
+
+    it('carries the Call payload to the module with the CallResult', async () => {
+      await router.onMessage(
+        IDENTIFIER,
+        JSON.stringify([MessageTypeId.CallResult, CORRELATION_ID, { status: 'Accepted' }]),
+        timestamp,
+        PROTOCOL,
+      );
+
+      expect(sender.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: OCPP_CallAction.TriggerMessage,
+          payload: { status: 'Accepted' },
+          request,
+        }),
+      );
+      expect(
+        await memoryCache.get(CORRELATION_ID, CacheNamespace.CallRequests + IDENTIFIER),
+      ).toBeNull();
+    });
+
+    it('drops the Call payload when the station answers with a CallError', async () => {
+      await router.onMessage(
+        IDENTIFIER,
+        JSON.stringify([MessageTypeId.CallError, CORRELATION_ID, ErrorCode.InternalError, '', {}]),
+        timestamp,
+        PROTOCOL,
+      );
+
+      expect(
+        await memoryCache.get(CORRELATION_ID, CacheNamespace.CallRequests + IDENTIFIER),
+      ).toBeNull();
+    });
+  });
+
+  describe('the Call payload cache', () => {
+    const request = { requestedMessage: 'StatusNotification' } as OcppRequest;
+    let memoryCache: MemoryCache;
+
+    beforeEach(() => {
+      memoryCache = new MemoryCache();
+      router = getTestInstance(container, MessageRouterImpl, {
+        config,
+        cache: memoryCache,
+        routerSender: sender,
+        routerHandler: handler,
+        messagesExchangeSink: sink,
+        callbackUrlNotifier: notifier,
+        networkHook,
+        ocppValidator: undefined,
+        chargingStationRepository,
+        reemitter,
+        deadLetterPublisher,
+      });
+    });
+
+    const sendTriggerMessage = () =>
+      router.sendCall(
+        STATION_ID,
+        TENANT_ID,
+        PROTOCOL,
+        OCPP_CallAction.TriggerMessage,
+        request,
+        CORRELATION_ID,
+      );
+
+    it('drops the Call payload when the Call could not be sent', async () => {
+      vi.spyOn(router as any, '_sendRoutedMessage').mockResolvedValue(undefined);
+
+      await sendTriggerMessage();
+
+      expect(
+        await memoryCache.get(CORRELATION_ID, CacheNamespace.CallRequests + IDENTIFIER),
+      ).toBeNull();
+    });
+
+    it('drops the Call payload when sending the Call throws', async () => {
+      vi.spyOn(router as any, '_sendRoutedMessage').mockRejectedValue(new Error('socket closed'));
+
+      await expect(sendTriggerMessage()).rejects.toThrow('socket closed');
+
+      expect(
+        await memoryCache.get(CORRELATION_ID, CacheNamespace.CallRequests + IDENTIFIER),
+      ).toBeNull();
+    });
+
+    it('still sends the Call when the payload cannot be cached', async () => {
+      const set = memoryCache.set.bind(memoryCache);
+      vi.spyOn(memoryCache, 'set').mockImplementation((key, value, namespace, expire) =>
+        namespace === CacheNamespace.CallRequests + IDENTIFIER
+          ? Promise.reject(new Error('cache down'))
+          : set(key, value, namespace, expire),
+      );
+      vi.spyOn(router as any, '_sendRoutedMessage').mockResolvedValue(new Date());
+
+      await expect(sendTriggerMessage()).resolves.toEqual({ success: true });
+    });
+  });
+
+  // ─── _routeCallResult ─────────────────────────────────────────────────────
+
+  describe('_routeCallResult', () => {
+    it('should build and send a CallResult IMessage via sender', async () => {
+      const message = new CallResult(CORRELATION_ID, { status: 'Accepted' } as OcppResponse);
+      const timestamp = new Date();
+      const action = OCPP_CallAction.BootNotification;
+
+      const buildCallResultSpy = vi.spyOn(RequestBuilder, 'buildCallResult');
+
+      const request = { reason: 'Immediate' } as OcppRequest;
+
+      await (router as any)._routeCallResult(
+        IDENTIFIER,
+        message,
+        action,
+        timestamp,
+        PROTOCOL,
+        request,
+      );
+
+      expect(buildCallResultSpy).toHaveBeenCalledWith(
+        STATION_ID,
+        CORRELATION_ID,
+        TENANT_ID,
+        action,
+        message.payload,
+        EventGroup.Router,
+        MessageOrigin.ChargingStation,
+        PROTOCOL,
+        timestamp,
+        request,
+      );
+      expect(sender.send).toHaveBeenCalled();
+    });
+  });
+
+  // ─── _routeCallError ──────────────────────────────────────────────────────
+
+  describe('_routeCallError', () => {
+    it('should always return success false (error routing not implemented)', async () => {
+      cache.get.mockResolvedValue(null); // no callback URL
+
+      const message = new CallError(CORRELATION_ID, ErrorCode.InternalError, 'test error');
+      const timestamp = new Date();
+      const action = OCPP_CallAction.BootNotification;
+
+      const result = await (router as any)._routeCallError(
+        IDENTIFIER,
+        message,
+        action,
+        timestamp,
+        PROTOCOL,
+      );
+
+      expect(result.success).toBe(false);
+    });
+
+    it('should notify the callback url', async () => {
+      const message = new CallError(CORRELATION_ID, ErrorCode.InternalError, 'test error', {
+        detail: 'some detail',
+      });
+      const timestamp = new Date();
+      const action = OCPP_CallAction.BootNotification;
+
+      await (router as any)._routeCallError(IDENTIFIER, message, action, timestamp, PROTOCOL);
+
+      expect(notifier.notify).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        STATION_ID,
+        expect.any(OcppError),
+      );
+    });
+  });
+
+  // ─── Integration-style: full message flow ─────────────────────────────────
+
+  describe('full message flow', () => {
+    const timestamp = new Date('2025-01-01T00:00:00Z');
+
+    it('should process a complete Call -> route -> send cycle', async () => {
+      cache.exists.mockResolvedValue(false); // not blacklisted
+      vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
+      sender.send.mockResolvedValue({ success: true });
+
+      const callMessage = JSON.stringify([
+        MessageTypeId.Call,
+        CORRELATION_ID,
+        OCPP_CallAction.Heartbeat,
+        {},
+      ]);
+
+      const result = await router.onMessage(IDENTIFIER, callMessage, timestamp, PROTOCOL);
+
+      expect(result).toBe(true);
+      expect(sender.send).toHaveBeenCalled();
+      // New: key is messageId, namespace is CacheNamespace.Transactions + identifier, value is action@timestamp
+      expect(cache.setIfNotExist).toHaveBeenCalledWith(
+        CORRELATION_ID,
+        expect.stringMatching(new RegExp(`^${OCPP_CallAction.Heartbeat}@`)),
+        CacheNamespace.Transactions + IDENTIFIER,
+        config.timeouts.maxCallLengthSeconds,
+      );
+    });
+
+    it('should handle a CallResult response for a pending Call', async () => {
+      cache.get.mockResolvedValue(`BootNotification@${new Date().toISOString()}`);
+      vi.spyOn(router as any, '_validateCallResult').mockReturnValue({ isValid: true });
+      sender.send.mockResolvedValue({ success: true });
+
+      const callResultMessage = JSON.stringify([
+        MessageTypeId.CallResult,
+        CORRELATION_ID,
+        { status: 'Accepted' },
+      ]);
+
+      const result = await router.onMessage(IDENTIFIER, callResultMessage, timestamp, PROTOCOL);
+
+      expect(result).toBe(true);
+    });
+
+    it('should handle a CallError response for a pending Call', async () => {
+      cache.get.mockResolvedValue(`BootNotification@${new Date().toISOString()}`);
+
+      const callErrorMessage = JSON.stringify([
+        MessageTypeId.CallError,
+        CORRELATION_ID,
+        ErrorCode.InternalError,
+        'test error',
+        {},
+      ]);
+
+      const result = await router.onMessage(IDENTIFIER, callErrorMessage, timestamp, PROTOCOL);
+
+      expect(result).toBe(true);
+    });
+  });
+});

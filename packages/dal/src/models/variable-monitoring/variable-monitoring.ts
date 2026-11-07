@@ -1,0 +1,140 @@
+import type { CreateOptions } from 'sequelize';
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import {
+  type ChargingStationDto,
+  type ComponentDto,
+  type EventNotificationEnumType,
+  type MonitorEnumType,
+  type TenantDto,
+  type VariableDto,
+  type VariableMonitoringDto,
+  type VariableMonitoringStatusDto,
+} from '@citrineos/types';
+import { DEFAULT_TENANT_ID, OCPP2_Namespace } from '@citrineos/base';
+import {
+  AutoIncrement,
+  BeforeCreate,
+  BeforeUpdate,
+  BelongsTo,
+  Column,
+  DataType,
+  ForeignKey,
+  HasMany,
+  Index,
+  Model,
+  PrimaryKey,
+  Table,
+} from 'sequelize-typescript';
+import { Component } from '../device-model/component.js';
+import { Variable } from '../device-model/variable.js';
+import { ChargingStation } from '../location/index.js';
+import { Tenant } from '../tenant.js';
+import { VariableMonitoringStatus } from './variable-monitoring-status.js';
+
+@Table
+export class VariableMonitoring extends Model implements VariableMonitoringDto {
+  static readonly MODEL_NAME: string = OCPP2_Namespace.VariableMonitoringType;
+
+  /**
+   * Fields
+   */
+
+  @PrimaryKey
+  @AutoIncrement
+  @Column(DataType.INTEGER)
+  declare databaseId: number;
+
+  @ForeignKey(() => ChargingStation)
+  @Index
+  @Column({
+    type: DataType.INTEGER,
+    unique: 'stationId_tenantId_Id',
+  })
+  declare stationId?: number;
+
+  @Column({
+    type: DataType.INTEGER,
+    unique: 'stationId_tenantId_Id',
+  })
+  declare id: number;
+
+  @Column(DataType.BOOLEAN)
+  declare transaction: boolean;
+
+  @Column({
+    type: DataType.DECIMAL,
+    get(this: VariableMonitoring) {
+      const value = this.getDataValue('value');
+      return value == null ? value : parseFloat(value);
+    },
+  })
+  declare value: number;
+
+  @Column(DataType.STRING)
+  declare type: MonitorEnumType;
+
+  @Column(DataType.INTEGER)
+  declare severity: number;
+
+  // OCPP 2.1 field
+  @Column(DataType.STRING)
+  declare eventNotificationType?: EventNotificationEnumType | null;
+
+  /**
+   * Relations
+   */
+
+  @BelongsTo(() => Variable, 'variableId')
+  declare variable: VariableDto;
+
+  @ForeignKey(() => Variable)
+  @Column({
+    type: DataType.INTEGER,
+  })
+  declare variableId?: number | null;
+
+  @BelongsTo(() => Component, 'componentId')
+  declare component: ComponentDto;
+
+  @ForeignKey(() => Component)
+  @Column({
+    type: DataType.INTEGER,
+  })
+  declare componentId?: number | null;
+
+  @HasMany(() => VariableMonitoringStatus, 'variableMonitoringId')
+  declare statuses?: VariableMonitoringStatusDto[];
+
+  @BelongsTo(() => ChargingStation, 'stationId')
+  declare chargingStation?: ChargingStationDto;
+
+  @ForeignKey(() => Tenant)
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: false,
+    onUpdate: 'CASCADE',
+    onDelete: 'RESTRICT',
+    unique: 'stationId_tenantId_Id',
+  })
+  declare tenantId: number;
+
+  @BelongsTo(() => Tenant, 'tenantId')
+  declare tenant?: TenantDto;
+
+  @BeforeUpdate
+  @BeforeCreate
+  static setDefaultTenant(instance: VariableMonitoring) {
+    if (instance.tenantId == null) {
+      instance.tenantId = DEFAULT_TENANT_ID;
+    }
+  }
+
+  constructor(...args: any[]) {
+    super(...args);
+    if (this.tenantId == null) {
+      this.tenantId = DEFAULT_TENANT_ID;
+    }
+  }
+}

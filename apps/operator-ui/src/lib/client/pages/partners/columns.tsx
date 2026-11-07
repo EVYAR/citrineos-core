@@ -4,9 +4,9 @@
 'use client';
 
 import React from 'react';
-import { TenantPartnerProps } from '@citrineos/base';
-import { MenuSection } from '@lib/client/components/main-menu/main.menu';
-import { TenantPartnerClass } from '@lib/cls/tenant.partner.cls';
+import { TenantPartnerProps } from '@citrineos/types';
+import { MenuSection } from '@lib/client/components/main-menu/main-menu';
+import { TenantPartnerClass } from '@lib/cls/tenant-partner-cls';
 import { TableCellLink } from '@lib/client/components/table-cell-link';
 import type { CellContext } from '@tanstack/react-table';
 

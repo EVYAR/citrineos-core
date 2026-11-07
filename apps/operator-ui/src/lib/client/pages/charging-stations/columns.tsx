@@ -4,23 +4,20 @@
 'use client';
 
 import React from 'react';
-import { ChargingStationProps, LocationProps } from '@citrineos/base';
+import { ChargingStationProps, LocationProps } from '@citrineos/types';
 import { CanAccess, type CrudFilter } from '@refinedev/core';
-import type { ColumnConfiguration } from '@lib/utils/column.configuration';
+import type { ColumnConfiguration } from '@lib/utils/column-configuration';
 import type { CellContext } from '@tanstack/react-table';
 import {
   type ChargingStationDetailsDto,
   ChargingStationDetailsProps,
-} from '@lib/cls/charging.station.dto';
+} from '@lib/cls/charging-station-dto';
 import { TableCellLink } from '@lib/client/components/table-cell-link';
-import { MenuSection } from '@lib/client/components/main-menu/main.menu';
+import { chargingStationPath } from '@lib/utils/resource-paths';
+import { MenuSection } from '@lib/client/components/main-menu/main-menu';
 import ProtocolTag from '@lib/client/components/protocol-tag';
-import { ACTIONS_COLUMN } from '@lib/client/hooks/useColumnPreferences';
-import { ActionType, ResourceType } from '@lib/utils/access.types';
-import { StartTransactionButton } from '@lib/client/pages/charging-stations/start.transaction.button';
-import { StopTransactionButton } from '@lib/client/pages/charging-stations/stop.transaction.button';
-import { ResetButton } from '@lib/client/pages/charging-stations/reset.button';
-import { CommandsUnavailableText } from '@lib/client/pages/charging-stations/commands.unavailable.text';
+import { ACTIONS_COLUMN } from '@lib/client/hooks/use-column-preferences';
+import { StationRowActions } from '@lib/client/pages/charging-stations/station-row-actions';
 import { isEmpty } from '@lib/utils/assertion';
 import { EMPTY_VALUE } from '@lib/utils/consts';
 import { badgeListStyle } from '@lib/client/styles/page';
@@ -45,7 +42,7 @@ export const getChargingStationsColumns = (
       filterConfig: { type: 'text', label: t('ChargingStations.columns.stationId', 'Station ID') },
       cellRender: ({ row }: CellContext<ChargingStationDetailsDto, unknown>) => (
         <TableCellLink
-          path={`/${MenuSection.CHARGING_STATIONS}/${row.original.id}`}
+          path={chargingStationPath(row.original[ChargingStationDetailsProps.ocppConnectionName])}
           value={row.original[ChargingStationDetailsProps.ocppConnectionName]}
         />
       ),
@@ -66,7 +63,7 @@ export const getChargingStationsColumns = (
         ]
       : []),
     {
-      key: ChargingStationDetailsProps.statusNotifications,
+      key: ChargingStationDetailsProps.isOnline,
       header: t('Common.status', 'Status'),
       visible: true,
       filterConfig: {
@@ -194,27 +191,9 @@ export const getChargingStationsColumns = (
       key: ACTIONS_COLUMN,
       header: t('Common.actions', 'Actions'),
       visible: true,
-      cellRender: ({ row }: CellContext<ChargingStationDetailsDto, unknown>) => {
-        const hasActiveTransactions = !isEmpty(row.original.transactions);
-
-        return row.original.isOnline ? (
-          <CanAccess
-            resource={ResourceType.CHARGING_STATIONS}
-            action={ActionType.COMMAND}
-            params={{
-              id: row.original.id,
-            }}
-          >
-            <div className="flex gap-4 flex-1">
-              {!hasActiveTransactions && <StartTransactionButton station={row.original} />}
-              {hasActiveTransactions && <StopTransactionButton station={row.original} />}
-              <ResetButton station={row.original} />
-            </div>
-          </CanAccess>
-        ) : (
-          <CommandsUnavailableText />
-        );
-      },
+      cellRender: ({ row }: CellContext<ChargingStationDetailsDto, unknown>) => (
+        <StationRowActions station={row.original} />
+      ),
     },
   ];
 };

@@ -1,5 +1,8 @@
 # Transaction preservation for per-row repository updates
 
+> Historical fork design/acceptance evidence as of `af5f736f1`. Core v2.1.0 changes the persistence and package architecture. See [the 2026-11-07 upstream disposition](upstream/evyar-customizations-20261107.md) for the current source port, exact replacement paths and acceptance blockers. In particular, the old “reuse unpartitioned OCPPMessages/no parallel receipt table” constraint cannot survive upstream's partition key/retention contract: a pre-swap bridge preserves exact witnesses in StatusIngressReceipts. Historical statements below are not claims about the new deployed state.
+
+
 `SequelizeLocationRepository.createOrUpdateConnector` opens a managed transaction
 and supplies it to `updateAllByQuery`. The base repository previously used that
 transaction for `findAll`, then omitted it from each row's update and reload.

@@ -1,0 +1,148 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import {
+  AbstractHandler,
+  type AbstractHandlerDependencies,
+  AsRequestHandler,
+  type IMessage,
+  type IOcppSender,
+  OcppError,
+} from '@citrineos/base';
+import {
+  ErrorCode,
+  type HandlerProperties,
+  OCPP2_request_types,
+  OCPP2_response_types,
+  OCPP_2_VER_LIST,
+  OCPP_CallAction,
+  type SystemConfig,
+  type TransactionDto,
+} from '@citrineos/types';
+import type { ITransactionRepository } from '@citrineos/dal';
+import type { CostNotifier } from '@modules/transactions/cost-notifier.js';
+import type { TransactionService } from '@modules/transactions/transaction-service.js';
+import type { SignedMeterValuesUtil } from '@services/index.js';
+
+@AsRequestHandler(OCPP_2_VER_LIST, OCPP_CallAction.MeterValues)
+export class MeterValuesRequestOcpp2Handler extends AbstractHandler {
+  protected _ocppSender: IOcppSender;
+  protected _costNotifier: CostNotifier;
+  protected _signedMeterValuesUtil: SignedMeterValuesUtil;
+  protected _transactionRepository: ITransactionRepository;
+  protected _transactionService: TransactionService;
+
+  private readonly _sendCostUpdatedOnMeterValue: boolean | undefined;
+
+  constructor({
+    logger,
+    ocppSender,
+    config,
+    costNotifier,
+    signedMeterValuesUtil,
+    transactionRepository,
+    transactionService,
+  }: AbstractHandlerDependencies & {
+    config: SystemConfig;
+    costNotifier: CostNotifier;
+    ocppSender: IOcppSender;
+    signedMeterValuesUtil: SignedMeterValuesUtil;
+    transactionRepository: ITransactionRepository;
+    transactionService: TransactionService;
+  }) {
+    super(logger);
+
+    this._ocppSender = ocppSender;
+    this._costNotifier = costNotifier;
+    this._signedMeterValuesUtil = signedMeterValuesUtil;
+    this._transactionRepository = transactionRepository;
+    this._transactionService = transactionService;
+
+    this._sendCostUpdatedOnMeterValue = config.transactions.sendCostUpdatedOnMeterValue;
+  }
+
+  async handle(
+    message: IMessage<OCPP2_request_types.MeterValuesRequest>,
+    props?: HandlerProperties,
+  ): Promise<void> {
+    // TODO: Need a meter event handler for OCPP 2.1 as we need to tweak or extend the transaction
+    // service for ocpp 2.1 (meter helper method is dependent on service)
+
+    this._logger.debug(this.createHandlerReceivedMessageLog('MeterValuesRequest'), message, props);
+
+    // TODO: Meter values can be triggered. Ideally, it should be sent to the callbackUrl from the message api that sent the trigger message
+
+    const meterValues = message.payload.meterValue;
+    const tenantId = message.context.tenantId;
+    const ocppConnectionName = message.context.ocppConnectionName;
+    const evseId = message.payload.evseId;
+
+    // When evseId is 0, the MeterValuesRequest message SHALL be associated with the entire Charging Station.
+    if (evseId !== 0) {
+      const activeTransaction: TransactionDto | undefined =
+        await this._transactionRepository.getActiveTransactionByStationIdAndEvseId(
+          tenantId,
+          ocppConnectionName,
+          evseId,
+        );
+      if (!activeTransaction) {
+        this._logger.error(
+          'Active Transaction not found on charging station {} evse {}',
+          ocppConnectionName,
+          evseId,
+        );
+      }
+
+      const meterValuesCreated = await this._transactionService.createMeterValues(
+        tenantId,
+        meterValues,
+        activeTransaction?.id,
+        activeTransaction?.transactionId,
+        activeTransaction?.tariffId,
+      );
+
+      if (activeTransaction) {
+        await this._transactionService.recalculateTotalKwh(
+          tenantId,
+          ocppConnectionName,
+          activeTransaction,
+          meterValuesCreated,
+        );
+        if (this._sendCostUpdatedOnMeterValue) {
+          await this._costNotifier.calculateCostAndNotify(
+            activeTransaction,
+            message.context.tenantId,
+            message.protocol,
+            message.context.ocppConnectionName,
+          );
+        }
+      }
+    } else {
+      await this._transactionService.createMeterValues(tenantId, meterValues);
+    }
+
+    const meterValuesValid = await this._signedMeterValuesUtil.validateMeterValues(
+      tenantId,
+      ocppConnectionName,
+      meterValues,
+    );
+
+    if (!meterValuesValid) {
+      throw new OcppError(
+        message.context.correlationId,
+        ErrorCode.SecurityError,
+        'One or more MeterValues have an invalid signature.',
+      );
+    }
+
+    const response: OCPP2_response_types.MeterValuesResponse = {
+      // TODO determine how to set chargingPriority and updatedPersonalMessage for anonymous users
+    };
+
+    const messageConfirmation = await this._ocppSender.sendCallResultWithMessage(message, response);
+    this._logger.debug(
+      this.createHandlerSentMessageLog('MeterValuesResponse'),
+      messageConfirmation,
+    );
+  }
+}

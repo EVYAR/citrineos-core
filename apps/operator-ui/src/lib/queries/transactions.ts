@@ -3,6 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { gql } from 'graphql-tag';
+import { LOCATION_CORE_FIELDS } from '@lib/queries/fields/location-fields';
+import { AUTHORIZATION_FIELDS } from '@lib/queries/fields/authorization-fields';
+import { CHARGING_STATION_CORE_FIELDS } from '@lib/queries/fields/charging-station-fields';
+import { EVSE_CORE_FIELDS } from '@lib/queries/fields/evse-fields';
+import { TRANSACTION_DETAIL_FIELDS } from '@lib/queries/fields/transaction-fields';
+import { CONNECTOR_CORE_FIELDS } from '@lib/queries/fields/connector-fields';
+import { TARIFF_FIELDS } from '@lib/queries/fields/tariff-fields';
 
 export const TRANSACTION_LIST_QUERY = gql`
   query TransactionList(
@@ -12,79 +19,23 @@ export const TRANSACTION_LIST_QUERY = gql`
     $where: Transactions_bool_exp
   ) {
     Transactions(offset: $offset, limit: $limit, order_by: $order_by, where: $where) {
-      id
-      timeSpentCharging
-      isActive
-      chargingState
-      ocppConnectionName
-      stoppedReason
-      transactionId
-      evseId
-      remoteStartId
-      totalKwh
-      startTime
-      endTime
-      createdAt
-      updatedAt
+      ${TRANSACTION_DETAIL_FIELDS}
       location: Location {
-        id
-        name
-        address
-        city
-        postalCode
-        state
-        country
-        coordinates
-        createdAt
-        updatedAt
+        ${LOCATION_CORE_FIELDS}
       }
       evse: Evse {
-        id
-        createdAt
-        updatedAt
+        ${EVSE_CORE_FIELDS.omit('evseTypeId', 'evseId')}
       }
       connector: Connector {
-        id
-        connectorId
-        type
-        createdAt
-        updatedAt
+        ${CONNECTOR_CORE_FIELDS}
       }
       authorization: Authorization {
-        id
-        idToken
-        idTokenType
-        status
-        groupAuthorizationId
-        additionalInfo
-        concurrentTransaction
-        chargingPriority
-        language1
-        language2
-        personalMessage
-        cacheExpiryDateTime
-        createdAt
-        updatedAt
+        ${AUTHORIZATION_FIELDS.omit('allowedConnectorTypes', 'disallowedEvseIdPrefixes', 'realTimeAuth', 'realTimeAuthUrl')}
       }
-      chargingStation: ChargingStation {
-        id
-        ocppConnectionName
-        isOnline
-        protocol
-        locationId
-        createdAt
-        updatedAt
+      station: ChargingStation {
+        ${CHARGING_STATION_CORE_FIELDS}
         location: Location {
-          id
-          name
-          address
-          city
-          postalCode
-          state
-          country
-          coordinates
-          createdAt
-          updatedAt
+          ${LOCATION_CORE_FIELDS}
         }
       }
     }
@@ -110,39 +61,11 @@ export const GET_TRANSACTIONS_FOR_AUTHORIZATION = gql`
       order_by: $order_by
       where: { _and: [{ authorizationId: { _eq: $id } }, $where] }
     ) {
-      id
-      timeSpentCharging
-      isActive
-      chargingState
-      ocppConnectionName
-      stoppedReason
-      transactionId
-      evseId
-      remoteStartId
-      totalKwh
-      startTime
-      endTime
-      createdAt
-      updatedAt
-      chargingStation: ChargingStation {
-        id
-        ocppConnectionName
-        isOnline
-        protocol
-        locationId
-        createdAt
-        updatedAt
+      ${TRANSACTION_DETAIL_FIELDS}
+      station: ChargingStation {
+        ${CHARGING_STATION_CORE_FIELDS}
         location: Location {
-          id
-          name
-          address
-          city
-          postalCode
-          state
-          country
-          coordinates
-          createdAt
-          updatedAt
+          ${LOCATION_CORE_FIELDS}
         }
       }
       TransactionEvents(where: { eventType: { _eq: "Started" } }) {
@@ -176,21 +99,8 @@ export const GET_TRANSACTION_LIST_FOR_STATION = gql`
       offset: $offset
       limit: $limit
     ) {
-      id
-      timeSpentCharging
-      isActive
-      chargingState
-      ocppConnectionName
+      ${TRANSACTION_DETAIL_FIELDS}
       stationId
-      stoppedReason
-      transactionId
-      evseId
-      remoteStartId
-      totalKwh
-      startTime
-      endTime
-      createdAt
-      updatedAt
       TransactionEvents(where: { eventType: { _eq: "Started" } }) {
         eventType
         idTokenValue
@@ -203,23 +113,10 @@ export const GET_TRANSACTION_LIST_FOR_STATION = gql`
         id
         idToken
       }
-      chargingStation: ChargingStation {
-        id
-        isOnline
-        locationId
-        createdAt
-        updatedAt
+      station: ChargingStation {
+        ${CHARGING_STATION_CORE_FIELDS.omit('ocppConnectionName', 'protocol')}
         location: Location {
-          id
-          name
-          address
-          city
-          postalCode
-          state
-          country
-          coordinates
-          createdAt
-          updatedAt
+          ${LOCATION_CORE_FIELDS}
         }
       }
     }
@@ -247,82 +144,53 @@ export const TRANSACTION_SUCCESS_RATE_QUERY = gql`
   }
 `;
 
+// Transactions is partitioned by `createdAt`, so its primary key is the
+// composite (id, createdAt) and Hasura's `Transactions_by_pk` demands both
+// columns. The detail route only carries `id`, so this selects the row with a
+// `where` filter instead and aliases the result to the `Transactions_by_pk`
+// field name that the Hasura data provider reads the response off of. The
+// alias yields a single-element array, which `getSingleFromListPlainToInstanceOptions`
+// unwraps back into the object `useOne` callers expect.
 export const TRANSACTION_GET_QUERY = gql`
   query GetTransactionById($id: Int!) {
-    Transactions_by_pk(id: $id) {
-      id
-      timeSpentCharging
-      isActive
-      chargingState
+    Transactions_by_pk: Transactions(where: { id: { _eq: $id } }, limit: 1) {
+      ${TRANSACTION_DETAIL_FIELDS}
       stationId
       locationId
-      ocppConnectionName
-      stoppedReason
-      transactionId
-      evseId
-      remoteStartId
       authorizationId
-      totalKwh
-      startTime
-      endTime
-      createdAt
-      updatedAt
       location: Location {
-        name
-        address
-        city
-        postalCode
-        state
-        country
-        coordinates
-        createdAt
-        updatedAt
+        ${LOCATION_CORE_FIELDS}
       }
       evse: Evse {
-        id
-        evseTypeId
-        evseId
-        createdAt
-        updatedAt
+        ${EVSE_CORE_FIELDS}
       }
       connector: Connector {
-        id
-        connectorId
-        type
-        createdAt
-        updatedAt
+        ${CONNECTOR_CORE_FIELDS}
         tariff: Tariff {
-          id
-          currency
-          pricePerKwh
+          ${TARIFF_FIELDS.pick('id', 'currency', 'pricePerKwh')}
         }
       }
       authorization: Authorization {
-        id
-        idToken
-        idTokenType
-        status
-        groupAuthorizationId
-        additionalInfo
-        concurrentTransaction
-        chargingPriority
-        language1
-        language2
-        personalMessage
-        cacheExpiryDateTime
-        createdAt
-        updatedAt
+        ${AUTHORIZATION_FIELDS.omit('allowedConnectorTypes', 'disallowedEvseIdPrefixes', 'realTimeAuth', 'realTimeAuthUrl')}
+      }
+      station: ChargingStation {
+        ${CHARGING_STATION_CORE_FIELDS}
       }
     }
   }
 `;
 
+// Same composite-key constraint as TRANSACTION_GET_QUERY: `pk_columns` would
+// have to carry `createdAt` as well, so update by `where` on the id and alias
+// back to the `update_Transactions_by_pk` response key.
 export const TRANSACTION_EDIT_MUTATION = gql`
   mutation TransactionEdit($id: Int!, $object: Transactions_set_input!) {
-    update_Transactions_by_pk(pk_columns: { id: $id }, _set: $object) {
-      id
-      isActive
-      updatedAt
+    update_Transactions_by_pk: update_Transactions(where: { id: { _eq: $id } }, _set: $object) {
+      returning {
+        id
+        isActive
+        updatedAt
+      }
     }
   }
 `;

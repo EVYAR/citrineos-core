@@ -1,0 +1,314 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import type { SystemConfig } from '@citrineos/types';
+import { Sequelize } from 'sequelize-typescript';
+import type { ILogObj } from 'tslog';
+import { Logger } from 'tslog';
+import type {
+  IAuthorizationRepository,
+  IComponentRepository,
+  IBootRepository,
+  ICertificateRepository,
+  IChangeConfigurationRepository,
+  IChargingProfileRepository,
+  IChargingStationSequenceRepository,
+  IDeleteCertificateAttemptRepository,
+  IChargingStationRepository,
+  IConnectorRepository,
+  IStatusNotificationRepository,
+  IEvseRepository,
+  IInstallCertificateAttemptRepository,
+  IInstalledCertificateRepository,
+  ILocalAuthListRepository,
+  ILocationRepository,
+  IMessageInfoRepository,
+  IOCPPMessageRepository,
+  IReservationRepository,
+  ISecurityEventRepository,
+  IServerNetworkProfileRepository,
+  ISubscriptionRepository,
+  ITariffRepository,
+  ITenantRepository,
+  IMeterValueRepository,
+  ITransactionEventRepository,
+  ITransactionRepository,
+  IVariableAttributeRepository,
+  IVariableCharacteristicsRepository,
+  IVariableMonitoringRepository,
+} from '../repositories.js';
+import {
+  DrizzleAuthorizationRepository,
+  DrizzleCertificateRepository,
+  DrizzleChangeConfigurationRepository,
+  DrizzleChargingStationRepository,
+  DrizzleChargingStationSequenceRepository,
+  DrizzleComponentRepository,
+  DrizzleConnectorRepository,
+  DrizzleLocationRepository,
+  DrizzleMeterValueRepository,
+  DrizzleStatusNotificationRepository,
+  DrizzleEvseRepository,
+  DrizzleDeleteCertificateAttemptRepository,
+  DrizzleInstallCertificateAttemptRepository,
+  DrizzleInstalledCertificateRepository,
+  DrizzleMessageInfoRepository,
+  DrizzleReservationRepository,
+  DrizzleSecurityEventRepository,
+  DrizzleServerNetworkProfileRepository,
+  DrizzleSubscriptionRepository,
+  DrizzleTransactionRepository,
+  DrizzleTransactionEventRepository,
+  DrizzleTariffRepository,
+  DrizzleTenantRepository,
+  DrizzleVariableAttributeRepository,
+  DrizzleVariableCharacteristicsRepository,
+} from '../../db/drizzle/index.js';
+import { SequelizeAuthorizationRepository } from './authorization.js';
+import { SequelizeBootRepository } from './boot.js';
+import { SequelizeCertificateRepository } from './certificate.js';
+import { SequelizeChangeConfigurationRepository } from './change-configuration.js';
+import { SequelizeChargingProfileRepository } from './charging-profile.js';
+import { SequelizeChargingStationSequenceRepository } from './charging-station-sequence.js';
+import { SequelizeDeleteCertificateAttemptRepository } from './delete-certificate-attempt.js';
+import { SequelizeDeviceModelRepository } from './device-model.js';
+import { SequelizeInstallCertificateAttemptRepository } from './install-certificate-attempt.js';
+import { SequelizeInstalledCertificateRepository } from './installed-certificate.js';
+import { SequelizeLocalAuthListRepository } from './local-auth-list.js';
+import { SequelizeLocationRepository } from './location.js';
+import { SequelizeMessageInfoRepository } from './message-info.js';
+import { SequelizeOCPPMessageRepository } from './ocpp-message.js';
+import { SequelizeReservationRepository } from './reservation.js';
+import { SequelizeSecurityEventRepository } from './security-event.js';
+import { SequelizeServerNetworkProfileRepository } from './server-network-profile.js';
+import { SequelizeSubscriptionRepository } from './subscription.js';
+import { SequelizeTariffRepository } from './tariff.js';
+import { SequelizeTenantRepository } from './tenant.js';
+import { SequelizeTransactionEventRepository } from './transaction-event.js';
+import { SequelizeVariableMonitoringRepository } from './variable-monitoring.js';
+import { DrizzleBootRepository } from '@dal/repositories/drizzle/boot.js';
+
+export class RepositoryStore {
+  sequelizeInstance: Sequelize;
+  authorizationRepository: IAuthorizationRepository;
+  bootRepository: IBootRepository;
+  certificateRepository: ICertificateRepository;
+  installedCertificateRepository: IInstalledCertificateRepository;
+  installCertificateAttemptRepository: IInstallCertificateAttemptRepository;
+  deleteCertificateAttemptRepository: IDeleteCertificateAttemptRepository;
+  changeConfigurationRepository: IChangeConfigurationRepository;
+  chargingProfileRepository: IChargingProfileRepository;
+  chargingStationSequenceRepository: IChargingStationSequenceRepository;
+  componentRepository: IComponentRepository;
+  localAuthListRepository: ILocalAuthListRepository;
+  chargingStationRepository: IChargingStationRepository;
+  evseRepository: IEvseRepository;
+  connectorRepository: IConnectorRepository;
+  statusNotificationRepository: IStatusNotificationRepository;
+  locationRepository: ILocationRepository;
+  messageInfoRepository: IMessageInfoRepository;
+  ocppMessageRepository: IOCPPMessageRepository;
+  reservationRepository: IReservationRepository;
+  securityEventRepository: ISecurityEventRepository;
+  subscriptionRepository: ISubscriptionRepository;
+  tariffRepository: ITariffRepository;
+  meterValueRepository: IMeterValueRepository;
+  transactionEventRepository: ITransactionEventRepository;
+  transactionRepository: ITransactionRepository;
+  variableMonitoringRepository: IVariableMonitoringRepository;
+  tenantRepository: ITenantRepository;
+  serverNetworkProfileRepository: IServerNetworkProfileRepository;
+  variableAttributeRepository: IVariableAttributeRepository;
+  variableCharacteristicsRepository: IVariableCharacteristicsRepository;
+
+  constructor({
+    config,
+    logger,
+    sequelizeInstance,
+  }: {
+    config: SystemConfig;
+    logger: Logger<ILogObj>;
+    sequelizeInstance: Sequelize;
+  }) {
+    this.sequelizeInstance = sequelizeInstance;
+    this.chargingProfileRepository = new SequelizeChargingProfileRepository({
+      config,
+      logger,
+      sequelizeInstance,
+    });
+    this.localAuthListRepository = new SequelizeLocalAuthListRepository({
+      config,
+      logger,
+      sequelizeInstance,
+    });
+    this.messageInfoRepository = new SequelizeMessageInfoRepository({
+      config,
+      logger,
+      sequelizeInstance,
+    });
+    this.ocppMessageRepository = new SequelizeOCPPMessageRepository({
+      config,
+      logger,
+      sequelizeInstance,
+    });
+    if (process.env.CITRINEOS_USE_DRIZZLE === 'true') {
+      this.authorizationRepository = new DrizzleAuthorizationRepository({ config, logger });
+      // Order matters: component -> variableAttribute -> boot, each injected into the next.
+      this.componentRepository = new DrizzleComponentRepository({ config, logger });
+      this.variableAttributeRepository = new DrizzleVariableAttributeRepository({
+        config,
+        logger,
+        componentRepository: this.componentRepository as DrizzleComponentRepository,
+      });
+      this.bootRepository = new DrizzleBootRepository({
+        config,
+        logger,
+        variableAttributeRepository: this
+          .variableAttributeRepository as DrizzleVariableAttributeRepository,
+      });
+      this.certificateRepository = new DrizzleCertificateRepository({ config, logger });
+      this.changeConfigurationRepository = new DrizzleChangeConfigurationRepository({
+        config,
+        logger,
+      });
+      this.chargingStationRepository = new DrizzleChargingStationRepository({ config, logger });
+      this.chargingStationSequenceRepository = new DrizzleChargingStationSequenceRepository({
+        config,
+        logger,
+      });
+      const connectorRepository = new DrizzleConnectorRepository({ config, logger });
+      this.connectorRepository = connectorRepository;
+      this.deleteCertificateAttemptRepository = new DrizzleDeleteCertificateAttemptRepository({
+        config,
+        logger,
+      });
+      this.evseRepository = new DrizzleEvseRepository({ config, logger });
+      this.installCertificateAttemptRepository = new DrizzleInstallCertificateAttemptRepository({
+        config,
+        logger,
+      });
+      this.installedCertificateRepository = new DrizzleInstalledCertificateRepository({
+        config,
+        logger,
+      });
+      this.messageInfoRepository = new DrizzleMessageInfoRepository({ config, logger });
+      this.locationRepository = new DrizzleLocationRepository({ config, logger });
+      this.reservationRepository = new DrizzleReservationRepository({ config, logger });
+      this.securityEventRepository = new DrizzleSecurityEventRepository({ config, logger });
+      this.serverNetworkProfileRepository = new DrizzleServerNetworkProfileRepository({
+        config,
+        logger,
+      });
+      this.statusNotificationRepository = new DrizzleStatusNotificationRepository({
+        config,
+        logger,
+        connectorRepository,
+      });
+      this.subscriptionRepository = new DrizzleSubscriptionRepository({ config, logger });
+      this.tenantRepository = new DrizzleTenantRepository({ config, logger });
+      this.tariffRepository = new DrizzleTariffRepository({ config, logger });
+      this.meterValueRepository = new DrizzleMeterValueRepository({ config, logger });
+      this.transactionRepository = new DrizzleTransactionRepository({ config, logger });
+      this.transactionEventRepository = new DrizzleTransactionEventRepository({ config, logger });
+      this.variableCharacteristicsRepository = new DrizzleVariableCharacteristicsRepository({
+        config,
+        logger,
+      });
+    } else {
+      this.authorizationRepository = new SequelizeAuthorizationRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.bootRepository = new SequelizeBootRepository({ config, logger, sequelizeInstance });
+      this.certificateRepository = new SequelizeCertificateRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.changeConfigurationRepository = new SequelizeChangeConfigurationRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.chargingStationSequenceRepository = new SequelizeChargingStationSequenceRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.deleteCertificateAttemptRepository = new SequelizeDeleteCertificateAttemptRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.installCertificateAttemptRepository = new SequelizeInstallCertificateAttemptRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.installedCertificateRepository = new SequelizeInstalledCertificateRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.messageInfoRepository = new SequelizeMessageInfoRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.reservationRepository = new SequelizeReservationRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.securityEventRepository = new SequelizeSecurityEventRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.subscriptionRepository = new SequelizeSubscriptionRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.tenantRepository = new SequelizeTenantRepository({ config, logger, sequelizeInstance });
+      this.serverNetworkProfileRepository = new SequelizeServerNetworkProfileRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.tariffRepository = new SequelizeTariffRepository({ config, logger, sequelizeInstance });
+      // One Sequelize instance serves the whole Location cluster
+      const locationRepository = new SequelizeLocationRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.locationRepository = locationRepository;
+      this.chargingStationRepository = locationRepository;
+      this.evseRepository = locationRepository;
+      this.connectorRepository = locationRepository;
+      this.statusNotificationRepository = locationRepository;
+      // One Sequelize instance serves the whole DeviceModel cluster
+      const deviceModel = new SequelizeDeviceModelRepository({ config, logger, sequelizeInstance });
+      this.componentRepository = deviceModel;
+      this.variableAttributeRepository = deviceModel;
+      this.variableCharacteristicsRepository = deviceModel;
+      // Transaction cluster
+      const transactionEvent = new SequelizeTransactionEventRepository({
+        config,
+        logger,
+        sequelizeInstance,
+      });
+      this.transactionEventRepository = transactionEvent;
+      this.transactionRepository = transactionEvent;
+      this.meterValueRepository = transactionEvent;
+    }
+
+    this.variableMonitoringRepository = new SequelizeVariableMonitoringRepository({
+      config,
+      logger,
+      sequelizeInstance,
+    });
+  }
+}

@@ -1,5 +1,8 @@
 # Durable status ingress order
 
+> Historical fork design/acceptance evidence as of `af5f736f1`. Core v2.1.0 changes the persistence and package architecture. See [the 2026-11-07 upstream disposition](../upstream/evyar-customizations-20261107.md) for the current source port, exact replacement paths and acceptance blockers. In particular, the old “reuse unpartitioned OCPPMessages/no parallel receipt table” constraint cannot survive upstream's partition key/retention contract: a pre-swap bridge preserves exact witnesses in StatusIngressReceipts. Historical statements below are not claims about the new deployed state.
+
+
 This is an additive source design, not runtime acceptance. It addresses concurrent
 Finishing and Available frames carrying the same valid OCPP timestamp. No status
 value has precedence over another, and clocks are never advanced to create order.

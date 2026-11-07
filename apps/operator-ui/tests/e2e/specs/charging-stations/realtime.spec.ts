@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { test, expect } from '../../fixtures';
-import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.page';
+import { ChargingStationDetailPage } from '../../pages/charging-stations/detail-page';
 
 test.use({ storageState: 'playwright/.auth/admin.json' });
 
@@ -20,7 +20,7 @@ test.describe('charging-stations › realtime status @everest', () => {
     // EVerest to flip Available → Charging, which is not feasible without
     // staging an active OCPP transaction.
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(everestStation.id);
+    await detail.goto(everestStation.ocppConnectionName);
     await expect(detail.commandBar.resetButton).toBeVisible({
       timeout: 30_000,
     });

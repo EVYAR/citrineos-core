@@ -1,0 +1,449 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import { DEFAULT_TENANT_ID, type ICache, type IWebsocketConnection } from '@citrineos/base';
+import {
+  DefaultSequelizeInstance,
+  SequelizeLocationRepository,
+  SequelizeTenantRepository,
+  type ITenantRepository,
+} from '@citrineos/dal';
+import type { SystemConfig } from '@citrineos/types';
+import { StatusNotificationService } from '@modules/transactions/status-notification-service.js';
+import { QueryTypes } from 'sequelize';
+import type { Sequelize } from 'sequelize-typescript';
+import { GenericContainer, type StartedTestContainer, Wait } from 'testcontainers';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+let pgContainer: StartedTestContainer;
+let sequelizeInstance: Sequelize;
+let locationRepository: SequelizeLocationRepository;
+let tenantRepository: ITenantRepository;
+let cache: ICache;
+
+beforeAll(async () => {
+  pgContainer = await new GenericContainer('postgis/postgis:16-3.4-alpine')
+    .withEnvironment({
+      POSTGRES_USER: 'test',
+      POSTGRES_PASSWORD: 'test',
+      POSTGRES_DB: 'citrineos_test',
+    })
+    .withExposedPorts(5432)
+    .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections', 2))
+    .start();
+
+  const dbConfig = {
+    database: {
+      host: pgContainer.getHost(),
+      port: pgContainer.getMappedPort(5432),
+      database: 'citrineos_test',
+      dialect: 'postgres',
+      username: 'test',
+      password: 'test',
+      sync: false,
+      alter: false,
+      force: false,
+      maxRetries: 1,
+      retryDelay: 100,
+    },
+  } as unknown as SystemConfig;
+
+  sequelizeInstance = DefaultSequelizeInstance.getInstance(dbConfig);
+  await sequelizeInstance.query('CREATE EXTENSION IF NOT EXISTS citext;');
+  await sequelizeInstance.sync({ force: true });
+
+  locationRepository = new SequelizeLocationRepository({
+    config: {} as SystemConfig,
+    sequelizeInstance,
+  });
+  tenantRepository = new SequelizeTenantRepository({
+    config: {} as SystemConfig,
+    sequelizeInstance,
+  });
+}, 90_000);
+
+afterAll(async () => {
+  await sequelizeInstance.close();
+  await pgContainer.stop();
+});
+
+beforeEach(async () => {
+  await sequelizeInstance.truncate({ cascade: true, restartIdentity: true });
+  await tenantRepository.createTenant({ name: 'default', isUserTenant: false });
+});
+
+describe('SequelizeLocationRepository.autoCommissionEvseForOcpp16Connector (#160 integration)', () => {
+  it('creates an Evse whose id satisfies the Connector FK constraints', async () => {
+    const ocppConnectionName = 'CS-1.6-clean-db';
+    const station = await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+
+    const { evseId } = await locationRepository.autoCommissionEvseForOcpp16Connector(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+    );
+
+    expect(evseId).toBeGreaterThan(0);
+
+    // Confirm the Evse row exists and is linked to the right station
+    const [evse] = await sequelizeInstance.query<{ stationId: number }>(
+      'SELECT "stationId" FROM "Evses" WHERE id = :id',
+      { replacements: { id: evseId }, type: QueryTypes.SELECT },
+    );
+    expect(evse).toBeDefined();
+    expect(evse.stationId).toBe(station.id);
+
+    // Critical: verify the returned id satisfies whatever FK rules the live DB enforces
+    // by actually inserting a Connector row. A 1.6 connector carries no
+    // evseTypeConnectorId, so the column has to be genuinely nullable.
+    const dbConnector = await locationRepository.createOrUpdateOcpp16Connector(DEFAULT_TENANT_ID, {
+      stationId: (station as unknown as { id: number }).id,
+      connectorId: 1,
+      evseId,
+      status: 'Available',
+      timestamp: new Date().toISOString(),
+      errorCode: 'NoError',
+    });
+    expect(dbConnector!.id).toBeGreaterThan(0);
+    expect(dbConnector!.evseTypeConnectorId).toBeNull();
+  });
+
+  it('accepts a 2.0.1 connector that carries no OCPP 1.6 connectorId', async () => {
+    // Mirror image of the above: a 2.0.1 connector is identified per-EVSE and has no
+    // station-wide 1.6 number, so connectorId has to be nullable in the live schema too.
+    const ocppConnectionName = 'CS-2.0.1-no-connector-id';
+    const station = await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+    const stationId = station.id!;
+    const evse = await locationRepository.createOrUpdateEvse(DEFAULT_TENANT_ID, {
+      stationId,
+      evseTypeId: 1,
+    });
+
+    const dbConnector = await locationRepository.createOrUpdateOcpp2Connector(DEFAULT_TENANT_ID, {
+      stationId,
+      evseId: evse.id!,
+      evseTypeConnectorId: 1,
+      status: 'Available',
+      timestamp: new Date().toISOString(),
+      errorCode: 'NoError',
+    });
+
+    expect(dbConnector!.id).toBeGreaterThan(0);
+    expect(dbConnector!.connectorId).toBeNull();
+  });
+});
+
+describe('StatusNotificationService.processOcpp16StatusNotification end-to-end (#160 integration)', () => {
+  it('processes a 1.6 StatusNotification against a clean DB without crashing (auto-commission path)', async () => {
+    const ocppConnectionName = 'CS-1.6-e2e-clean';
+    await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+
+    const websocketConnection: IWebsocketConnection = {
+      id: 'test-server',
+      timeConnected: new Date().toISOString(),
+      protocol: 'ocpp1.6',
+      allowUnknownChargingStations: true,
+    };
+    cache = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(websocketConnection)),
+    } as unknown as ICache;
+
+    // The service needs ComponentRepository and VariableAttributeRepository, but the
+    // 1.6 path doesn't use them. Stubs are sufficient.
+    const service = new StatusNotificationService({
+      componentRepository: {
+        findConnectorComponentsForAvailabilityState: vi.fn().mockResolvedValue([]),
+        findComponentAndVariable: vi.fn(),
+        findOrCreateEvseAndComponent: vi.fn(),
+        findOrCreateEvseAndComponentAndVariable: vi.fn(),
+      },
+      variableAttributeRepository: { createOrUpdateDeviceModelByStationId: vi.fn() } as any,
+      chargingStationRepository: locationRepository,
+      evseRepository: locationRepository,
+      statusNotificationRepository: locationRepository,
+      cache,
+      networkAlertService: { recordConnectorStatus: vi.fn() },
+    });
+
+    await expect(
+      service.processOcpp16StatusNotification(DEFAULT_TENANT_ID, ocppConnectionName, {
+        connectorId: 1,
+        status: 'Available',
+        errorCode: 'NoError',
+        timestamp: new Date().toISOString(),
+      } as any),
+    ).resolves.not.toThrow();
+
+    // Connector should now exist in the DB.
+    const connector = await locationRepository.readConnectorByStationIdAndOcpp16ConnectorId(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+      1,
+    );
+    expect(connector).not.toBeNull();
+    expect(connector?.evseId).toBeDefined();
+    // The 1.6 request never reports a 2.0.1 per-EVSE connector number.
+    expect(connector?.evseTypeConnectorId).toBeNull();
+
+    // Reporter's "cascade" concern: StartTransaction must be able to find
+    // this connector via readConnectorByStationIdAndOcpp16ConnectorId.
+    const lookedUp = await locationRepository.readConnectorByStationIdAndOcpp16ConnectorId(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+      1,
+    );
+    expect(lookedUp).toBeDefined();
+    expect(lookedUp?.id).toBe(connector?.id);
+  });
+
+  it('does not auto-commission a second Evse when the same connector reports again', async () => {
+    // auto-commissionEvseForOcpp16Connector creates unconditionally, so the guard against
+    // an Evse per StatusNotification is the matching-evse lookup ahead of it.
+    const ocppConnectionName = 'CS-1.6-e2e-repeat';
+    await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+
+    const websocketConnection: IWebsocketConnection = {
+      id: 'test-server',
+      timeConnected: new Date().toISOString(),
+      protocol: 'ocpp1.6',
+      allowUnknownChargingStations: true,
+    };
+    cache = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(websocketConnection)),
+    } as unknown as ICache;
+
+    const service = new StatusNotificationService({
+      componentRepository: {
+        findConnectorComponentsForAvailabilityState: vi.fn().mockResolvedValue([]),
+        findComponentAndVariable: vi.fn(),
+        findOrCreateEvseAndComponent: vi.fn(),
+        findOrCreateEvseAndComponentAndVariable: vi.fn(),
+      },
+      variableAttributeRepository: { createOrUpdateDeviceModelByStationId: vi.fn() } as any,
+      chargingStationRepository: locationRepository,
+      evseRepository: locationRepository,
+      statusNotificationRepository: locationRepository,
+      cache,
+      networkAlertService: { recordConnectorStatus: vi.fn() },
+    });
+
+    for (const status of ['Available', 'Charging']) {
+      await service.processOcpp16StatusNotification(DEFAULT_TENANT_ID, ocppConnectionName, {
+        connectorId: 1,
+        status,
+        errorCode: 'NoError',
+        timestamp: new Date().toISOString(),
+      } as any);
+    }
+
+    const [{ count }] = await sequelizeInstance.query<{ count: number }>(
+      'SELECT count(*)::int AS count FROM "Evses" e ' +
+        'JOIN "ChargingStations" c ON c.id = e."stationId" ' +
+        'WHERE e."tenantId" = :tenantId AND c."ocppConnectionName" = :ocppConnectionName',
+      {
+        replacements: { tenantId: DEFAULT_TENANT_ID, ocppConnectionName },
+        type: QueryTypes.SELECT,
+      },
+    );
+    expect(count).toBe(1);
+    expect(
+      (await locationRepository.readConnectorsByStationId(DEFAULT_TENANT_ID, ocppConnectionName))
+        .length,
+    ).toBe(1);
+    const connector = await locationRepository.readConnectorByStationIdAndOcpp16ConnectorId(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+      1,
+    );
+    expect(connector?.status).toBe('Charging');
+  });
+
+  it('processes a 1.6 StatusNotification for a commissioned station (matching evse path)', async () => {
+    const ocppConnectionName = 'CS-1.6-e2e-commissioned';
+    const station = await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+    // Use the commission helper for a clean pre-existing setup, then upsert
+    // a Connector tied to it so the matching-evse branch fires in the handler.
+    const { evseId } = await locationRepository.autoCommissionEvseForOcpp16Connector(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+    );
+    await locationRepository.createOrUpdateOcpp16Connector(DEFAULT_TENANT_ID, {
+      stationId: (station as unknown as { id: number }).id,
+      connectorId: 1,
+      evseId,
+      status: 'Available',
+      timestamp: new Date().toISOString(),
+      errorCode: 'NoError',
+    });
+
+    const websocketConnection: IWebsocketConnection = {
+      id: 'test-server',
+      timeConnected: new Date().toISOString(),
+      protocol: 'ocpp1.6',
+      allowUnknownChargingStations: false, // strict — relies on commissioned record
+    };
+    cache = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(websocketConnection)),
+    } as unknown as ICache;
+
+    const service = new StatusNotificationService({
+      componentRepository: {
+        findConnectorComponentsForAvailabilityState: vi.fn().mockResolvedValue([]),
+        findComponentAndVariable: vi.fn(),
+        findOrCreateEvseAndComponent: vi.fn(),
+        findOrCreateEvseAndComponentAndVariable: vi.fn(),
+      },
+      variableAttributeRepository: { createOrUpdateDeviceModelByStationId: vi.fn() } as any,
+      chargingStationRepository: locationRepository,
+      evseRepository: locationRepository,
+      statusNotificationRepository: locationRepository,
+      cache,
+      networkAlertService: { recordConnectorStatus: vi.fn() },
+    });
+
+    await expect(
+      service.processOcpp16StatusNotification(DEFAULT_TENANT_ID, ocppConnectionName, {
+        connectorId: 1,
+        status: 'Charging',
+        errorCode: 'NoError',
+        timestamp: new Date().toISOString(),
+      } as any),
+    ).resolves.not.toThrow();
+
+    const connector = await locationRepository.readConnectorByStationIdAndOcpp16ConnectorId(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+      1,
+    );
+    expect(connector?.status).toBe('Charging');
+    expect(connector?.evseId).toBe(evseId);
+  });
+});
+
+describe('StatusNotificationService.processStatusNotification end-to-end (2.0.1 integration)', () => {
+  const aService = (allowUnknownChargingStations: boolean) => {
+    const websocketConnection: IWebsocketConnection = {
+      id: 'test-server',
+      timeConnected: new Date().toISOString(),
+      protocol: 'ocpp2.0.1',
+      allowUnknownChargingStations,
+    };
+    cache = {
+      get: vi.fn().mockResolvedValue(JSON.stringify(websocketConnection)),
+    } as unknown as ICache;
+
+    return new StatusNotificationService({
+      componentRepository: {
+        findConnectorComponentsForAvailabilityState: vi.fn().mockResolvedValue([]),
+        findComponentAndVariable: vi.fn(),
+        findOrCreateEvseAndComponent: vi.fn(),
+        findOrCreateEvseAndComponentAndVariable: vi.fn(),
+      },
+      variableAttributeRepository: { createOrUpdateDeviceModelByStationId: vi.fn() } as any,
+      chargingStationRepository: locationRepository,
+      evseRepository: locationRepository,
+      statusNotificationRepository: locationRepository,
+      cache,
+      networkAlertService: { recordConnectorStatus: vi.fn() },
+    });
+  };
+
+  it('upserts a synthesized 2.0.1 connector that carries no OCPP 1.6 connectorId', async () => {
+    // The synthesized connector has connectorId unset, so the 2.x path has to key the
+    // upsert on (evseId, evseTypeConnectorId) — Sequelize rejects an undefined where
+    // value outright, so keying on connectorId would throw here.
+    const ocppConnectionName = 'CS-2.0.1-e2e-clean';
+    await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+
+    await expect(
+      aService(true).processStatusNotification(DEFAULT_TENANT_ID, ocppConnectionName, {
+        evseId: 1,
+        connectorId: 1,
+        connectorStatus: 'Available',
+        timestamp: new Date().toISOString(),
+      } as any),
+    ).resolves.not.toThrow();
+
+    const connector = (
+      await locationRepository.readConnectorsByStationId(DEFAULT_TENANT_ID, ocppConnectionName)
+    ).find((c) => c.evseTypeConnectorId === 1);
+    expect(connector).not.toBeNull();
+    expect(connector?.connectorId).toBeNull();
+  });
+
+  it('updates the same row rather than inserting a duplicate when the connector reports again', async () => {
+    // (stationId, connectorId) is the only unique constraint on Connectors and NULLs are
+    // distinct in Postgres, so a lookup keyed on a null connectorId would insert a fresh
+    // row on every StatusNotification instead of updating the existing one.
+    const ocppConnectionName = 'CS-2.0.1-e2e-repeat';
+    await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+    const service = aService(true);
+
+    for (const connectorStatus of ['Available', 'Occupied']) {
+      await service.processStatusNotification(DEFAULT_TENANT_ID, ocppConnectionName, {
+        evseId: 1,
+        connectorId: 1,
+        connectorStatus,
+        timestamp: new Date().toISOString(),
+      } as any);
+    }
+
+    expect(
+      (await locationRepository.readConnectorsByStationId(DEFAULT_TENANT_ID, ocppConnectionName))
+        .length,
+    ).toBe(1);
+    const connector = (
+      await locationRepository.readConnectorsByStationId(DEFAULT_TENANT_ID, ocppConnectionName)
+    )[0];
+    expect(connector?.status).toBe('Occupied');
+  });
+
+  it('keeps each EVSEs connector distinct when both report their connector 1', async () => {
+    // Per-EVSE numbering: EVSE 1 connector 1 and EVSE 2 connector 1 are two connectors.
+    // Both are synthesized with connectorId unset, so only (evseId, evseTypeConnectorId)
+    // tells them apart.
+    const ocppConnectionName = 'CS-2.0.1-e2e-multi-evse';
+    await locationRepository.createOrUpdateChargingStation(DEFAULT_TENANT_ID, {
+      ocppConnectionName,
+      isOnline: true,
+    });
+    const service = aService(true);
+
+    for (const evseId of [1, 2]) {
+      await service.processStatusNotification(DEFAULT_TENANT_ID, ocppConnectionName, {
+        evseId,
+        connectorId: 1,
+        connectorStatus: 'Available',
+        timestamp: new Date().toISOString(),
+      } as any);
+    }
+
+    const connectors = await locationRepository.readConnectorsByStationId(
+      DEFAULT_TENANT_ID,
+      ocppConnectionName,
+    );
+    expect(connectors).toHaveLength(2);
+    expect(connectors.map((c) => c.evse?.evseTypeId).sort()).toEqual([1, 2]);
+  });
+});

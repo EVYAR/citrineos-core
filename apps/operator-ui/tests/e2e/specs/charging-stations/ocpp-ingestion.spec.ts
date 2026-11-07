@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { test, expect } from '../../fixtures';
-import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.page';
+import { ChargingStationDetailPage } from '../../pages/charging-stations/detail-page';
 
 // Proves the OCPP → CitrineOS-core → Hasura → UI ingestion pipeline for the
 // live EVerest station. Every other transaction/status/meter test in the suite
@@ -14,13 +14,13 @@ import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.
 test.use({ storageState: 'playwright/.auth/admin.json' });
 
 test.describe('charging-stations › OCPP ingestion @everest', () => {
-  test('E2E-090: BootNotification and StatusNotification are ingested and surfaced @everest', async ({
+  test('E2E-150: BootNotification and StatusNotification are ingested and surfaced @everest', async ({
     page,
     everestStation,
     apiClient,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(everestStation.id);
+    await detail.goto(everestStation.ocppConnectionName);
     await detail.openMessagesTab();
 
     // UI proof the live OCPP stream reaches the table (Hasura → UI): the OCPP
@@ -46,10 +46,16 @@ test.describe('charging-stations › OCPP ingestion @everest', () => {
     }>(
       `query RegistrationIngestionProbe($name: String!) {
          boot: OCPPMessages_aggregate(
-           where: { ocppConnectionName: { _eq: $name }, action: { _eq: "BootNotification" } }
+           where: {
+             ChargingStation: { ocppConnectionName: { _eq: $name } }
+             action: { _eq: "BootNotification" }
+           }
          ) { aggregate { count } }
          status: OCPPMessages_aggregate(
-           where: { ocppConnectionName: { _eq: $name }, action: { _eq: "StatusNotification" } }
+           where: {
+             ChargingStation: { ocppConnectionName: { _eq: $name } }
+             action: { _eq: "StatusNotification" }
+           }
          ) { aggregate { count } }
        }`,
       { name: everestStation.ocppConnectionName },
@@ -58,24 +64,24 @@ test.describe('charging-stations › OCPP ingestion @everest', () => {
     expect(status.aggregate.count).toBeGreaterThan(0);
   });
 
-  test('E2E-091: cp001 detail card shows live Online status from ingested state @everest', async ({
+  test('E2E-151: cp001 detail card shows live Online status from ingested state @everest', async ({
     page,
     everestStation,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(everestStation.id);
+    await detail.goto(everestStation.ocppConnectionName);
 
     // The card binds this text to station.isOnline via useOne (no seeding) —
     // it is Online only because the live OCPP connection was ingested.
     await expect(detail.statusTag).toHaveText(/online/i, { timeout: 30_000 });
   });
 
-  test('E2E-092: detail card surfaces a real Last-OCPP-Message timestamp @everest', async ({
+  test('E2E-152: detail card surfaces a real Last-OCPP-Message timestamp @everest', async ({
     page,
     everestStation,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(everestStation.id);
+    await detail.goto(everestStation.ocppConnectionName);
 
     // The "Last OCPP Message" KeyValue reads N/A when nothing has been
     // ingested; against a live station it must hold a real timestamp.

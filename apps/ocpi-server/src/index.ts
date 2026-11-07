@@ -1,33 +1,24 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
-import type { Constructable } from '@citrineos/base';
 import {
-  EventGroup,
-  eventGroupFromString,
   type ICache,
   type IModule,
-  type IModuleApi,
+  loggerDefaults,
+  MemoryCache,
+  RedisCache,
 } from '@citrineos/base';
-import { MemoryCache, RedisCache } from '@citrineos/core';
-import type { IDtoModule, OcpiConfig } from '@citrineos/ocpi-base';
+import { EventGroup, eventGroupFromString } from '@citrineos/types';
+import type { AwilixContainer } from 'awilix';
 import {
-  CdrsModule,
-  ChargingProfilesModule,
-  CommandsModule,
-  Container,
-  CredentialsModule,
+  type OcpiConfig,
+  type OcpiModuleToken,
+  buildOcpiContainer,
   DtoRouter,
   getDtoEventHandlerMetaData,
   getOcpiSystemConfig,
-  LocationsModule,
-  OcpiModule,
   OcpiServer,
-  SessionsModule,
-  TariffsModule,
-  TokensModule,
-  VersionsModule,
-} from '@citrineos/ocpi-base';
+} from '@citrineos/ocpi';
 import type { ILogObj } from 'tslog';
 import { Logger } from 'tslog';
 import { createDockerOcpiConfig } from './config/envs/docker.js';
@@ -38,7 +29,6 @@ export class CitrineOSServer {
    * Fields
    */
   private readonly modules: IModule[] = [];
-  private readonly apis: IModuleApi[] = [];
   private ocpiConfig?: OcpiConfig;
   private _logger?: Logger<ILogObj>;
   private _cache?: ICache;
@@ -46,6 +36,7 @@ export class CitrineOSServer {
   private port?: number;
   private eventGroup?: EventGroup;
   private ocpiServer!: OcpiServer;
+  private container!: AwilixContainer;
 
   /**
    * Constructor for the class.
@@ -115,27 +106,27 @@ export class CitrineOSServer {
     }
   }
 
-  protected getOcpiModuleConfig(): Constructable<OcpiModule | IDtoModule>[] {
+  protected getOcpiModuleConfig(): OcpiModuleToken[] {
     return [
-      VersionsModule,
-      CredentialsModule,
-      CommandsModule,
-      LocationsModule,
-      SessionsModule,
-      ChargingProfilesModule,
-      TariffsModule,
-      CdrsModule,
-      TokensModule,
+      'versionsModule',
+      'credentialsModule',
+      'commandsModule',
+      'locationsModule',
+      'sessionsModule',
+      'chargingProfilesModule',
+      'tariffsModule',
+      'cdrsModule',
+      'tokensModule',
     ];
   }
 
   private initLogger() {
     this._logger = new Logger<ILogObj>({
+      ...loggerDefaults(this.ocpiConfig!.env, this.ocpiConfig!.logRedaction),
       name: 'CitrineOS Logger',
       minLevel: this.ocpiConfig!.logLevel,
-      hideLogPositionForProduction: this.ocpiConfig!.env === 'production',
       // Disable colors for cloud deployment as some cloud logging environments such as cloudwatch can not interpret colors
-      stylePrettyLogs: process.env.DEPLOYMENT_TARGET !== 'cloud',
+      pretty: { style: process.env.DEPLOYMENT_TARGET !== 'cloud' },
     });
   }
 
@@ -151,18 +142,17 @@ export class CitrineOSServer {
   }
 
   private async startOcpiServer() {
-    this.ocpiServer = new OcpiServer(
-      this.ocpiConfig!,
-      this._cache!,
-      this._logger!,
-      this.getOcpiModuleConfig(),
-    );
+    this.container = buildOcpiContainer(this.ocpiConfig!, {
+      logger: this._logger!,
+      cache: this._cache!,
+    });
+    this.ocpiServer = new OcpiServer(this.ocpiConfig!, this.container, this.getOcpiModuleConfig());
     await this.ocpiServer.initialize();
     await this.initDtoRouter();
   }
 
   private async initDtoRouter() {
-    const dtoRouter: DtoRouter = Container.get(DtoRouter);
+    const dtoRouter = this.container.resolve<DtoRouter>('dtoRouter');
     await dtoRouter.init();
     for (const module of this.ocpiServer.modules) {
       const eventHandlers = getDtoEventHandlerMetaData(module);
