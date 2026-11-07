@@ -9,7 +9,9 @@ import {
 } from '@citrineos/base';
 import { type ChargingStationDto, type TenantPartnerDto, OCPPVersion } from '@citrineos/types';
 import type { OcpiConfig, StartSession, StopSession, UnlockConnector } from '../../../index.js';
-import { CommandResultType, CommandType, ModuleId } from '../../../index.js';
+import { CommandResultType } from '../../types/command-result.js';
+import { CommandType } from '../../types/command-type.js';
+import { ModuleId } from '../../types/module-id.js';
 import type { IRequestOptions } from 'typed-rest-client';
 import { RestClient } from 'typed-rest-client';
 import type { ILogObj, Logger } from 'tslog';

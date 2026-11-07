@@ -13,7 +13,7 @@ import {
 import type { IRequestOptions } from 'typed-rest-client';
 import type { IRequestQueryParams } from 'typed-rest-client/Interfaces.js';
 import type { UnlockConnector } from '../../../index.js';
-import { CommandResultType } from '../../../index.js';
+import { CommandResultType } from '../../types/command-result.js';
 import type { TokensMapper } from '../../mappers/index.js';
 import type {
   GetSequenceQueryResult,

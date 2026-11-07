@@ -15,7 +15,7 @@ import type { IRequestQueryParams } from 'typed-rest-client/Interfaces.js';
 import { CommandType } from '../../types/command-type.js';
 import type { StopSession } from '../../types/stop-session.js';
 import type { UnlockConnector } from '../../../index.js';
-import { CommandResultType } from '../../../index.js';
+import { CommandResultType } from '../../types/command-result.js';
 
 export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
   public readonly supportedVersion = OCPPVersion.OCPP1_6;
