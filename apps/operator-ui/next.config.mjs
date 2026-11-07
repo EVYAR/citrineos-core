@@ -14,6 +14,9 @@ const withNextIntl = createNextIntlPlugin(resolve(__dirname, 'src/lib/i18n/reque
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  // The Core transport is server-only and uses Node APIs. Keep its protocol/
+  // infrastructure dependency tree as a traced Node package rather than Webpack input.
+  serverExternalPackages: ['@citrineos/base'],
   experimental: {
     cpus: 1,
     webpackBuildWorker: true,
