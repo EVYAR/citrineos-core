@@ -16,6 +16,8 @@ const nextConfig = {
   output: 'standalone',
   experimental: {
     cpus: 1,
+    webpackBuildWorker: true,
+    webpackMemoryOptimizations: true,
   },
   // Trace from the monorepo root so the standalone output bundles workspace
   // dependencies (@citrineos/types) correctly.
