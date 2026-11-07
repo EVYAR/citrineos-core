@@ -153,6 +153,7 @@ async function exerciseReceipts(f, name) {
       connectorId: 1,
       evseTypeConnectorId: 1,
       status: 'Charging',
+      timestamp: '2026-11-07T11:59:00.000Z',
     });
     const second = await models.Connector.create({
       tenantId: 1,
@@ -161,6 +162,7 @@ async function exerciseReceipts(f, name) {
       connectorId: 2,
       evseTypeConnectorId: 2,
       status: 'Charging',
+      timestamp: '2026-11-07T11:59:00.000Z',
     });
     const zero = await models.Connector.create({
       tenantId: 1,
@@ -168,6 +170,7 @@ async function exerciseReceipts(f, name) {
       evseId: evse.id,
       connectorId: 0,
       status: 'Charging',
+      timestamp: '2026-11-07T11:59:00.000Z',
     });
     const at = '2026-11-07T12:00:00.000Z';
     async function reserve(correlationId, payload, protocol = 'ocpp1.6', socket = connection) {
