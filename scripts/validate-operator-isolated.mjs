@@ -3,8 +3,17 @@
 // Build-only acceptance. Never starts an application or supplies live credentials.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -56,28 +65,44 @@ if (result.status !== 0) process.exit(result.status ?? 1);
 const standalone = resolve(app, '.next/standalone');
 const server = resolve(standalone, 'apps/operator-ui/server.js');
 assert.ok(existsSync(server), 'Expected monorepo standalone entry is missing');
-const probe = spawnSync(
-  process.execPath,
-  [
-    '--input-type=commonjs',
-    '-e',
-    `const assert = require('node:assert/strict');
+const isolated = mkdtempSync(join(tmpdir(), 'citrine-operator-artifact-'));
+let probe;
+try {
+  cpSync(standalone, isolated, { recursive: true, dereference: false });
+  probe = spawnSync(
+    process.execPath,
+    [
+      '--input-type=commonjs',
+      '-e',
+      `const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const req = require('node:module').createRequire(process.argv[1]);
 const standalone = fs.realpathSync(process.argv[2]);
-const located = fs.realpathSync(req.resolve('@citrineos/base'));
-assert.ok(located.startsWith(standalone + path.sep), 'Transport resolves outside standalone artifact');
-const core = req('@citrineos/base');
-assert.equal(typeof core.CoreMachineTokenProvider, 'function');
-assert.equal(core.validCoreTenant(7), true);
-assert.equal(core.validCoreTenant(0), false);`,
-    server,
-    standalone,
-  ],
-  { cwd: standalone, env, stdio: 'inherit', timeout: 30_000 },
-);
-assert.equal(probe.status, 0, 'Standalone Core transport loading failed');
+function inspect(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const file = path.join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      const target = fs.realpathSync(file);
+      assert.ok(target.startsWith(standalone + path.sep), 'Artifact symlink escapes standalone tree');
+    } else if (entry.isDirectory()) inspect(file);
+  }
+}
+inspect(standalone);
+const req = require('node:module').createRequire(process.argv[1]);
+const file = path.join(standalone, 'apps/operator-ui/.next/server/app/api/core/[...path]/route.js');
+const route = req(file);
+assert.equal(typeof route.routeModule?.userland?.GET, 'function');
+assert.equal(typeof route.routeModule?.userland?.POST, 'function');
+assert.equal(typeof route.routeModule?.userland?.DELETE, 'function');`,
+      resolve(isolated, 'apps/operator-ui/server.js'),
+      isolated,
+    ],
+    { cwd: isolated, env, stdio: 'inherit', timeout: 30_000 },
+  );
+  assert.equal(probe.status, 0, 'Isolated standalone Core route loading failed');
+} finally {
+  rmSync(isolated, { recursive: true, force: true });
+}
 const sha = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
 assert.equal(sha.status, 0);
 assert.match(sha.stdout.trim(), /^[a-f0-9]{40}$/);
@@ -90,7 +115,7 @@ writeFileSync(
       version: pkg.version,
       sourceSha: sha.stdout.trim(),
       buildExitCode: 0,
-      standaloneTransportVerified: true,
+      standaloneCoreRouteVerified: true,
       profile: 'synthetic-generic-server',
       deploymentPerformed: false,
       liveStationOrSmsTest: false,
