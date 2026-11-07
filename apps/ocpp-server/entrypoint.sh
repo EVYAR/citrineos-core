@@ -13,13 +13,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ "$DB_STRATEGY" = "migrate" ]; then
     (cd "$SCRIPT_DIR" && ./node_modules/.bin/sequelize-cli db:migrate --debug && echo migration completed successfully)
     MIGRATIONS_RAN=1
+# Reviewed offline upgrades run migrations and partition provisioning manually first.
+# Their application runtime must explicitly use DB_STRATEGY=none.
 elif [ "$DB_STRATEGY" = "none" ]; then
     echo "Skipping DB initialization."
     MIGRATIONS_RAN=0
 else
-    echo "Unknown DB_STRATEGY: $DB_STRATEGY. Defaulting to migrate."
-    (cd "$SCRIPT_DIR" && ./node_modules/.bin/sequelize-cli db:migrate --debug && echo migration completed successfully)
-    MIGRATIONS_RAN=1
+    echo "Unknown DB_STRATEGY: $DB_STRATEGY. Expected migrate or none." >&2
+    exit 1
 fi
 
 # Issues DDL, so it must respect DB_STRATEGY rather than run unconditionally.

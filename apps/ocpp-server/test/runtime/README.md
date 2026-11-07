@@ -1,0 +1,13 @@
+# Isolated Core runtime acceptance
+
+This suite is part of the coordinated upgrade, after source-only baseline `d8c1839f0`. It never uses a development or production connection string. A parent-granted workload window is required for every suite/build/container invocation.
+
+The unit batch ports the archived intent to actual OCPP/DAL interfaces: mandatory callout storage, OIDC/caller budgets, exact decline fencing receipts and tenant isolation, callback claiming/retries, native structured estimates and captured-tariff stop finalization, and bounded socket ordering. Old source archives remain immutable evidence; only executed current cases count as coverage.
+
+The database lane is being prepared separately. It must use a parent-created, labeled, memory-bounded PostGIS container bound to loopback/random port. Synthetic databases have a unique run nonce in both name and COMMENT; cleanup may touch only those owned databases. Migration fixture histories come from actual execution of the 52 frozen `af5f736f1` migrations, not inserted SequelizeMeta names. Current migrations are discovered by actual sequelize-cli; the three retired names stay recorded without rediscovery.
+
+The old migration dependency surface needs only DEFAULT_TENANT_ID and AuthorizationWhitelistEnum from the old Base barrel. A fixture-only compile facade may expose exactly those symbols from the current packages after equality checks against frozen source. It must not rewrite migration bodies or alter migration history. Record source hashes, emitted filenames, CLI results and all assertions. This is migration-source acceptance, not running the old application.
+
+Required database scenarios: fresh schema; existing fork with original receipt IDs including out-of-retention witnesses; offline preflight and forward upgrade; exact witness/projection preservation; same-timestamp reversed consumer completion; socket replacement; whole-receipt and divergent replay; connector-zero broadcast and per-target winners; device-model effects in the same transaction; tenant collisions; bounded transaction pools and sequence allocation; partition retention; owner deletion RESTRICT; failed preflight with no partial relational changes; dump/restore into a distinct owned database and recovery of the old schema/history/evidence. An acknowledgement flag alone does not establish quiescence. The harness must verify no external connections/writers and keep services absent throughout fixture migration.
+
+No local check permits live charging stations, SMS, production data, rollout, deployment, push or publication. Actual outcomes and remaining gaps belong in the control handoff and `docs/upstream/core-runtime-regressions-20261107.md`.
