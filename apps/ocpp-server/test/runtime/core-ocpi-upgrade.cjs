@@ -10,8 +10,11 @@ const { pathToFileURL } = require('node:url');
 const { loadGrant, makeFixture, sha } = require('./database-fixture.cjs');
 const oldOcpiCommit = '8326909087ed7c56f2d0d77cf5e29f09defa35f3';
 const oldOcpiRoot = process.env.CORE_RUNTIME_OLD_OCPI_SOURCE;
-assert.ok(oldOcpiRoot && path.isAbsolute(oldOcpiRoot), 'Explicit frozen OCPI source checkout required');
-const repairName = '20261107210000-restore-partition-notification-bindings.js';
+assert.ok(
+  oldOcpiRoot && path.isAbsolute(oldOcpiRoot),
+  'Explicit frozen OCPI source checkout required',
+);
+const repairName = '20260924120000-restore-ocpi-notification-triggers.js';
 const gitOld = (...args) => execFileSync('git', ['-C', oldOcpiRoot, ...args]);
 const ledger = async (db) =>
   (await db.query('SELECT name FROM public."SequelizeMeta" ORDER BY name')).rows.map((r) => r.name);
@@ -105,65 +108,47 @@ async function sqlRepairCases(f, name, compiled) {
     WHERE tgrelid IN ('public."Transactions"'::regclass,'public."MeterValues"'::regclass)
     AND tgname IN ('TransactionNotification','MeterValueNotification') ORDER BY tgname`)
     )[0];
+  const expectedNames = ['MeterValueNotification', 'TransactionNotification'];
+  const names = async () => (await bindings()).map((row) => row.tgname);
   try {
     const before = await bindings();
-    assert.equal(before.length, 2);
+    assert.deepEqual(await names(), expectedNames);
     await repair.up(sequelize.getQueryInterface());
-    assert.deepEqual(await bindings(), before, 'working trigger OIDs must survive repeated up');
+    assert.deepEqual(
+      await names(),
+      expectedNames,
+      'repeat upstream up has exactly two standard bindings',
+    );
     await repair.down(sequelize.getQueryInterface());
-    assert.deepEqual(await bindings(), before, 'down preserves preexisting and repaired bindings');
-    await query('DROP TRIGGER "TransactionNotification" ON public."Transactions"');
+    assert.deepEqual(await names(), [], 'upstream down removes the bindings it owns');
     await query(
       'ALTER FUNCTION public."MeterValueNotify"() RENAME TO "FixtureMissingMeterValueNotify"',
     );
     try {
-      await assert.rejects(
-        repair.up(sequelize.getQueryInterface()),
-        /OCPI_NOTIFICATION_FUNCTION_MISSING/,
+      await repair.up(sequelize.getQueryInterface());
+      assert.deepEqual(
+        await names(),
+        ['TransactionNotification'],
+        'upstream permits Core without an OCPI function',
       );
-      assert.equal((await bindings()).length, 1, 'earlier trigger creation rolls back atomically');
     } finally {
       await query(
         'ALTER FUNCTION public."FixtureMissingMeterValueNotify"() RENAME TO "MeterValueNotify"',
       );
       await repair.up(sequelize.getQueryInterface());
     }
-    await query('ALTER TABLE public."MeterValues" DISABLE TRIGGER "MeterValueNotification"');
-    try {
-      await assert.rejects(
-        repair.up(sequelize.getQueryInterface()),
-        /OCPI_NOTIFICATION_BINDING_CONFLICT/,
-      );
-    } finally {
-      await query('ALTER TABLE public."MeterValues" ENABLE TRIGGER "MeterValueNotification"');
-    }
-    await query(
-      'ALTER TRIGGER "MeterValueNotification" ON public."MeterValues" RENAME TO "FixtureOtherBinding"',
-    );
-    try {
-      await assert.rejects(
-        repair.up(sequelize.getQueryInterface()),
-        /OCPI_NOTIFICATION_BINDING_CONFLICT/,
-      );
-    } finally {
-      await query(
-        'ALTER TRIGGER "FixtureOtherBinding" ON public."MeterValues" RENAME TO "MeterValueNotification"',
-      );
-    }
     const repaired = await bindings();
-    await repair.down(sequelize.getQueryInterface());
+    assert.deepEqual(await names(), expectedNames);
     await repair.up(sequelize.getQueryInterface());
-    assert.deepEqual(await bindings(), repaired);
+    assert.deepEqual(await names(), expectedNames);
     return {
       workingOids: before,
       repairedOids: repaired,
       cases: [
-        'existing standard bindings unchanged',
-        'repeat up',
-        'no-op down preserves bindings',
-        'missing second function rolls back first trigger creation',
-        'disabled binding fails closed',
-        'alternate binding name fails closed without duplicate creation',
+        'upstream restore retains exactly two current parent bindings',
+        'repeat upstream up',
+        'actual upstream down and forward restoration',
+        'missing optional OCPI function is skipped until available',
       ],
     };
   } finally {
@@ -324,45 +309,15 @@ async function notifications(f, name) {
             record.beforeCore.triggers.some((t) => t.relation === relation && t.tgname === tgname),
           );
           assert.ok(
-            record.afterCore.triggers.some(
-              (t) => t.relation === relation + '_old' && t.tgname === tgname,
-            ),
-          );
-          assert.ok(
-            !record.afterCore.triggers.some((t) => t.relation === relation && t.tgname === tgname),
+            record.afterCore.triggers.some((t) => t.relation === relation && t.tgname === tgname),
           );
         }
-      }
-      if (lane === 'fresh') {
-        const prefix = path.join(f.artifacts, 'ocpi-before-repair');
-        fs.mkdirSync(prefix, { mode: 0o700 });
-        fs.writeFileSync(path.join(prefix, 'package.json'), '{"type":"module"}');
-        for (const m of ocpi.migrations) {
-          if (m.filename !== repairName)
-            fs.copyFileSync(path.join(ocpi.directory, m.filename), path.join(prefix, m.filename));
-        }
-        await f.migrate(name, prefix, 'paired-fresh-ocpi-before-repair');
-        record.beforeRepair = await snapshot(f, name);
       }
       await f.migrate(name, ocpi.directory, `paired-${lane}-ocpi`);
       record.afterOcpi = await snapshot(f, name);
       for (const row of record.afterCore.ledger) assert.ok(record.afterOcpi.ledger.includes(row));
       for (const m of ocpi.migrations) assert.ok(record.afterOcpi.ledger.includes(m.filename));
-      if (lane === 'fresh') {
-        const standard = (rows) =>
-          rows.filter(
-            (t) =>
-              ['Transactions', 'MeterValues'].includes(t.relation) &&
-              ['TransactionNotification', 'MeterValueNotification'].includes(t.tgname),
-          );
-        assert.equal(standard(record.beforeRepair.triggers).length, 2);
-        assert.deepEqual(
-          standard(record.afterOcpi.triggers),
-          standard(record.beforeRepair.triggers),
-          'first repair up must preserve fresh standard trigger OIDs and definitions',
-        );
-      }
-      record.sqlRepair = await sqlRepairCases(f, name, ocpi.directory);
+      record.sqlRepair = await sqlRepairCases(f, name, core.directory);
       record.notificationProof = await notifications(f, name);
       await f.migrate(name, ocpi.directory, `paired-${lane}-repeat`);
       record.afterRepeat = await snapshot(f, name);
