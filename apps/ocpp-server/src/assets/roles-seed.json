@@ -270,5 +270,65 @@
       "ocpprouter.subscription.get",
       "ocpprouter.subscription.post"
     ]
+  },
+  "evyar-ocpi": {
+    "resources": {},
+    "permissions": [
+      "ocpp.evdriver.remoteStartTransaction",
+      "ocpp.evdriver.remoteStopTransaction",
+      "ocpp.evdriver.requestStartTransaction",
+      "ocpp.evdriver.requestStopTransaction",
+      "ocpp.evdriver.unlockConnector"
+    ]
+  },
+  "evyar-operator": {
+    "resources": {
+      "Locations": ["list", "show", "create", "edit", "delete"],
+      "ChargingStations": [
+        "access:configuration",
+        "access:ocpp-messages",
+        "access:topology",
+        "create",
+        "delete",
+        "edit",
+        "list",
+        "show"
+      ],
+      "Authorizations": ["list", "show", "create", "edit", "delete"],
+      "Transactions": ["access:events", "edit", "list", "show"],
+      "Tariffs": ["list", "show", "create", "edit", "delete"],
+      "TenantPartners": ["list", "show", "create", "edit", "delete"]
+    },
+    "permissions": [
+      "commands.setStationPassword.post",
+      "commands.stationNetworkProfile.delete",
+      "ocpp.certificates.certificateSigned",
+      "ocpp.certificates.deleteCertificate",
+      "ocpp.certificates.getInstalledCertificateIds",
+      "ocpp.certificates.installCertificate",
+      "ocpp.configuration.changeAvailability",
+      "ocpp.configuration.changeConfiguration",
+      "ocpp.configuration.dataTransfer",
+      "ocpp.configuration.getConfiguration",
+      "ocpp.configuration.reset",
+      "ocpp.configuration.setNetworkProfile",
+      "ocpp.configuration.triggerMessage",
+      "ocpp.configuration.updateFirmware",
+      "ocpp.evdriver.clearCache",
+      "ocpp.evdriver.remoteStartTransaction",
+      "ocpp.evdriver.remoteStopTransaction",
+      "ocpp.evdriver.requestStartTransaction",
+      "ocpp.evdriver.requestStopTransaction",
+      "ocpp.evdriver.unlockConnector",
+      "ocpp.monitoring.getVariables",
+      "ocpp.monitoring.setVariables",
+      "ocpp.reporting.customerInformation",
+      "ocpp.reporting.getBaseReport",
+      "ocpp.reporting.getDiagnostics",
+      "ocpp.reporting.getLog",
+      "ocpp.transactions.getTransactionStatus",
+      "ocpprouter.connection.delete",
+      "permissions.user.get"
+    ]
   }
 }

@@ -167,6 +167,27 @@ describe('EVYAR dedicated Core signed JWT boundary', () => {
     );
     expect(policy.hasPermission(['ungranted-role'], 'ocpp.configuration.reset')).toBe(false);
   });
+  it('keeps roaming commands separate from operator management permissions', () => {
+    for (const action of [
+      'remoteStartTransaction',
+      'remoteStopTransaction',
+      'requestStartTransaction',
+      'requestStopTransaction',
+      'unlockConnector',
+    ]) {
+      expect(policy.hasPermission(['evyar-ocpi'], `ocpp.evdriver.${action}`)).toBe(true);
+    }
+    expect(policy.permissionsFor(['evyar-ocpi']).resources).toEqual({});
+    expect(policy.hasPermission(['evyar-ocpi'], 'ocpp.configuration.reset')).toBe(false);
+    expect(policy.hasPermission(['evyar-ocpi'], 'commands.setStationPassword.post')).toBe(false);
+    expect(policy.hasPermission(['evyar-operator'], 'ocpp.configuration.reset')).toBe(true);
+    expect(policy.hasPermission(['evyar-operator'], 'commands.setStationPassword.post')).toBe(true);
+    expect(policy.hasPermission(['evyar-operator'], 'commands.tariff.delete')).toBe(false);
+    expect(policy.hasPermission(['evyar-operator'], 'ocpprouter.subscription.post')).toBe(false);
+    expect(policy.permissionsFor(['evyar-operator']).resources.Transactions).not.toContain(
+      'delete',
+    );
+  });
   it.each([
     { query: '1', body: 1, allowed: true },
     { query: '2', body: 2, allowed: false },

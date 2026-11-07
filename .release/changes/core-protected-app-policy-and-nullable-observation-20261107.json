@@ -1,0 +1,4 @@
+{
+  "type": "minor",
+  "summary": "Require explicit Core JWT tenant claims when configured, grant scoped OCPI/operator machine policies, preserve absent connector timestamps and align reviewed Core deployment inputs/metadata."
+}

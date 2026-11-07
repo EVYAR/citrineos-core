@@ -168,9 +168,9 @@ const LoginPage: React.FC = () => {
 let sessionChecked = false;
 
 export const createGenericAuthProvider = (
-  config: GenericAuthProviderConfig = {},
+  options: GenericAuthProviderConfig = {},
 ): AuthProvider & AuthenticationContextProvider => {
-  const { tokenKey = 'auth_token', userKey = 'auth_user' } = config;
+  const { tokenKey = 'auth_token', userKey = 'auth_user' } = options;
   /**
    * Save token to storage
    */

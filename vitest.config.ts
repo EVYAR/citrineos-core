@@ -54,7 +54,16 @@ const nodeProject = (name: string, root: string, extraExclude: string[] = []) =>
     typecheck: typecheck(extraExclude),
     ...TIMEOUTS,
   },
-  resolve: { alias },
+  resolve: {
+    alias:
+      name === 'operator-ui'
+        ? {
+            ...alias,
+            '@lib': r('./apps/operator-ui/src/lib'),
+            '@app': r('./apps/operator-ui/src/app'),
+          }
+        : alias,
+  },
 });
 
 // One project per package that has tests. Projects (rather than a single root
