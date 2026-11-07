@@ -218,7 +218,25 @@ function makeFixture(grant) {
     await c.connect();
     return c;
   };
+  const guard = (stage) => {
+    const limit = Number(fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8'));
+    const current = Number(fs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8'));
+    report.resourceGuards ??= [];
+    report.resourceGuards.push({
+      stage,
+      limitBytes: limit,
+      currentBytes: current,
+      availableMiB: Math.floor((limit - current) / 1048576),
+      plannedAdditionalMiB: 1536,
+      reserveMiB: 1536,
+    });
+    assert.ok(
+      Number.isFinite(limit) && limit - current >= 3072 * 1048576,
+      'Insufficient actual cgroup headroom; defer lane',
+    );
+  };
   const create = async (suffix) => {
+    guard('create-' + suffix);
     assert.match(suffix, /^[a-z0-9_]+$/);
     const name = prefix + suffix;
     const c = await connect('postgres');
@@ -265,6 +283,7 @@ function makeFixture(grant) {
     }
   };
   const migrate = async (name, migrationsPath, tag) => {
+    guard('migrate-' + tag);
     await quiescent(name);
     const config = path.join(artifacts, `${tag}-config.json`);
     fs.writeFileSync(
@@ -346,6 +365,16 @@ function makeFixture(grant) {
       facade,
       `export const DEFAULT_TENANT_ID = 1; export const AuthorizationWhitelistEnum = ${JSON.stringify(enums.AuthorizationWhitelistEnum)};`,
     );
+    // Node's CJS named-export detection does not expose Sequelize.DataTypes. Preserve
+    // the dependency objects through an ESM import facade; migration bodies stay intact.
+    const sqlFacade = path.join(artifacts, 'historic-sequelize-imports.mjs');
+    const sqlFacadeSource = `import sequelize from '${pathToFileURL(localRequire.resolve('sequelize')).href}'; export const { DataTypes, QueryTypes } = sequelize; export default sequelize;`;
+    fs.writeFileSync(sqlFacade, sqlFacadeSource);
+    report.historicalDependencyFacades = {
+      baseSha256: sha(fs.readFileSync(facade)),
+      sequelizeSha256: sha(sqlFacadeSource),
+      purpose: 'ESM/CJS import interoperability only; no SQL/body replacement',
+    };
     const files = git('ls-tree', '-r', '--name-only', baseline, '--', 'apps/ocpp-server/migrations')
       .toString()
       .trim()
@@ -361,14 +390,8 @@ function makeFixture(grant) {
         })
         .outputText.replaceAll("from '@citrineos/base'", `from '${pathToFileURL(facade).href}'`)
         .replaceAll('from "@citrineos/base"', `from '${pathToFileURL(facade).href}'`)
-        .replaceAll(
-          "from 'sequelize'",
-          `from '${pathToFileURL(localRequire.resolve('sequelize')).href}'`,
-        )
-        .replaceAll(
-          'from "sequelize"',
-          `from '${pathToFileURL(localRequire.resolve('sequelize')).href}'`,
-        );
+        .replaceAll("from 'sequelize'", `from '${pathToFileURL(sqlFacade).href}'`)
+        .replaceAll('from "sequelize"', `from '${pathToFileURL(sqlFacade).href}'`);
       const filename = path.basename(sourcePath, '.ts') + '.js';
       fs.writeFileSync(path.join(directory, filename), emitted);
       report.migrationSources.push({
@@ -530,6 +553,7 @@ function makeFixture(grant) {
     connect,
     create,
     quiescent,
+    guard,
     migrate,
     prepareLegacy,
     migrationProof,

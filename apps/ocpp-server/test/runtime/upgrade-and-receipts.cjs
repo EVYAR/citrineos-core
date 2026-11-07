@@ -109,6 +109,7 @@ async function exerciseBridgePreflight(f, name, current, frame) {
   await f.quiescent(name);
 }
 async function exerciseReceipts(f, name) {
+  f.guard('built-DAL-receipts');
   const types = await import(pathToFileURL(path.join(f.root, 'packages/types/dist/index.js')).href);
   const dal = await import(pathToFileURL(path.join(f.root, 'packages/dal/dist/index.js')).href);
   const models = await import(
