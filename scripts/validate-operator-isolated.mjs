@@ -68,7 +68,7 @@ assert.ok(existsSync(server), 'Expected monorepo standalone entry is missing');
 const isolated = mkdtempSync(join(tmpdir(), 'citrine-operator-artifact-'));
 let probe;
 try {
-  cpSync(standalone, isolated, { recursive: true, dereference: false });
+  cpSync(standalone, isolated, { recursive: true, dereference: false, verbatimSymlinks: true });
   probe = spawnSync(
     process.execPath,
     [
