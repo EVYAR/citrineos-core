@@ -14,6 +14,125 @@ const baseline = 'af5f736f16e2c7390255b2e49d66769e41a7863f';
 const task = 'core-runtime-20261107';
 const sha = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const git = (...args) => execFileSync('git', args, { cwd: root });
+function validateOwnedRelay(grant, info) {
+  const proxy = grant.proxy;
+  assert.ok(proxy && typeof proxy === 'object');
+  assert.equal(proxy.host, grant.host);
+  assert.equal(proxy.port, grant.port);
+  assert.equal(proxy.targetPort, 5432);
+  assert.equal(proxy.nonce, grant.nonce);
+  assert.ok(Number.isSafeInteger(proxy.pid) && proxy.pid > 1);
+  assert.match(proxy.startTime, /^[0-9]+$/);
+  assert.equal(
+    proxy.scriptSha256,
+    'e0f19486e4c00e6a0c0d86ee521eaab8b258a769ede59e25413fffb2f1de473c',
+    'Relay script differs from parent-reviewed source',
+  );
+  const networkName = grant.networkName ?? grant.network;
+  assert.match(networkName, /^[a-zA-Z0-9_.-]+$/);
+  assert.match(proxy.targetIp, /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/);
+  assert.deepEqual(Object.keys(info.NetworkSettings.Networks), [networkName]);
+  const attached = info.NetworkSettings.Networks[networkName];
+  const networkId = grant.networkId ?? attached.NetworkID;
+  assert.match(networkId, /^[a-f0-9]{64}$/);
+  assert.equal(attached.NetworkID, networkId);
+  assert.equal(attached.IPAddress, proxy.targetIp);
+  const network = JSON.parse(
+    execFileSync('docker', ['network', 'inspect', networkId], { encoding: 'utf8' }),
+  )[0];
+  assert.equal(network.Id, networkId);
+  assert.equal(network.Name, networkName);
+  assert.equal(network.Internal, true);
+  assert.equal(network.Labels['evyar.task'], task);
+  assert.equal(network.Labels['evyar.nonce'], grant.nonce);
+  assert.ok(
+    Object.values(info.NetworkSettings.Ports).every(
+      (binding) => binding === null || binding.length === 0,
+    ),
+    'Relay topology must not publish any host port',
+  );
+  const processRoot = `/proc/${proxy.pid}`;
+  assert.equal(fs.statSync(processRoot).uid, process.getuid());
+  const processIdentity = () => {
+    // comm may contain spaces/parentheses; field22 is starttime, field3 begins after final ')'.
+    const stat = fs.readFileSync(processRoot + '/stat', 'utf8');
+    return stat
+      .slice(stat.lastIndexOf(')') + 2)
+      .trim()
+      .split(/\s+/)[19];
+  };
+  assert.equal(processIdentity(), proxy.startTime, 'Relay PID was reused');
+  const command = fs
+    .readFileSync(processRoot + '/cmdline', 'utf8')
+    .split('\0')
+    .filter(Boolean);
+  assert.match(path.basename(fs.readlinkSync(processRoot + '/exe')), /^python3(?:\.[0-9]+)?$/);
+  assert.ok(path.isAbsolute(proxy.script));
+  assert.ok(command.includes(proxy.script), 'Relay must run granted script');
+  const script = fs.lstatSync(proxy.script);
+  assert.ok(script.isFile() && !script.isSymbolicLink());
+  assert.equal(script.uid, process.getuid());
+  assert.equal(script.mode & 0o022, 0, 'Relay script cannot be writable by other users');
+  assert.equal(sha(fs.readFileSync(proxy.script)), proxy.scriptSha256);
+  // Reviewed parent script: python3 SCRIPT TARGET_IP READY_FILE NONCE; loopback random port,
+  // target5432, semaphore12 and idle120s are pinned by the reviewed source digest.
+  const scriptIndex = command.indexOf(proxy.script);
+  assert.ok(scriptIndex >= 1);
+  assert.equal(command.length, scriptIndex + 4);
+  assert.equal(command[scriptIndex + 1], proxy.targetIp);
+  assert.equal(command[scriptIndex + 3], grant.nonce);
+  const readyPath = command[scriptIndex + 2];
+  assert.ok(path.isAbsolute(readyPath));
+  const readyStat = fs.lstatSync(readyPath);
+  assert.ok(readyStat.isFile() && !readyStat.isSymbolicLink());
+  assert.equal(readyStat.uid, process.getuid());
+  assert.equal(readyStat.mode & 0o077, 0);
+  const ready = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+  for (const field of ['pid', 'startTime', 'host', 'port', 'targetIp', 'targetPort', 'nonce']) {
+    assert.equal(ready[field], proxy[field], 'Ready proxy evidence differs from grant');
+  }
+  assert.match(grant.workspaceContainerId, /^[a-f0-9]{64}$/);
+  const runner = JSON.parse(
+    execFileSync('docker', ['inspect', grant.workspaceContainerId], { encoding: 'utf8' }),
+  )[0];
+  assert.equal(runner.Id, grant.workspaceContainerId);
+  assert.equal(runner.State.Running, true);
+  assert.equal(runner.Config.Hostname, require('node:os').hostname());
+  assert.equal(runner.NetworkSettings.Networks[networkName]?.NetworkID, networkId);
+  const socketInodes = new Set(
+    fs.readdirSync(processRoot + '/fd').flatMap((fd) => {
+      try {
+        const match = /^socket:\[([0-9]+)\]$/.exec(fs.readlinkSync(processRoot + '/fd/' + fd));
+        return match ? [match[1]] : [];
+      } catch (error) {
+        if (error.code === 'ENOENT') return []; // an unrelated accepted socket may close during inspection
+        throw error;
+      }
+    }),
+  );
+  const port = grant.port.toString(16).toUpperCase().padStart(4, '0');
+  const listeners = fs
+    .readFileSync(processRoot + '/net/tcp', 'utf8')
+    .trim()
+    .split('\n')
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .filter((columns) => columns[3] === '0A' && socketInodes.has(columns[9]));
+  assert.deepEqual(
+    listeners.map((columns) => columns[1]),
+    [`0100007F:${port}`],
+    'Relay must own exactly the granted IPv4 loopback listener',
+  );
+  const ipv6 = fs
+    .readFileSync(processRoot + '/net/tcp6', 'utf8')
+    .trim()
+    .split('\n')
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .filter((columns) => columns[3] === '0A' && socketInodes.has(columns[9]));
+  assert.equal(ipv6.length, 0, 'Relay must not own an IPv6/wildcard listener');
+  assert.equal(processIdentity(), proxy.startTime, 'Relay identity changed during inspection');
+}
 function loadGrant() {
   assert.match(process.version, /^v24\./, 'Use parent Node24 wrapper');
   const file = process.env.CORE_RUNTIME_LOCAL_GRANT;
@@ -27,7 +146,7 @@ function loadGrant() {
   assert.match(grant.nonce, /^[a-f0-9]{16}$/);
   assert.match(grant.containerId, /^[a-f0-9]{12,64}$/);
   assert.equal(grant.host, '127.0.0.1');
-  assert.ok(Number.isInteger(grant.port) && grant.port > 1024);
+  assert.ok(Number.isInteger(grant.port) && grant.port > 1024 && grant.port <= 65535);
   if (process.env.DOCKER_HOST)
     assert.match(process.env.DOCKER_HOST, /^unix:\/\//, 'Remote Docker daemons are forbidden');
   const context = JSON.parse(
@@ -44,7 +163,19 @@ function loadGrant() {
     'Fixture must have <=1GiB memory limit',
   );
   const bindings = info.NetworkSettings.Ports['5432/tcp'];
-  assert.deepEqual(bindings, [{ HostIp: '127.0.0.1', HostPort: String(grant.port) }]);
+  if (
+    grant.transport === 'owned-loopback-relay' ||
+    (grant.transport === undefined && grant.proxy)
+  ) {
+    assert.ok(
+      bindings == null || bindings.length === 0,
+      'Relay cannot replace a published binding',
+    );
+    validateOwnedRelay(grant, info);
+  } else {
+    assert.ok(grant.transport === undefined || grant.transport === 'published-loopback');
+    assert.deepEqual(bindings, [{ HostIp: '127.0.0.1', HostPort: String(grant.port) }]);
+  }
   assert.equal(info.State.Running, true);
   assert.match(grant.user, /^evyar_core_runtime_/);
   assert.ok(typeof grant.password === 'string' && grant.password.length >= 16);
