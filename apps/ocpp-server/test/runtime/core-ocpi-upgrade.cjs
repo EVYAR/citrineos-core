@@ -9,7 +9,8 @@ const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
 const { loadGrant, makeFixture, sha } = require('./database-fixture.cjs');
 const oldOcpiCommit = '8326909087ed7c56f2d0d77cf5e29f09defa35f3';
-const oldOcpiRoot = '/home/coder/citrineos-upstream-sync-20261107/ocpi';
+const oldOcpiRoot = process.env.CORE_RUNTIME_OLD_OCPI_SOURCE;
+assert.ok(oldOcpiRoot && path.isAbsolute(oldOcpiRoot), 'Explicit frozen OCPI source checkout required');
 const repairName = '20261107210000-restore-partition-notification-bindings.js';
 const gitOld = (...args) => execFileSync('git', ['-C', oldOcpiRoot, ...args]);
 const ledger = async (db) =>
