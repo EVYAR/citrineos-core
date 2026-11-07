@@ -124,7 +124,7 @@ export abstract class OCPPCommandHandler {
     responseUrl: string,
     commandId: string,
   ): Promise<void> {
-    let response: { statusCode?: number; result?: IMessageConfirmation[] };
+    let response: { statusCode?: number; result?: IMessageConfirmation[] | null };
     try {
       // Necessary because typed-rest-client version >=2.1.0 does not support query params for POST/PUT/PATCH
       const queryParams = options.queryParameters!;

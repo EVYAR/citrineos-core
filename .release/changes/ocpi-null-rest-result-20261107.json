@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Preserve the HTTP client's nullable result contract when evaluating OCPI command dispatch."
+}
