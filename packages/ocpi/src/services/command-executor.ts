@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { UnauthorizedError } from 'routing-controllers';
+import { z } from 'zod';
 import type { ICache } from '@citrineos/base';
 import { type ChargingStationDto, type TenantPartnerDto, OCPPVersion } from '@citrineos/types';
 import type { ILogObj, Logger } from 'tslog';
@@ -26,6 +29,17 @@ import {
   COMMAND_RESPONSE_URL_CACHE_RESOLVED,
 } from '../util/consts.js';
 import type { OCPPCommandHandler } from './ocpp-command-handlers/base.js';
+
+const callbackContextSchema = z.object({
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  tenantPartnerId: z.number().int(),
+  tenantId: z.number().int().positive(),
+  version: z.nativeEnum(OCPPVersion),
+  command: z.nativeEnum(CommandType),
+  responseUrl: z.string(),
+  expiresAt: z.number(),
+});
+const CALLBACK_CONTEXT_NAMESPACE = 'ocpi-command-callback-v1';
 
 export interface CommandExecutorDependencies extends OcpiConfiguredDependencies {
   ocpiGraphqlClient: IOcpiGraphqlClient;
@@ -66,9 +80,14 @@ export class CommandExecutor {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
   ): Promise<void> {
-    this.logger.info('Executing StartSession command', { startSession });
+    this.logger.info('Executing StartSession command');
 
-    const commandId = await this.generateCommandId(startSession.response_url, tenantPartner);
+    const { commandId, capability } = await this.generateCommandId(
+      startSession.response_url,
+      tenantPartner,
+      chargingStation.protocol,
+      CommandType.START_SESSION,
+    );
 
     const commandHandler = this.getCommandHandler(
       chargingStation.protocol || undefined,
@@ -82,6 +101,7 @@ export class CommandExecutor {
         tenantPartner,
         chargingStation,
         commandId,
+        capability,
       );
     } else {
       this.logger.warn('StartSession failed');
@@ -94,9 +114,14 @@ export class CommandExecutor {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
   ): Promise<void> {
-    this.logger.info('Executing StopSession command', { stopSession });
+    this.logger.info('Executing StopSession command');
 
-    const commandId = await this.generateCommandId(stopSession.response_url, tenantPartner);
+    const { commandId, capability } = await this.generateCommandId(
+      stopSession.response_url,
+      tenantPartner,
+      chargingStation.protocol,
+      CommandType.STOP_SESSION,
+    );
 
     const commandHandler = this.getCommandHandler(
       chargingStation.protocol || undefined,
@@ -110,6 +135,7 @@ export class CommandExecutor {
         tenantPartner,
         chargingStation,
         commandId,
+        capability,
       );
     } else {
       this.logger.warn('StopSession failed');
@@ -122,9 +148,14 @@ export class CommandExecutor {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
   ): Promise<void> {
-    this.logger.info('Executing UnlockConnector command', { unlockConnector });
+    this.logger.info('Executing UnlockConnector command');
 
-    const commandId = await this.generateCommandId(unlockConnector.response_url, tenantPartner);
+    const { commandId, capability } = await this.generateCommandId(
+      unlockConnector.response_url,
+      tenantPartner,
+      chargingStation.protocol,
+      CommandType.UNLOCK_CONNECTOR,
+    );
 
     const commandHandler = this.getCommandHandler(
       chargingStation.protocol || undefined,
@@ -138,6 +169,7 @@ export class CommandExecutor {
         tenantPartner,
         chargingStation,
         commandId,
+        capability,
       );
     } else {
       this.logger.warn('UnlockConnector failed');
@@ -430,17 +462,36 @@ export class CommandExecutor {
     ocppVersion: OCPPVersion,
     command: CommandType,
     commandId: string,
-    response: any,
+    response: unknown,
+    capability?: string,
   ): Promise<void> {
+    const rawContext = await this.cache.get<string>(commandId, CALLBACK_CONTEXT_NAMESPACE);
+    let context: z.infer<typeof callbackContextSchema>;
+    try {
+      context = callbackContextSchema.parse(JSON.parse(rawContext ?? 'null'));
+    } catch {
+      throw new UnauthorizedError('Invalid callback context');
+    }
+    const digest = createHash('sha256')
+      .update(capability ?? '')
+      .digest();
+    if (
+      !capability ||
+      context.expiresAt <= Date.now() ||
+      context.tenantPartnerId !== tenantPartnerId ||
+      context.version !== ocppVersion ||
+      context.command !== command ||
+      !timingSafeEqual(Buffer.from(context.digest, 'hex'), digest)
+    )
+      throw new UnauthorizedError('Invalid callback context');
+
     const responseUrl: string | null = await this.cache.get(
       commandId,
       COMMAND_RESPONSE_URL_CACHE_NAMESPACE,
     );
-    if (!responseUrl) {
-      this.logger.error('Response URL not found in cache', {
-        commandId,
-      });
-      return;
+    if (responseUrl === COMMAND_RESPONSE_URL_CACHE_RESOLVED) return;
+    if (!responseUrl || responseUrl !== context.responseUrl) {
+      throw new UnauthorizedError('Invalid callback context');
     }
 
     const tenantPartnerResponse = await this.ocpiGraphqlClient.request<
@@ -455,9 +506,36 @@ export class CommandExecutor {
         command,
         commandId,
       });
-      return;
+      throw new UnauthorizedError('Invalid callback owner');
     }
     const tenantPartner = tenantPartnerResponse.TenantPartners_by_pk as TenantPartnerDto;
+    if (
+      tenantPartner.id !== context.tenantPartnerId ||
+      tenantPartner.tenantId !== context.tenantId ||
+      (tenantPartner.tenant?.id != null && tenantPartner.tenant.id !== context.tenantId)
+    ) {
+      throw new UnauthorizedError('Invalid callback owner');
+    }
+    if (
+      typeof response === 'object' &&
+      response !== null &&
+      'success' in response &&
+      response.success === false &&
+      'outcome' in response &&
+      ['TIMED_OUT', 'CALL_ERROR', 'DISPATCH_FAILED'].includes(String(response.outcome))
+    ) {
+      await this.commandsClientApi.postCommandResult(
+        tenantPartner,
+        responseUrl,
+        {
+          result:
+            response.outcome === 'TIMED_OUT' ? CommandResultType.TIMEOUT : CommandResultType.FAILED,
+          message: { language: 'en', text: 'Charging station communication failed' },
+        },
+        commandId,
+      );
+      return;
+    }
 
     const commandHandler = this.getCommandHandler(
       ocppVersion,
@@ -485,14 +563,48 @@ export class CommandExecutor {
   private async generateCommandId(
     responseUrl: string,
     tenantPartner: TenantPartnerDto,
-  ): Promise<string> {
+    version: OCPPVersion | null | undefined,
+    command: CommandType,
+  ): Promise<{ commandId: string; capability: string }> {
+    if (
+      typeof tenantPartner.tenantId !== 'number' ||
+      !Number.isSafeInteger(tenantPartner.tenantId) ||
+      tenantPartner.tenantId <= 0 ||
+      (tenantPartner.tenant?.id != null && tenantPartner.tenant.id !== tenantPartner.tenantId)
+    ) {
+      throw new Error('Verified callback tenant context is required');
+    }
     const commandId = uuidv4();
-    await this.cache.set(
-      commandId,
-      responseUrl,
-      COMMAND_RESPONSE_URL_CACHE_NAMESPACE,
-      this.config.commands.timeout,
-    );
+    const capability = randomBytes(32).toString('base64url');
+    if (version) {
+      const context = callbackContextSchema.parse({
+        digest: createHash('sha256').update(capability).digest('hex'),
+        tenantPartnerId: tenantPartner.id,
+        tenantId: tenantPartner.tenantId,
+        version,
+        command,
+        responseUrl,
+        expiresAt: Date.now() + this.config.commands.timeout * 1000,
+      });
+      if (
+        !(await this.cache.set(
+          commandId,
+          JSON.stringify(context),
+          CALLBACK_CONTEXT_NAMESPACE,
+          this.config.commands.timeout,
+        ))
+      )
+        throw new Error('Unable to store callback context');
+    }
+    if (
+      !(await this.cache.set(
+        commandId,
+        responseUrl,
+        COMMAND_RESPONSE_URL_CACHE_NAMESPACE,
+        this.config.commands.timeout,
+      ))
+    )
+      throw new Error('Unable to store command response URL');
 
     this.cache
       .onChange(commandId, this.config.commands.timeout, COMMAND_RESPONSE_URL_CACHE_NAMESPACE)
@@ -514,22 +626,20 @@ export class CommandExecutor {
               },
               commandId,
             )
-            .catch((error: any) => {
+            .catch(() => {
               this.logger.error('Error posting command result on command timeout', {
                 commandId,
-                error,
               });
             });
         }
       })
-      .catch((error: any) => {
+      .catch(() => {
         this.logger.error('Error in command cache onChange', {
           commandId,
-          error,
         });
       });
 
-    return commandId;
+    return { commandId, capability };
   }
 
   private getCommandHandler(
@@ -558,10 +668,9 @@ export class CommandExecutor {
           },
           commandId,
         )
-        .catch((error: any) => {
+        .catch(() => {
           this.logger.error('Error posting command result for unsupported OCPP version', {
             commandId,
-            error,
           });
         });
       return undefined;

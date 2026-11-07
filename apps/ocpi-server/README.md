@@ -209,6 +209,33 @@ root `docker-compose.yml`
 and the `process.env.*` fallbacks in the config files), including `DB_HOST`, `DB_PORT`, `AMQP_URL`, `AMQP_EXCHANGE`,
 `GRAPHQL_ENDPOINT`, and the OCPI server `PORT`.
 
+Administrative endpoints require explicit OIDC configuration. Set all of
+`OCPI_ADMIN_JWKS_URI`, `OCPI_ADMIN_ISSUER`, `OCPI_ADMIN_AUDIENCE`, and
+`OCPI_ADMIN_ALLOWED_SUBJECTS` (comma-separated exact issuer subject identifiers),
+or leave all four unset to disable administrative access with HTTP 503. Partial
+configuration fails startup. The issuer and JWKS endpoint must use HTTPS. Reserve
+these subjects at the trusted issuer so tenant self-service credentials cannot
+request them. There is no default subject, issuer, role, or reused Core JWT profile.
+Partner OCPI Token authentication remains separate.
+
+The private Core command callback uses a per-command capability query parameter,
+validated against its digest and exact owner/version/command/response URL/expiry
+context in the OCPI cache. Preserve that query parameter in private transport and
+exclude callback URLs from proxy access logs. It is not part of any standard OCPI
+or OCPP body. Drain pending commands before upgrading or changing cache topology;
+old UUID-only callbacks are rejected. All OCPI workers serving a command must
+share the cache; memory cache is limited to a single process.
+
+Terminal result selection uses the cache's atomic conditional set, retained for
+twice the configured command timeout. Resolution still precedes HTTP delivery.
+Partner result delivery has a five-second deadline, a 64-KiB response limit, no
+redirect following, and no retry after ambiguous delivery. Duplicate attempts
+within the retained claim do not send another result. Cache loss, process loss,
+and expiry can lose delivery; this is neither durable nor exactly-once delivery.
+Core callback notification retains its existing retry classifications and optional
+outbound OIDC, with at most three attempts bounded to five seconds each and fifteen
+seconds overall. Response bodies are canceled without being logged or read.
+
 ## Related Documentation
 
 - **CitrineOS Core / OCPP Server**

@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { JwtPayload } from 'jsonwebtoken';
+import type { GetPublicKeyOrSecret, JwtPayload } from 'jsonwebtoken';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import type { Context, Next } from 'koa';
@@ -10,7 +10,8 @@ import type { Context, Next } from 'koa';
 export interface OIDCConfig {
   jwksUri: string;
   issuer: string;
-  audience?: string;
+  audience: string;
+  allowedSubjects: string[];
   cacheTime?: number;
   rateLimit?: boolean;
 }
@@ -24,7 +25,7 @@ export function oidcAuthMiddleware(config: OIDCConfig) {
     jwksRequestsPerMinute: 5,
   });
 
-  async function getKey(header: any, callback: any) {
+  const getKey: GetPublicKeyOrSecret = (header, callback) => {
     client.getSigningKey(header.kid, function (err, key) {
       if (err || !key) {
         callback(err || new Error('Signing key not found'));
@@ -32,7 +33,7 @@ export function oidcAuthMiddleware(config: OIDCConfig) {
         callback(null, key.getPublicKey());
       }
     });
-  }
+  };
 
   return async (ctx: Context, next: Next) => {
     const authHeader = ctx.headers['authorization'];
@@ -54,17 +55,22 @@ export function oidcAuthMiddleware(config: OIDCConfig) {
           },
           (err, payload) => {
             if (err) reject(err);
-            else resolve(payload as JwtPayload);
+            else if (payload && typeof payload === 'object') resolve(payload);
+            else reject(new Error('Invalid token payload'));
           },
         );
       });
+      if (!decoded.sub || !config.allowedSubjects.includes(decoded.sub)) {
+        ctx.status = 401;
+        ctx.body = { error: 'Invalid token' };
+        return;
+      }
       ctx.state.user = decoded;
       await next();
-    } catch (err) {
+    } catch {
       ctx.status = 401;
       ctx.body = {
         error: 'Invalid token',
-        details: err instanceof Error ? err.message : String(err),
       };
     }
   };

@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 import 'reflect-metadata';
+import { Ajv } from 'ajv';
+import { CommandType } from '@ocpi/types/command-type.js';
+import { CommandResultType } from '@ocpi/types/command-result.js';
 import { Logger } from 'tslog';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -69,7 +72,7 @@ function aHandler() {
   const handler = new OCPP1_6_CommandHandler({
     logger: new Logger({ type: 'hidden' }),
     commandsClientApi: { postCommandResult },
-    ajv: {},
+    ajv: new Ajv({ strict: false }),
     ocpiGraphqlClient: {},
     config: {
       commands: {
@@ -108,6 +111,7 @@ describe('OCPP1_6_CommandHandler.sendStartSessionCommand', () => {
       tenantPartner,
       chargingStation,
       'cmd-1',
+      'test-capability',
     );
 
     expect(sent).toHaveLength(1);
@@ -129,6 +133,7 @@ describe('OCPP1_6_CommandHandler.sendStartSessionCommand', () => {
         tenantPartner,
         chargingStation,
         'cmd-3',
+        'test-capability',
       );
 
       expect(postCommandResult).not.toHaveBeenCalled();
@@ -145,10 +150,33 @@ describe('OCPP1_6_CommandHandler.sendStartSessionCommand', () => {
       tenantPartner,
       chargingStation,
       'cmd-2',
+      'test-capability',
     );
 
     expect(sent).toHaveLength(0);
     expect(postCommandResult).toHaveBeenCalledOnce();
     expect(postCommandResult.mock.calls[0][2]).toMatchObject({ result: 'FAILED' });
+  });
+});
+
+describe('OCPP 1.6 standard asynchronous responses', () => {
+  it.each([
+    ['Accepted', CommandResultType.ACCEPTED],
+    ['Rejected', CommandResultType.REJECTED],
+  ])('maps an ordinary stop %s response to %s', async (status, result) => {
+    const { handler, postCommandResult } = aHandler();
+    await handler.handleAsyncCommandResponse(
+      tenantPartner,
+      CommandType.STOP_SESSION,
+      'https://msp.test/result',
+      { status },
+      'command',
+    );
+    expect(postCommandResult).toHaveBeenCalledWith(
+      tenantPartner,
+      'https://msp.test/result',
+      expect.objectContaining({ result }),
+      'command',
+    );
   });
 });

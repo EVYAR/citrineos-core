@@ -45,40 +45,79 @@ export class CallbackUrlNotifier {
     );
     if (!url) return;
 
-    this._logger.debug(`Sending callback to ${url} for correlationId: ${correlationId}`);
+    this._logger.debug('Sending callback', { correlationId });
+    const deadline = Date.now() + 15_000;
 
     const headers: { [key: string]: string } = { 'Content-Type': 'application/json' };
 
     if (this._oidcTokenProvider) {
       try {
-        const token = await this._oidcTokenProvider.getToken();
+        const token = await this.withDeadline(this._oidcTokenProvider.getToken(), deadline);
         headers['Authorization'] = `Bearer ${token}`;
-      } catch (error) {
-        this._logger.error('Failed to get OIDC token for callback:', error);
+      } catch {
+        this._logger.error('Failed to get OIDC token for callback');
         return;
       }
     }
 
     const body = JSON.stringify(payload);
     for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const controller = new AbortController();
       try {
-        const response = await fetch(url, { method: `POST`, headers, body });
+        const response = await this.withDeadline(
+          fetch(url, {
+            method: 'POST',
+            headers,
+            body,
+            signal: controller.signal,
+            redirect: 'error',
+          }).then((response) => {
+            // No response body is needed, including on failure.
+            void response.body?.cancel().catch(() => undefined);
+            return response;
+          }),
+          Math.min(deadline, Date.now() + 5_000),
+          controller,
+        );
         if (response.ok) return;
-
-        const errorText = await response.text();
         const retryable =
           response.status === 408 || response.status === 429 || response.status >= 500;
-        this._logger.error(
-          `Callback to ${url} failed (attempt ${attempt}): ${response.status} ${response.statusText} - ${errorText}`,
-        );
+        this._logger.error('Callback HTTP failure', { attempt, status: response.status });
         if (!retryable) return;
-      } catch (error) {
-        this._logger.error(`Callback to ${url} failed (attempt ${attempt}):`, error);
+      } catch {
+        this._logger.error('Callback transport failure', { attempt });
+      } finally {
+        controller.abort();
       }
 
+      if (Date.now() >= deadline) return;
       if (attempt < 3) {
         await new Promise((resolve) => setTimeout(resolve, 200 * attempt));
       }
+    }
+  }
+
+  private async withDeadline<T>(
+    operation: Promise<T>,
+    deadline: number,
+    controller?: AbortController,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => {
+              controller?.abort();
+              reject(new Error('Callback deadline exceeded'));
+            },
+            Math.max(0, deadline - Date.now()),
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

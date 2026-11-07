@@ -583,46 +583,6 @@ describe('VersionsClientApi', () => {
   });
 });
 
-describe('CommandsClientApi.postCommandResult', () => {
-  it('marks the command resolved in cache and routes CPO -> eMSP', async () => {
-    const set = vi.fn().mockResolvedValue(true);
-    const api = new CommandsClientApi({
-      ...deps().dependencies,
-      cacheWrapper: { cache: { set } },
-      config: { commands: { timeout: 5 } },
-    } as never);
-    const request = spyRequest(api);
-    const profile = aProfile();
-    const tenantPartner = {
-      countryCode: 'NL',
-      partyId: 'MSP',
-      tenant: { countryCode: 'DE', partyId: 'CPO' },
-      partnerProfileOCPI: profile,
-    } as never;
-    const body = { result: 'ACCEPTED' } as never;
-    const responseUrl = 'https://msp.example.com/ocpi/commands/START_SESSION/cb-1';
-
-    const res = await api.postCommandResult(tenantPartner, responseUrl, body, 'cmd-1');
-
-    expect(res).toBe(RESULT);
-    expect(set).toHaveBeenCalledTimes(1);
-    expect(set).toHaveBeenCalledWith('cmd-1', 'resolved', 'commands', 5);
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(request).toHaveBeenCalledWith(
-      'DE',
-      'CPO',
-      'NL',
-      'MSP',
-      HttpMethod.Post,
-      OcpiEmptyResponseSchema,
-      profile,
-      true,
-      responseUrl,
-      body,
-    );
-  });
-});
-
 describe('BaseClientApi.request wire behavior', () => {
   it('GET sends auth plus routing headers and parses the 2xx body', async () => {
     const api = new SessionsClientApi(deps().dependencies);

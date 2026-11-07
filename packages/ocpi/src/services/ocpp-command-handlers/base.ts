@@ -89,6 +89,7 @@ export abstract class OCPPCommandHandler {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
     commandId: string,
+    capability: string,
   ): Promise<void>;
 
   abstract sendStopSessionCommand(
@@ -96,6 +97,7 @@ export abstract class OCPPCommandHandler {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
     commandId: string,
+    capability: string,
   ): Promise<void>;
 
   abstract sendUnlockConnectorCommand(
@@ -103,6 +105,7 @@ export abstract class OCPPCommandHandler {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
     commandId: string,
+    capability: string,
   ): Promise<void>;
 
   abstract handleAsyncCommandResponse(

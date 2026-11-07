@@ -97,6 +97,7 @@ describe('An OCPI StartSession sent to an OCPP 2.0.1 station', () => {
       tenantPartner,
       chargingStation,
       'command-1',
+      'test-capability',
     );
 
     expect(sent).toHaveLength(1);
@@ -111,6 +112,7 @@ describe('An OCPI StartSession sent to an OCPP 2.0.1 station', () => {
       tenantPartner,
       chargingStation,
       'command-1',
+      'test-capability',
     );
 
     expect(sent).toHaveLength(0);
@@ -127,6 +129,7 @@ describe('An OCPI StartSession sent to an OCPP 2.0.1 station', () => {
       tenantPartner,
       chargingStation,
       'command-1',
+      'test-capability',
     );
 
     expect(sent).toHaveLength(1);
@@ -141,6 +144,7 @@ describe('An OCPI StartSession sent to an OCPP 2.0.1 station', () => {
       tenantPartner,
       chargingStation,
       'command-1',
+      'test-capability',
     );
 
     expect(sent).toHaveLength(0);

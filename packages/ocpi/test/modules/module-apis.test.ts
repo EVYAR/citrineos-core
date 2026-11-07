@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import 'reflect-metadata';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { OCPPVersion } from '@citrineos/types';
 
 // Barrel first: the ModuleApi files resolve BaseController through src/index.js,
 // so the barrel must finish evaluating before the deep imports below run.
@@ -106,9 +107,16 @@ describe('CommandsModuleApi.postCommand', () => {
   it('postAsynchronousResponse forwards all params to the command executor', async () => {
     const { api, commandExecutor } = build();
 
-    await api.postAsynchronousResponse(7, 'ocpp2.0.1' as any, CommandType.STOP_SESSION, 'cmd-123', {
-      result: 'ACCEPTED',
-    });
+    await api.postAsynchronousResponse(
+      7,
+      OCPPVersion.OCPP2_0_1,
+      CommandType.STOP_SESSION,
+      'cmd-123',
+      {
+        result: 'ACCEPTED',
+      },
+      'private-proof',
+    );
 
     expect(commandExecutor.handleAsyncCommandResponse).toHaveBeenCalledExactlyOnceWith(
       7,
@@ -116,6 +124,7 @@ describe('CommandsModuleApi.postCommand', () => {
       CommandType.STOP_SESSION,
       'cmd-123',
       { result: 'ACCEPTED' },
+      'private-proof',
     );
   });
 });

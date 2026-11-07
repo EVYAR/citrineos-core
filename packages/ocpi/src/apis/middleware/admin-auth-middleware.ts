@@ -16,9 +16,15 @@ export class AdminAuthMiddleware implements KoaMiddlewareInterface {
   }
 
   async use(context: Context, next: Next): Promise<unknown> {
-    if (this.config.oidc) {
+    if (
+      this.config.oidc?.issuer &&
+      this.config.oidc.audience &&
+      this.config.oidc.allowedSubjects?.length
+    ) {
       return oidcAuthMiddleware(this.config.oidc)(context, next);
     }
-    return next();
+    context.status = 503;
+    context.body = { error: 'Administrative authentication is not configured' };
+    return;
   }
 }
