@@ -18,6 +18,7 @@
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {
+    "@citrineos/base": "workspace:*",
     "@aws-sdk/client-s3": "catalog:",
     "@aws-sdk/s3-request-presigner": "3.1148.0",
     "@base-ui/react": "1.8.0",

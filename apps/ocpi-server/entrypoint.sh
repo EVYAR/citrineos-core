@@ -5,12 +5,23 @@
 
 set -e
 
-OCPI_ENV=${OCPI_ENV:-docker}
-export OCPI_ENV
+OCPI_ENV=${APP_ENV-${OCPI_ENV-docker}}
+APP_ENV=$OCPI_ENV
+APP_NAME=${APP_NAME:-ocpi}
+export OCPI_ENV APP_ENV APP_NAME
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-(cd "$SCRIPT_DIR" && ./node_modules/.bin/sequelize-cli db:migrate --debug && echo migration completed successfully)
+case "${DB_STRATEGY:-migrate}" in
+  migrate)
+    (cd "$SCRIPT_DIR" && ./node_modules/.bin/sequelize-cli db:migrate --debug)
+    ;;
+  none) ;;
+  *)
+    echo "Unsupported DB_STRATEGY: ${DB_STRATEGY}" >&2
+    exit 1
+    ;;
+esac
 
 echo "Starting application..."
 exec node "$SCRIPT_DIR/dist/index.js"

@@ -49,6 +49,7 @@ const ChargingStationDetailsSchema = ChargingStationSchema.extend({
     )
     .nullish(),
 
+  transactionHistory: z.array(z.object({ id: z.number() })).optional(),
   ocppMessages: z.array(z.object({ id: z.number() })).nullish(),
 });
 
@@ -85,6 +86,7 @@ export class ChargingStationClass implements Partial<ChargingStationDto> {
   location?: LocationDto;
   networkProfiles?: any;
   transactions?: any[] | null;
+  transactionHistory?: { id: number }[];
   ocppMessages?: { id: number }[] | null;
   connectedWebsocketServerConfigId?: string | null;
   @Expose({ name: 'ConnectedServerNetworkProfile' })

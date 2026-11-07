@@ -13,7 +13,9 @@ WORKDIR /usr/local/apps/citrineos
 
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter "@citrineos/ocpi-server..." build
+RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm --workspace-concurrency=1 --filter "@citrineos/ocpi-server..." build
+ARG COMMIT_SHA
+RUN node -e 'const fs = require("node:fs"); const pkg = JSON.parse(fs.readFileSync("apps/ocpi-server/package.json", "utf8")); const sourceSha = process.env.COMMIT_SHA || null; if (sourceSha && !/^[a-f0-9]{40}$/.test(sourceSha)) throw new Error("COMMIT_SHA must be a full source SHA"); fs.writeFileSync("apps/ocpi-server/dist/build-info.json", JSON.stringify({component: pkg.name, version: pkg.version, sourceSha}) + "\n");'
 
 RUN pnpm --filter "@citrineos/ocpi-server" deploy --legacy --prod /deploy
 
@@ -31,5 +33,8 @@ COPY --from=build /usr/local/apps/citrineos/apps/ocpi-server/.sequelizerc /usr/l
 WORKDIR /usr/local/apps/citrineos/apps/ocpi-server
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpi-server/entrypoint.sh
+
+ARG COMMIT_SHA
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
 
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpi-server/entrypoint.sh"]

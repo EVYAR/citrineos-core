@@ -316,9 +316,7 @@ describe('token queries', () => {
   it('READ_AUTHORIZATION filters token identity and owning partner party', () => {
     expect(READ_AUTHORIZATION).toContain('idToken: { _eq: $idToken }');
     expect(READ_AUTHORIZATION).toContain('idTokenType: { _eq: $type }');
-    expect(READ_AUTHORIZATION).toContain(
-      'TenantPartner: { countryCode: { _eq: $countryCode }, partyId: { _eq: $partyId } }',
-    );
+    expect(READ_AUTHORIZATION).toContain('id: { _eq: $tenantPartnerId }');
   });
 
   it('UPDATE_TOKEN_MUTATION scopes the update to one partner token and applies $set', () => {
@@ -368,9 +366,7 @@ describe('transaction queries', () => {
   });
 
   it('GET_TRANSACTION_BY_ID filters on id, since the partitioned table has no single-column primary key', () => {
-    expect(GET_TRANSACTION_BY_ID_QUERY).toContain(
-      'Transactions(where: { id: { _eq: $id } }, limit: 1)',
-    );
+    expect(GET_TRANSACTION_BY_ID_QUERY).toContain('createdAt: { _eq: $createdAt }');
   });
 
   it('STOP_SESSION lookup only matches active sessions of the calling party', () => {
@@ -379,7 +375,7 @@ describe('transaction queries', () => {
     );
     expect(GET_ACTIVE_TRANSACTION_FOR_STOP_SESSION_QUERY).toContain('isActive: { _eq: true }');
     expect(GET_ACTIVE_TRANSACTION_FOR_STOP_SESSION_QUERY).toContain(
-      'TenantPartner: { countryCode: { _eq: $countryCode }, partyId: { _eq: $partyId } }',
+      'id: { _eq: $tenantPartnerId }',
     );
     expect(GET_ACTIVE_TRANSACTION_FOR_STOP_SESSION_QUERY).toContain(
       'order_by: { createdAt: desc }',
@@ -425,14 +421,14 @@ describe('OcpiGraphqlClient', () => {
     expect(requestMock).toHaveBeenCalledWith(GET_LOCATIONS_QUERY, undefined);
   });
 
-  it('request surfaces GraphQLClient rejections unchanged', async () => {
+  it('request sanitizes upstream errors that could contain service credentials', async () => {
     const client = new OcpiGraphqlClient(ENDPOINT, HEADERS);
     requestMock.mockRejectedValueOnce(
       new Error('invalid x-hasura-admin-secret/x-hasura-access-key'),
     );
 
     await expect(client.request(GET_TENANT_BY_ID, { id: 7 })).rejects.toThrow(
-      'invalid x-hasura-admin-secret/x-hasura-access-key',
+      'OCPI GraphQL request failed',
     );
     expect(requestMock).toHaveBeenCalledTimes(1);
   });

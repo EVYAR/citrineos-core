@@ -21,7 +21,7 @@ import { GET_TARIFF_BY_KEY_QUERY } from '@ocpi/transport/graphql/index.js';
 // Partner lookup and per-partner iteration live in BaseClientApi.broadcastToClients;
 // the broadcasters only assemble the call, so tests stop at that boundary.
 
-const TENANT = { countryCode: 'US', partyId: 'CPO' } as TenantDto;
+const TENANT = { id: 1, countryCode: 'US', partyId: 'CPO' } as TenantDto;
 
 function aLogger() {
   return { error: vi.fn(), warn: vi.fn(), debug: vi.fn(), info: vi.fn() };
@@ -472,7 +472,11 @@ describe('SessionBroadcaster', () => {
 
   it('PUT maps the transaction and broadcasts under the session id path', async () => {
     const { broadcaster, sessionsClientApi, sessionMapper } = build();
-    const transactionDto = { id: 1, transactionId: 'tx-1' };
+    const transactionDto = {
+      id: 1,
+      createdAt: new Date('2026-11-07T00:00:00Z'),
+      transactionId: 'tx-1',
+    };
     const session = { id: 'sess-1', kwh: 2 };
     sessionMapper.mapTransactionToSession.mockResolvedValue(session);
 
@@ -492,7 +496,7 @@ describe('SessionBroadcaster', () => {
 
   it('PATCH uses the partial mapper and the PATCH method', async () => {
     const { broadcaster, sessionsClientApi, sessionMapper } = build();
-    const partialDto = { id: 1, totalKwh: 3 };
+    const partialDto = { id: 1, createdAt: new Date('2026-11-07T00:00:00Z'), totalKwh: 3 };
     sessionMapper.mapPartialTransactionToPartialSession.mockResolvedValue({
       id: 'sess-1',
       kwh: 3,
@@ -510,7 +514,12 @@ describe('SessionBroadcaster', () => {
 
   it('charging period PATCH stringifies the tariff id and keys the path by transactionId', async () => {
     const { broadcaster, sessionsClientApi, sessionMapper } = build();
-    const meterValueDto = { transactionDatabaseId: 1, transactionId: 'tx-9', tariffId: 7 };
+    const meterValueDto = {
+      transactionDatabaseId: 1,
+      transactionCreatedAt: new Date('2026-11-07T00:00:00Z'),
+      transactionId: 'tx-9',
+      tariffId: 7,
+    };
     const periods = [{ start_date_time: new Date('2026-08-20T10:00:00Z') }];
     sessionMapper.getChargingPeriods.mockReturnValue(periods);
 
@@ -542,7 +551,11 @@ describe('SessionBroadcaster', () => {
     sessionsClientApi.broadcastToClients.mockRejectedValue(failure);
 
     await expect(
-      broadcaster.broadcastPutSession(TENANT, { id: 1, transactionId: 'tx-1' } as never),
+      broadcaster.broadcastPutSession(TENANT, {
+        id: 1,
+        createdAt: new Date('2026-11-07T00:00:00Z'),
+        transactionId: 'tx-1',
+      } as never),
     ).resolves.toBeUndefined();
 
     expect(logger.error).toHaveBeenCalledOnce();

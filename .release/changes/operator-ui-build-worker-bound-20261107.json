@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Limit the integrated operator UI production Next.js build to one worker through experimental.cpus, retaining the 2 GiB Node heap and sequential app build scheduling."
+}

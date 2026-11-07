@@ -64,8 +64,11 @@ export const GET_TRANSACTIONS_QUERY = gql`
 `;
 
 export const GET_TRANSACTION_BY_ID_QUERY = gql`
-  query GetTransactionById($id: Int!) {
-    Transactions(where: { id: { _eq: $id } }, limit: 1) {
+  query GetTransactionById($id: Int!, $createdAt: timestamptz!, $tenantId: Int!) {
+    Transactions(
+      where: { id: { _eq: $id }, createdAt: { _eq: $createdAt }, tenantId: { _eq: $tenantId } }
+      limit: 2
+    ) {
       tenant: Tenant {
         countryCode
         partyId
@@ -143,8 +146,11 @@ export const GET_TRANSACTION_BY_ID_QUERY = gql`
 `;
 
 export const GET_TRANSACTION_TENANT_PARTNER_QUERY = gql`
-  query GetTransactionTenantPartner($id: Int!) {
-    Transactions(where: { id: { _eq: $id } }, limit: 1) {
+  query GetTransactionTenantPartner($id: Int!, $createdAt: timestamptz!, $tenantId: Int!) {
+    Transactions(
+      where: { id: { _eq: $id }, createdAt: { _eq: $createdAt }, tenantId: { _eq: $tenantId } }
+      limit: 2
+    ) {
       authorization: Authorization {
         tenantPartner: TenantPartner {
           id
@@ -156,20 +162,28 @@ export const GET_TRANSACTION_TENANT_PARTNER_QUERY = gql`
 
 // Scoped lookup for the OCPI StopSession command: the eMSP only knows the
 // (non-unique) transactionId, so we additionally scope to the calling partner
-// (countryCode/partyId) and to active sessions. The caller must treat a result
+// (numeric tenant/partner keys and countryCode/partyId) and to active sessions. The caller must treat a result
 // with more than one row as ambiguous and reject it rather than pick one.
 export const GET_ACTIVE_TRANSACTION_FOR_STOP_SESSION_QUERY = gql`
   query GetActiveTransactionForStopSession(
     $transactionId: String!
+    $tenantId: Int!
+    $tenantPartnerId: Int!
     $countryCode: String!
     $partyId: String!
   ) {
     Transactions(
       where: {
         transactionId: { _eq: $transactionId }
+        tenantId: { _eq: $tenantId }
         isActive: { _eq: true }
         Authorization: {
-          TenantPartner: { countryCode: { _eq: $countryCode }, partyId: { _eq: $partyId } }
+          TenantPartner: {
+            id: { _eq: $tenantPartnerId }
+            tenantId: { _eq: $tenantId }
+            countryCode: { _eq: $countryCode }
+            partyId: { _eq: $partyId }
+          }
         }
       }
       order_by: { createdAt: desc }

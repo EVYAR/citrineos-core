@@ -175,3 +175,12 @@ export type { RpcMessage } from './src/ocpp/rpc/message.js';
 // Constants
 
 export { DEFAULT_TENANT_ID } from './src/util/identifiers.js';
+
+export {
+  CoreMachineTokenProvider,
+  coreMachineTokenExpiry,
+  readBoundedBody,
+  validCoreTenant,
+  waitForCoreAbort,
+} from './src/auth/core-machine-auth.js';
+export type { CoreMachineAuthSettings, CoreMachineResponse } from './src/auth/core-machine-auth.js';

@@ -91,10 +91,7 @@ export abstract class BaseClientApi {
     headers[OcpiHttpHeader.XCorrelationId] = uuidv4();
     const token = partnerProfile.credentials?.token;
     if (!token) {
-      throw new MissingRequiredParamException(
-        'token',
-        `TenantPartner missing server token: ${JSON.stringify(partnerProfile)}`,
-      );
+      throw new MissingRequiredParamException('token', 'TenantPartner outbound token is missing');
     }
     headers[HttpHeader.Authorization] = `Token ${base64Encode(token)}`;
     return headers;

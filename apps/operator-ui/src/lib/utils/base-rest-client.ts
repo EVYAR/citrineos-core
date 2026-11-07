@@ -9,7 +9,10 @@ import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import axios from 'axios';
 import config from './config';
 
-const CITRINE_CORE_URL = config.citrineCoreUrl;
+const CITRINE_CORE_URL =
+  config.authProvider === 'generic' && config.coreTransport === 'server'
+    ? '/api/core'
+    : config.citrineCoreUrl;
 
 export class MissingRequiredParamException extends Error {
   override name = 'MissingRequiredParamException' as const;
@@ -120,7 +123,16 @@ export class BaseRestClient {
     });
     axiosInstance.interceptors.request.use(
       async (config) => {
-        // Get token and add to headers if it exists
+        if (
+          config.url &&
+          (/^[a-z][a-z0-9+.-]*:/i.test(config.url) || config.url.startsWith('//'))
+        ) {
+          throw new Error('Absolute Core request URLs are forbidden');
+        }
+        if (config.baseURL?.startsWith('/api/core/')) {
+          config.headers.delete('Authorization');
+          return config;
+        }
         const token = await authProvider.getToken();
         if (token) {
           config.headers = config.headers || {};

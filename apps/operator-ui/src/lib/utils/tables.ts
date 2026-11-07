@@ -45,8 +45,13 @@ export const getPlainToInstanceOptions: any = (dto: Constructable<any>, isSingle
 // provider hands back a single-element array; unwrap it into the object that
 // `useOne` consumers expect, or `undefined` when no row matched.
 export const getSingleFromListPlainToInstanceOptions: any = (dto: Constructable<any>) => ({
-  select: (data: any) => ({
-    ...data,
-    data: data.data?.[0] ? plainToInstance(dto, data.data[0]) : undefined,
-  }),
+  select: (data: any) => {
+    if (data.data?.length > 1) {
+      throw new Error('Transaction identity is ambiguous');
+    }
+    return {
+      ...data,
+      data: data.data?.[0] ? plainToInstance(dto, data.data[0]) : undefined,
+    };
+  },
 });

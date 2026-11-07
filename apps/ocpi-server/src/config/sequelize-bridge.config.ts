@@ -9,9 +9,9 @@ import { createDockerOcpiConfig } from './envs/docker.js';
 export default (async () => {
   try {
     let ocpiConfig;
-    const env = process.env.OCPI_ENV || 'local'; // default to local
+    const env = process.env.APP_ENV ?? process.env.OCPI_ENV ?? 'local';
 
-    if (env.toLowerCase() === 'local') {
+    if (env !== 'docker') {
       ocpiConfig = getOcpiSystemConfig(createLocalOcpiConfig());
       console.log('[sequelize-bridge.config.ts] Using LOCAL configuration');
     } else {

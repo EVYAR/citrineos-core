@@ -133,6 +133,9 @@ export const CHARGING_STATIONS_GET_QUERY = gql`
       use16StatusNotification0
       latestOcppMessageTimestamp
       connectedWebsocketServerConfigId
+      transactionHistory: Transactions(limit: 1) {
+        id
+      }
       ocppMessages: OCPPMessages(limit: 1) {
         id
       }

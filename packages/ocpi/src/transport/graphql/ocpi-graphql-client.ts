@@ -16,6 +16,10 @@ export class OcpiGraphqlClient implements IOcpiGraphqlClient {
   }
 
   async request<T, V extends Variables | undefined>(query: string, variables?: V): Promise<T> {
-    return this.client.request<T>(query, variables);
+    try {
+      return await this.client.request<T>(query, variables);
+    } catch {
+      throw new Error('OCPI GraphQL request failed');
+    }
   }
 }

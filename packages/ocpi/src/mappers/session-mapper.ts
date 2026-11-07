@@ -95,6 +95,13 @@ export class SessionMapper extends BaseTransactionMapper {
   public async getLocationsTokensAndTariffsMapsForTransactions(
     transactions: TransactionDto[],
   ): Promise<[Map<string, LocationDTO>, Map<string, TokenDTO>, Map<string, TariffDto>]> {
+    const sessionIds = new Set<string>();
+    for (const transaction of transactions) {
+      if (!transaction.transactionId || sessionIds.has(transaction.transactionId)) {
+        throw new Error('Ambiguous OCPI session identity in transaction batch');
+      }
+      sessionIds.add(transaction.transactionId);
+    }
     return await Promise.all([
       this.getLocationDTOsForTransactions(transactions),
       this.getTokensForTransactions(transactions),

@@ -47,6 +47,13 @@ describe('SessionMapper.mapTransactionsToSessionsHelper', () => {
       ocpiGraphqlClient: {},
     } as never);
 
+    await expect(
+      mapper.getLocationsTokensAndTariffsMapsForTransactions([
+        aTransaction('reused'),
+        { ...aTransaction('reused'), stationId: 2 },
+      ]),
+    ).rejects.toThrow('Ambiguous OCPI session identity');
+
     const sessions = await mapper.mapTransactionsToSessionsHelper(
       [aTransaction('tx-1'), aTransaction('tx-2')],
       new Map([['tx-1', aLocation]]),

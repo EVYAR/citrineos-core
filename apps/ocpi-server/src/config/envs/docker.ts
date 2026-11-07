@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { OcpiConfigInput } from '@citrineos/ocpi';
+import { ocpiGraphqlHeaders } from './graphql-headers.js';
+import { ocpiCoreAuth } from './core-auth.js';
 
 export function createDockerOcpiConfig(): OcpiConfigInput {
   return {
@@ -63,6 +65,7 @@ export function createDockerOcpiConfig(): OcpiConfigInput {
     },
 
     graphql: {
+      headers: ocpiGraphqlHeaders(process.env.OCPI_GRAPHQL_HEADERS),
       endpoint: process.env.GRAPHQL_ENDPOINT || 'http://graphql-engine:8080/v1/graphql',
     },
 
@@ -70,6 +73,7 @@ export function createDockerOcpiConfig(): OcpiConfigInput {
       timeout: parseInt(process.env.COMMANDS_TIMEOUT || '30'),
       ocpiBaseUrl: process.env.COMMANDS_OCPI_BASE_URL || 'http://citrineos-ocpi:8085/ocpi',
       coreHeaders: JSON.parse(process.env.COMMANDS_CORE_HEADERS || '{}'),
+      coreAuth: ocpiCoreAuth(process.env),
       ocpp1_6: {
         remoteStartTransactionRequestUrl:
           process.env.COMMANDS_OCPP1_6_REMOTE_START_TRANSACTION_REQUEST_URL ||
