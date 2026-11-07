@@ -613,10 +613,12 @@ export type GetTenantByIdQueryResult = {
 };
 
 export type ReadAuthorizationsQueryVariables = Exact<{
-  idToken?: InputMaybe<Scalars['String']['input']>;
-  type?: InputMaybe<Scalars['String']['input']>;
-  countryCode?: InputMaybe<Scalars['String']['input']>;
-  partyId?: InputMaybe<Scalars['String']['input']>;
+  idToken: Scalars['String']['input'];
+  type: Scalars['String']['input'];
+  countryCode: Scalars['String']['input'];
+  partyId: Scalars['String']['input'];
+  tenantId: Scalars['Int']['input'];
+  tenantPartnerId: Scalars['Int']['input'];
 }>;
 
 export type ReadAuthorizationsQueryResult = {

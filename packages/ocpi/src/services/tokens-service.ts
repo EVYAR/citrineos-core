@@ -76,7 +76,16 @@ export class TokensService {
     this.tokensMapper = tokensMapper;
   }
 
-  async getToken(tokenRequest: SingleTokenRequest): Promise<TokenDTO | undefined> {
+  async getToken(
+    tokenRequest: SingleTokenRequest,
+    tenantId: number,
+    tenantPartnerId: number,
+  ): Promise<TokenDTO | undefined> {
+    if (
+      ![tenantId, tenantPartnerId].every((id) => Number.isInteger(id) && id > 0 && id <= 2147483647)
+    ) {
+      throw new InvalidParamException('Authenticated tenant and partner are required');
+    }
     const variables = {
       idToken: tokenRequest.uid,
       type: this.tokensMapper.mapOcpiTokenTypeToOcppIdTokenType(
@@ -84,6 +93,8 @@ export class TokensService {
       ),
       countryCode: tokenRequest.country_code,
       partyId: tokenRequest.party_id,
+      tenantId,
+      tenantPartnerId,
     };
     const result = await this.ocpiGraphqlClient.request<
       ReadAuthorizationsQueryResult,
@@ -95,11 +106,18 @@ export class TokensService {
     }
 
     if (result.Authorizations.length > 1) {
-      this.logger.warn(
-        `Multiple authorizations found for token uid ${tokenRequest.uid}, type ${tokenRequest.type}, country code ${tokenRequest.country_code}, and party id ${tokenRequest.party_id}. Returning the first one. All entries: ${JSON.stringify(result.Authorizations)}`,
-      );
+      throw new InvalidParamException('Token identity is ambiguous');
     }
-    return this.tokensMapper.toDto(result.Authorizations[0] as AuthorizationDto);
+    const authorization = result.Authorizations[0];
+    if (
+      authorization.tenantId !== tenantId ||
+      authorization.tenantPartner?.id !== tenantPartnerId ||
+      authorization.tenantPartner.countryCode !== tokenRequest.country_code ||
+      authorization.tenantPartner.partyId !== tokenRequest.party_id
+    ) {
+      throw new InvalidParamException('Token does not belong to the authenticated partner');
+    }
+    return this.tokensMapper.toDto(authorization as AuthorizationDto);
   }
 
   async upsertToken(token: TokenDTO, tenantId: number, tenantPartnerId: number): Promise<TokenDTO> {

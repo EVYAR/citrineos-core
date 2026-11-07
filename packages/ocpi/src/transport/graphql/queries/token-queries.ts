@@ -6,16 +6,23 @@ import { gql } from 'graphql-request';
 
 export const READ_AUTHORIZATION = gql`
   query ReadAuthorizations(
-    $idToken: citext
-    $type: String
-    $countryCode: String
-    $partyId: String
+    $idToken: citext!
+    $type: String!
+    $countryCode: String!
+    $partyId: String!
+    $tenantId: Int!
+    $tenantPartnerId: Int!
   ) {
     Authorizations(
       where: {
         idToken: { _eq: $idToken }
         idTokenType: { _eq: $type }
-        TenantPartner: { countryCode: { _eq: $countryCode }, partyId: { _eq: $partyId } }
+        tenantId: { _eq: $tenantId }
+        TenantPartner: {
+          id: { _eq: $tenantPartnerId }
+          countryCode: { _eq: $countryCode }
+          partyId: { _eq: $partyId }
+        }
       }
     ) {
       id

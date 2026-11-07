@@ -242,11 +242,27 @@ describe('CredentialsModuleApi', () => {
 
 describe('TokensModuleApi', () => {
   describe('getTokens', () => {
+    it('rejects missing authenticated context before invoking the service', async () => {
+      const service = aTokensService(),
+        api = aTokensApi(service);
+      await expect(
+        api.getTokens(VERSION, 'DE', 'MSP', 'UID1', headersFrom('DE', 'MSP')),
+      ).rejects.toThrow('Tenant information not available');
+      expect(service.getToken).not.toHaveBeenCalled();
+    });
     it('rejects a country code not matching the sender header', async () => {
       const service = aTokensService();
       const api = aTokensApi(service);
 
-      const call = api.getTokens(VERSION, 'FR', 'MSP', 'UID1', headersFrom('DE', 'MSP'));
+      const call = api.getTokens(
+        VERSION,
+        'FR',
+        'MSP',
+        'UID1',
+        headersFrom('DE', 'MSP'),
+        undefined,
+        CTX,
+      );
 
       await expect(call).rejects.toBeInstanceOf(WrongClientAccessException);
       expect(service.getToken).toHaveBeenCalledTimes(0);
@@ -257,17 +273,29 @@ describe('TokensModuleApi', () => {
       service.getToken.mockResolvedValue(undefined);
       const api = aTokensApi(service);
 
-      const call = api.getTokens(VERSION, 'DE', 'MSP', 'UID1', headersFrom('DE', 'MSP'));
+      const call = api.getTokens(
+        VERSION,
+        'DE',
+        'MSP',
+        'UID1',
+        headersFrom('DE', 'MSP'),
+        undefined,
+        CTX,
+      );
 
       await expect(call).rejects.toThrow(UnknownTokenException);
       expect(service.getToken).toHaveBeenCalledTimes(1);
       // type defaults to RFID when the query param is absent
-      expect(service.getToken).toHaveBeenCalledWith({
-        country_code: 'DE',
-        party_id: 'MSP',
-        uid: 'UID1',
-        type: TokenType.RFID,
-      });
+      expect(service.getToken).toHaveBeenCalledWith(
+        {
+          country_code: 'DE',
+          party_id: 'MSP',
+          uid: 'UID1',
+          type: TokenType.RFID,
+        },
+        CTX.state.tenantPartner.tenant.id,
+        CTX.state.tenantPartner.id,
+      );
     });
 
     it('returns the token in a 1000 envelope and forwards an explicit type', async () => {
@@ -283,14 +311,19 @@ describe('TokensModuleApi', () => {
         'UID1',
         headersFrom('DE', 'MSP'),
         TokenType.APP_USER,
+        CTX,
       );
 
-      expect(service.getToken).toHaveBeenCalledWith({
-        country_code: 'DE',
-        party_id: 'MSP',
-        uid: 'UID1',
-        type: TokenType.APP_USER,
-      });
+      expect(service.getToken).toHaveBeenCalledWith(
+        {
+          country_code: 'DE',
+          party_id: 'MSP',
+          uid: 'UID1',
+          type: TokenType.APP_USER,
+        },
+        CTX.state.tenantPartner.tenant.id,
+        CTX.state.tenantPartner.id,
+      );
       expect(result.status_code).toBe(OcpiResponseStatusCode.GenericSuccessCode);
       expect(result.data).toBe(token);
     });

@@ -110,6 +110,7 @@ export class TokensModuleApi extends BaseController implements ITokensModuleApi 
     @FunctionalEndpointParams() ocpiHeader: OcpiHeaders,
     @EnumQueryParam('type', TokenTypeSchema, TokenTypeSchemaName)
     type?: TokenType,
+    @Ctx() ctx?: { state?: { tenantPartner?: { id?: number; tenant?: { id?: number } } } },
   ): Promise<TokenResponse | OcpiEmptyResponse> {
     this.logger.info('getTokens', countryCode, partyId, tokenId, type);
     if (ocpiHeader.fromCountryCode !== countryCode || ocpiHeader.fromPartyId !== partyId) {
@@ -122,7 +123,12 @@ export class TokensModuleApi extends BaseController implements ITokensModuleApi 
       type: type ?? TokenType.RFID,
     };
 
-    const token = await this.tokensService.getToken(tokenRequest);
+    const tenantId = ctx?.state?.tenantPartner?.tenant?.id;
+    const tenantPartnerId = ctx?.state?.tenantPartner?.id;
+    if (tenantId === undefined || tenantPartnerId === undefined) {
+      throw new InvalidParamException('Tenant information not available');
+    }
+    const token = await this.tokensService.getToken(tokenRequest, tenantId, tenantPartnerId);
 
     if (token === undefined) {
       throw new UnknownTokenException('Token not found in the database');

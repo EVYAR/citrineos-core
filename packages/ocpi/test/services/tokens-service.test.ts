@@ -95,12 +95,16 @@ describe('TokensService.getToken', () => {
       Authorizations: [anAuthorizationRow()],
     }));
 
-    const token = await service.getToken({
-      country_code: 'DE',
-      party_id: 'MSP',
-      uid: 'MYTOKEN001',
-      type: TokenType.APP_USER,
-    });
+    const token = await service.getToken(
+      {
+        country_code: 'DE',
+        party_id: 'MSP',
+        uid: 'MYTOKEN001',
+        type: TokenType.APP_USER,
+      },
+      1,
+      5,
+    );
 
     expect(request).toHaveBeenCalledOnce();
     const { document, variables } = callTo(request, 'ReadAuthorizations');
@@ -109,10 +113,10 @@ describe('TokensService.getToken', () => {
       type: IdTokenEnum.Central,
       countryCode: 'DE',
       partyId: 'MSP',
+      tenantId: 1,
+      tenantPartnerId: 5,
     });
-    expect(document).toContain(
-      'TenantPartner: { countryCode: { _eq: $countryCode }, partyId: { _eq: $partyId } }',
-    );
+    expect(document).toContain('tenantId: { _eq: $tenantId }');
     expect(token).toMatchObject({
       uid: 'MYTOKEN001',
       country_code: 'DE',
@@ -128,17 +132,21 @@ describe('TokensService.getToken', () => {
   it('defaults an untyped request to RFID and reports a miss as undefined', async () => {
     const { service, request } = buildService();
 
-    const token = await service.getToken({
-      country_code: 'DE',
-      party_id: 'MSP',
-      uid: 'MYTOKEN001',
-    });
+    const token = await service.getToken(
+      {
+        country_code: 'DE',
+        party_id: 'MSP',
+        uid: 'MYTOKEN001',
+      },
+      1,
+      5,
+    );
 
     expect(callTo(request, 'ReadAuthorizations').variables.type).toBe(IdTokenEnum.ISO14443);
     expect(token).toBeUndefined();
   });
 
-  it('warns once and returns the first row when the query matches several', async () => {
+  it('rejects an ambiguous match without logging token data', async () => {
     const { service, logger } = buildService(() => ({
       Authorizations: [
         anAuthorizationRow(),
@@ -153,14 +161,39 @@ describe('TokensService.getToken', () => {
     }));
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined as never);
 
-    const token = await service.getToken({
-      country_code: 'DE',
-      party_id: 'MSP',
-      uid: 'MYTOKEN001',
-    });
+    await expect(
+      service.getToken({ country_code: 'DE', party_id: 'MSP', uid: 'MYTOKEN001' }, 1, 5),
+    ).rejects.toThrow('Token identity is ambiguous');
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
 
-    expect(warn).toHaveBeenCalledOnce();
-    expect(token?.contract_id).toBe('DEMSPC00000001');
+describe('token read owner fences', () => {
+  it.each([undefined, 0, -1, 1.5, 2147483648])(
+    'rejects missing or invalid owner %s before querying',
+    async (owner) => {
+      const { service, request } = buildService();
+      const token = { country_code: 'DE', party_id: 'MSP', uid: 'MYTOKEN001' };
+      await expect(service.getToken(token, owner as number, 5)).rejects.toThrow(
+        'Authenticated tenant and partner are required',
+      );
+      await expect(service.getToken(token, 1, owner as number)).rejects.toThrow(
+        'Authenticated tenant and partner are required',
+      );
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { tenantId: 2 },
+    { tenantPartner: { id: 6, countryCode: 'DE', partyId: 'MSP' } },
+    { tenantPartner: { id: 5, countryCode: 'FR', partyId: 'MSP' } },
+    { tenantPartner: { id: 5, countryCode: 'DE', partyId: 'OTHER' } },
+    { tenantPartner: null },
+  ])('rejects an upstream result outside the exact authenticated identity %j', async (row) => {
+    const { service } = buildService(() => ({ Authorizations: [anAuthorizationRow(row)] }));
+    await expect(
+      service.getToken({ country_code: 'DE', party_id: 'MSP', uid: 'MYTOKEN001' }, 1, 5),
+    ).rejects.toThrow('Token does not belong to the authenticated partner');
   });
 });
 

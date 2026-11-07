@@ -317,6 +317,11 @@ describe('token queries', () => {
     expect(READ_AUTHORIZATION).toContain('idToken: { _eq: $idToken }');
     expect(READ_AUTHORIZATION).toContain('idTokenType: { _eq: $type }');
     expect(READ_AUTHORIZATION).toContain('id: { _eq: $tenantPartnerId }');
+    expect(READ_AUTHORIZATION).toContain('tenantId: { _eq: $tenantId }');
+    expect(READ_AUTHORIZATION).toContain('$tenantId: Int!');
+    expect(READ_AUTHORIZATION).toContain('$tenantPartnerId: Int!');
+    expect(READ_AUTHORIZATION).toContain('countryCode: { _eq: $countryCode }');
+    expect(READ_AUTHORIZATION).toContain('partyId: { _eq: $partyId }');
   });
 
   it('UPDATE_TOKEN_MUTATION scopes the update to one partner token and applies $set', () => {
