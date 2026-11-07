@@ -172,6 +172,7 @@ describe('session-guarded Operator Core proxy', () => {
   it('rejects transport configuration inconsistent with the public fixed tenant', () => {
     expect(() =>
       operatorCoreConfig({
+        NODE_ENV: 'test',
         NEXT_PUBLIC_CORE_TRANSPORT: 'server',
         OPERATOR_CORE_TENANT_ID: '7',
         NEXT_PUBLIC_TENANT_ID: '8',
