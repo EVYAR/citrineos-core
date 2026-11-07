@@ -14,6 +14,9 @@ const withNextIntl = createNextIntlPlugin(resolve(__dirname, 'src/lib/i18n/reque
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
+  experimental: {
+    cpus: 1,
+  },
   // Trace from the monorepo root so the standalone output bundles workspace
   // dependencies (@citrineos/types) correctly.
   outputFileTracingRoot: resolve(__dirname, '../..'),
