@@ -13,7 +13,8 @@ import type { BaseClientApi } from '@ocpi/transport/trigger/base-client-api.js';
 import { CdrsClientApi } from '@ocpi/transport/trigger/cdrs-client-api.js';
 import { SessionsClientApi } from '@ocpi/transport/trigger/sessions-client-api.js';
 
-const tenant = { countryCode: 'GB', partyId: 'CPO' } as TenantDto;
+const createdAt = new Date('2026-11-07T00:00:00.000Z');
+const tenant = { id: 1, countryCode: 'GB', partyId: 'CPO' } as TenantDto;
 const OWNER = { id: 11, countryCode: 'GB', partyId: 'AAA', partnerProfileOCPI: {} };
 const COMPETITOR = { id: 12, countryCode: 'GB', partyId: 'BBB', partnerProfileOCPI: {} };
 
@@ -75,13 +76,22 @@ function aCdrBroadcaster() {
 }
 
 const anEndedTransaction = (tenantPartner: { id: number } | null) =>
-  ({ id: 1, transactionId: '1', authorization: { tenantPartner } }) as unknown as TransactionDto;
+  ({
+    id: 1,
+    createdAt,
+    transactionId: '1',
+    authorization: { tenantPartner },
+  }) as unknown as TransactionDto;
 
 describe('Session and CDR pushes', () => {
   it('sends a new session only to the eMSP whose token started it', async () => {
     const { broadcaster, recipients } = aSessionBroadcaster(OWNER.id);
 
-    await broadcaster.broadcastPutSession(tenant, { id: 1, transactionId: '1' } as TransactionDto);
+    await broadcaster.broadcastPutSession(tenant, {
+      id: 1,
+      createdAt,
+      transactionId: '1',
+    } as TransactionDto);
 
     expect(recipients()).toEqual([OWNER.partyId]);
   });
@@ -89,7 +99,12 @@ describe('Session and CDR pushes', () => {
   it('sends a session update only to the eMSP whose token started it', async () => {
     const { broadcaster, recipients } = aSessionBroadcaster(OWNER.id);
 
-    await broadcaster.broadcastPatchSession(tenant, { id: 1, transactionId: '1', totalKwh: 3 });
+    await broadcaster.broadcastPatchSession(tenant, {
+      id: 1,
+      createdAt,
+      transactionId: '1',
+      totalKwh: 3,
+    });
 
     expect(recipients()).toEqual([OWNER.partyId]);
   });
@@ -99,6 +114,7 @@ describe('Session and CDR pushes', () => {
 
     await broadcaster.broadcastPatchSessionChargingPeriod(tenant, {
       transactionDatabaseId: 1,
+      transactionCreatedAt: createdAt,
       transactionId: '1',
       tariffId: 1,
     } as unknown as MeterValueDto);
@@ -109,7 +125,11 @@ describe('Session and CDR pushes', () => {
   it('does not push a session whose token no eMSP owns', async () => {
     const { broadcaster, recipients } = aSessionBroadcaster(null);
 
-    await broadcaster.broadcastPutSession(tenant, { id: 1, transactionId: '1' } as TransactionDto);
+    await broadcaster.broadcastPutSession(tenant, {
+      id: 1,
+      createdAt,
+      transactionId: '1',
+    } as TransactionDto);
 
     expect(recipients()).toEqual([]);
   });

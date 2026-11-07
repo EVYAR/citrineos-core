@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Ignore node modules directories
+**/node_modules
+
+# Ignore distribution directories
+**/dist
+
+# Ignore build caches/output that are regenerated inside the image
+# (operator-ui/.next can exceed 1.5GB and is the main build-context bloat)
+**/.next
+**/.turbo
+
+# Common ignore files
+.gitignore
+**/package-lock.json
+
+# Specific files and file types to ignore
+**/*.js
+**/*.cjs
+**/*.md
+**/*.yml
+**/*.tsbuildinfo
+**/*.log
+**/*.tgz
+**/*.Dockerfile
+
+# Specific directories to ignore
+**/ocpp-server/data
+
+# VCS and CI/test artifacts (not needed in any image)
+.git
+**/playwright-report
+**/test-results
+
+# Runtime credentials must not enter the application build context.
+**/.env
+**/.env.*

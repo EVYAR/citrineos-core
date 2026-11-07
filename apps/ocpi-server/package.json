@@ -17,7 +17,7 @@
     "db:seed": "pnpm exec sequelize-cli db:seed:all --debug",
     "db:seed:undo": "pnpm exec sequelize-cli db:seed:undo:all --debug",
     "start": "cross-env APP_NAME=ocpi APP_ENV=local nodemon --config config/nodemon.json",
-    "start:docker:cloud": "cross-env OCPI_ENV=docker pnpm run db:migrate && node --inspect=0.0.0.0:9229 dist/index.js"
+    "start:docker:cloud": "sh ./entrypoint.sh"
   },
   "keywords": [
     "ocpp",

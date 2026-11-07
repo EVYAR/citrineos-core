@@ -153,11 +153,15 @@ export const TRANSACTION_SUCCESS_RATE_QUERY = gql`
 // unwraps back into the object `useOne` callers expect.
 export const TRANSACTION_GET_QUERY = gql`
   query GetTransactionById($id: Int!) {
-    Transactions_by_pk: Transactions(where: { id: { _eq: $id } }, limit: 1) {
+    Transactions_by_pk: Transactions(where: { id: { _eq: $id } }, limit: 2) {
       ${TRANSACTION_DETAIL_FIELDS}
       stationId
       locationId
       authorizationId
+      tariffId
+      tariff: Tariff {
+        ${TARIFF_FIELDS.pick('id', 'currency', 'pricePerKwh')}
+      }
       location: Location {
         ${LOCATION_CORE_FIELDS}
       }
@@ -184,8 +188,11 @@ export const TRANSACTION_GET_QUERY = gql`
 // have to carry `createdAt` as well, so update by `where` on the id and alias
 // back to the `update_Transactions_by_pk` response key.
 export const TRANSACTION_EDIT_MUTATION = gql`
-  mutation TransactionEdit($id: Int!, $object: Transactions_set_input!) {
-    update_Transactions_by_pk: update_Transactions(where: { id: { _eq: $id } }, _set: $object) {
+  mutation TransactionEdit($id: Int!, $createdAt: timestamptz!, $object: Transactions_set_input!) {
+    update_Transactions_by_pk: update_Transactions(
+      where: { id: { _eq: $id }, createdAt: { _eq: $createdAt } }
+      _set: $object
+    ) {
       returning {
         id
         isActive

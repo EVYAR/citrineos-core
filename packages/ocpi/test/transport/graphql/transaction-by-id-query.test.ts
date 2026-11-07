@@ -16,9 +16,9 @@ describe('GET_TRANSACTION_BY_ID_QUERY', () => {
     );
   });
 
-  it('selects at most one transaction by id', () => {
-    expect(GET_TRANSACTION_BY_ID_QUERY).toMatch(
-      /Transactions\s*\(\s*where:\s*\{\s*id:\s*\{\s*_eq:\s*\$id\s*\}\s*\}\s*,\s*limit:\s*1\s*\)/,
-    );
+  it('uses the complete tenant and partition identity', () => {
+    expect(GET_TRANSACTION_BY_ID_QUERY).toContain('createdAt: { _eq: $createdAt }');
+    expect(GET_TRANSACTION_BY_ID_QUERY).toContain('tenantId: { _eq: $tenantId }');
+    expect(GET_TRANSACTION_BY_ID_QUERY).toContain('limit: 2');
   });
 });

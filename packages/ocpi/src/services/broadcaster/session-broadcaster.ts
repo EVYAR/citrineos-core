@@ -51,7 +51,14 @@ export class SessionBroadcaster extends BaseBroadcaster {
   async broadcastPutSession(tenant: TenantDto, transactionDto: TransactionDto): Promise<void> {
     const session = await this.sessionMapper.mapTransactionToSession(transactionDto);
     const path = `/${tenant.countryCode}/${tenant.partyId}/${session.id}`;
-    await this.broadcastSession(tenant, transactionDto.id, session, HttpMethod.Put, path);
+    await this.broadcastSession(
+      tenant,
+      transactionDto.id,
+      transactionDto.createdAt,
+      session,
+      HttpMethod.Put,
+      path,
+    );
   }
 
   async broadcastPatchSession(
@@ -60,7 +67,14 @@ export class SessionBroadcaster extends BaseBroadcaster {
   ): Promise<void> {
     const session = await this.sessionMapper.mapPartialTransactionToPartialSession(transactionDto);
     const path = `/${tenant.countryCode}/${tenant.partyId}/${session.id}`;
-    await this.broadcastSession(tenant, transactionDto.id, session, HttpMethod.Patch, path);
+    await this.broadcastSession(
+      tenant,
+      transactionDto.id,
+      transactionDto.createdAt,
+      session,
+      HttpMethod.Patch,
+      path,
+    );
   }
 
   async broadcastPatchSessionChargingPeriod(
@@ -75,6 +89,7 @@ export class SessionBroadcaster extends BaseBroadcaster {
     await this.broadcastSession(
       tenant,
       meterValueDto.transactionDatabaseId,
+      meterValueDto.transactionCreatedAt,
       { charging_periods },
       HttpMethod.Patch,
       path,
@@ -84,12 +99,17 @@ export class SessionBroadcaster extends BaseBroadcaster {
   private async broadcastSession(
     tenant: TenantDto,
     transactionDatabaseId: number | null | undefined,
+    transactionCreatedAt: Date | null | undefined,
     session: Partial<Session>,
     method: HttpMethod,
     path: string,
   ): Promise<void> {
     try {
-      const tenantPartnerId = await this.findTokenOwnerId(transactionDatabaseId);
+      const tenantPartnerId = await this.findTokenOwnerId(
+        transactionDatabaseId,
+        transactionCreatedAt,
+        tenant.id,
+      );
       if (tenantPartnerId === undefined) {
         this.logger.debug(`No eMSP owns the token of session ${path}, not pushed`);
         return;
@@ -112,14 +132,18 @@ export class SessionBroadcaster extends BaseBroadcaster {
 
   private async findTokenOwnerId(
     transactionDatabaseId: number | null | undefined,
+    createdAt: Date | null | undefined,
+    tenantId: number | undefined,
   ): Promise<number | undefined> {
-    if (transactionDatabaseId === null || transactionDatabaseId === undefined) {
+    if (transactionDatabaseId == null || createdAt == null || tenantId == null) {
       return undefined;
     }
     const response = await this.ocpiGraphqlClient.request<
       GetTransactionTenantPartnerQueryResult,
       GetTransactionTenantPartnerQueryVariables
-    >(GET_TRANSACTION_TENANT_PARTNER_QUERY, { id: transactionDatabaseId });
-    return response.Transactions[0]?.authorization?.tenantPartner?.id;
+    >(GET_TRANSACTION_TENANT_PARTNER_QUERY, { id: transactionDatabaseId, createdAt, tenantId });
+    return response.Transactions.length === 1
+      ? response.Transactions[0]?.authorization?.tenantPartner?.id
+      : undefined;
   }
 }

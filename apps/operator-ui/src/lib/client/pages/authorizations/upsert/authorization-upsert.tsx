@@ -14,6 +14,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Form } from '@lib/client/components/form';
 import {
   CheckboxFormField,
+  DateTimeLocalFormField,
   ComboboxFormField,
   FormField,
   nestedFormRowFlex,
@@ -258,13 +259,11 @@ export const AuthorizationUpsert = ({ params }: AuthorizationUpsertProps) => {
                 required
               />
 
-              <FormField
+              <DateTimeLocalFormField
                 control={form.control}
                 label={translate('Authorizations.fields.cacheExpiryDateTime')}
                 name={AuthorizationProps.cacheExpiryDateTime}
-              >
-                <Input type="datetime-local" />
-              </FormField>
+              />
 
               <FormField
                 control={form.control}

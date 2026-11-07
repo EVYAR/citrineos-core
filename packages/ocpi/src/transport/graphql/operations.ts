@@ -845,6 +845,8 @@ export type GetTransactionsQueryResult = {
 };
 
 export type GetTransactionByIdQueryVariables = Exact<{
+  createdAt: Scalars['timestamptz']['input'];
+  tenantId: Scalars['Int']['input'];
   id: Scalars['Int']['input'];
 }>;
 
@@ -915,6 +917,8 @@ export type GetTransactionByIdQueryResult = {
 };
 
 export type GetTransactionTenantPartnerQueryVariables = Exact<{
+  createdAt: Scalars['timestamptz']['input'];
+  tenantId: Scalars['Int']['input'];
   id: Scalars['Int']['input'];
 }>;
 
@@ -929,6 +933,8 @@ export type GetTransactionTenantPartnerQueryResult = {
 };
 
 export type GetActiveTransactionForStopSessionQueryVariables = Exact<{
+  tenantId: Scalars['Int']['input'];
+  tenantPartnerId: Scalars['Int']['input'];
   transactionId: Scalars['String']['input'];
   countryCode: Scalars['String']['input'];
   partyId: Scalars['String']['input'];

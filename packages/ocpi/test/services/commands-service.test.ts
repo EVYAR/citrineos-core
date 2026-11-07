@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 import 'reflect-metadata';
+import type { TenantPartnerDto } from '@citrineos/types';
 import { describe, expect, it, vi } from 'vitest';
 import { Logger } from 'tslog';
 
@@ -46,7 +47,16 @@ const CONFIG = ocpiConfigSchema.parse({
   maxPageLimit: 1000,
 });
 
-const PARTNER = { id: 11, tenantId: 1, countryCode: COUNTRY_CODE, partyId: PARTY_ID } as never;
+const PARTNER: TenantPartnerDto = {
+  id: 11,
+  tenantId: 1,
+  countryCode: COUNTRY_CODE,
+  partyId: PARTY_ID,
+  partnerProfileOCPI: {
+    version: { version: '2.2.1' },
+    serverCredentials: { versionsUrl: 'https://emsp.test/versions' },
+  },
+};
 
 function aCapturingGraphqlClient(result: unknown) {
   const request = vi.fn().mockResolvedValue(result);
@@ -354,6 +364,17 @@ describe('CommandsService.postCommand', () => {
       expect(request).not.toHaveBeenCalled();
     });
 
+    it('refuses a party with no numeric tenant context', async () => {
+      const { client, request } = aCapturingGraphqlClient({ Transactions: [] });
+      const response = await aService(client).postCommand(
+        CommandType.STOP_SESSION,
+        aStopSession(),
+        { ...PARTNER, tenantId: undefined },
+      );
+      expect(response.data?.result).toBe(CommandResponseType.UNKNOWN_SESSION);
+      expect(request).not.toHaveBeenCalled();
+    });
+
     it('scopes the transaction lookup to the calling party and active sessions', async () => {
       // session_id alone would let any partner stop a foreign session; the predicate has to be
       // in the query itself.
@@ -368,11 +389,12 @@ describe('CommandsService.postCommand', () => {
       expect(request).toHaveBeenCalledOnce();
       const [document, variables] = request.mock.calls[0];
       expect(String(document)).toContain('isActive: { _eq: true }');
-      expect(String(document)).toContain(
-        'TenantPartner: { countryCode: { _eq: $countryCode }, partyId: { _eq: $partyId } }',
-      );
+      expect(String(document)).toContain('tenantId: { _eq: $tenantId }');
+      expect(String(document)).toContain('id: { _eq: $tenantPartnerId }');
       expect(variables).toEqual({
         transactionId: 'tx-1',
+        tenantId: 1,
+        tenantPartnerId: 11,
         countryCode: COUNTRY_CODE,
         partyId: PARTY_ID,
       });

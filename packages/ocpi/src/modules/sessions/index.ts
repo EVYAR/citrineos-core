@@ -83,7 +83,7 @@ export class SessionsModule extends AbstractDtoModule implements OcpiModule {
     }
     // The notification carries only the Transactions row; the session also needs its station
     // and authorization.
-    const fullTransactionDto = await this.fetchTransactionById(transactionDto.id);
+    const fullTransactionDto = await this.fetchTransactionById(transactionDto);
     if (!fullTransactionDto) {
       return;
     }
@@ -112,7 +112,7 @@ export class SessionsModule extends AbstractDtoModule implements OcpiModule {
         return;
       }
 
-      const fullTransactionDto = await this.fetchTransactionById(transactionDto.id);
+      const fullTransactionDto = await this.fetchTransactionById(transactionDto);
       if (!fullTransactionDto) {
         return;
       }
@@ -146,14 +146,22 @@ export class SessionsModule extends AbstractDtoModule implements OcpiModule {
     }
   }
 
-  private async fetchTransactionById(id: number): Promise<TransactionDto | undefined> {
+  private async fetchTransactionById(
+    transaction: Partial<TransactionDto>,
+  ): Promise<TransactionDto | undefined> {
+    const { id, createdAt } = transaction;
+    const tenantId = transaction.tenantId ?? transaction.tenant?.id;
+    if (id == null || createdAt == null || tenantId == null) {
+      this._logger.error('Transaction partition identity missing, cannot broadcast.');
+      return undefined;
+    }
     const fullTransactionDtoResponse = await this.ocpiGraphqlClient.request<
       GetTransactionByIdQueryResult,
       GetTransactionByIdQueryVariables
-    >(GET_TRANSACTION_BY_ID_QUERY, { id });
+    >(GET_TRANSACTION_BY_ID_QUERY, { id, createdAt, tenantId });
 
-    if (!fullTransactionDtoResponse.Transactions[0]) {
-      this._logger.error(`Full Transaction DTO not found for id ${id}, cannot broadcast.`);
+    if (fullTransactionDtoResponse.Transactions.length !== 1) {
+      this._logger.error(`Full Transaction DTO not uniquely found for id ${id}, cannot broadcast.`);
       return undefined;
     }
 

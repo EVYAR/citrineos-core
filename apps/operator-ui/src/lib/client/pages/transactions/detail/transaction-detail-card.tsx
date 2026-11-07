@@ -58,6 +58,7 @@ export const TransactionDetailCard = ({ transaction }: TransactionDetailCardProp
         modalComponentType: ModalComponentType.toggleTransactionActiveStatus,
         modalComponentProps: {
           transactionId: transaction.id,
+          createdAt: transaction.createdAt,
           currentStatus: transaction.isActive,
         },
       }),
@@ -175,13 +176,13 @@ export const TransactionDetailCard = ({ transaction }: TransactionDetailCardProp
             keyLabel={translate('Transactions.detail.tariff')}
             value={''}
             valueRender={() =>
-              transaction.connector?.tariff ? (
+              transaction.tariff ? (
                 <Link
-                  to={`/${MenuSection.TARIFFS}/${transaction.connector!.tariff!.id}`}
+                  to={`/${MenuSection.TARIFFS}/${transaction.tariff.id}`}
                   className={clickableLinkStyle}
-                  title={`#${transaction.connector.tariff.id} - ${transaction.connector.tariff.currency} ${transaction.connector.tariff.pricePerKwh}/kWh`}
+                  title={`#${transaction.tariff.id} - ${transaction.tariff.currency} ${transaction.tariff.pricePerKwh}/kWh`}
                 >
-                  {`#${transaction.connector.tariff.id} - ${transaction.connector.tariff.currency} ${transaction.connector.tariff.pricePerKwh}/kWh`}
+                  {`#${transaction.tariff.id} - ${transaction.tariff.currency} ${transaction.tariff.pricePerKwh}/kWh`}
                 </Link>
               ) : (
                 <span>{NOT_APPLICABLE}</span>

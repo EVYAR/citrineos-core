@@ -87,7 +87,7 @@ export class CitrineOSServer {
   }
 
   async initConfig() {
-    switch (process.env.APP_ENV) {
+    switch (process.env.APP_ENV ?? process.env.OCPI_ENV) {
       case 'docker':
         this.ocpiConfig = getOcpiSystemConfig(createDockerOcpiConfig());
         break;

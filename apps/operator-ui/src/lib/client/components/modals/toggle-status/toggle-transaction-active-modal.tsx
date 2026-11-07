@@ -13,12 +13,14 @@ import { useDispatch } from 'react-redux';
 
 export interface ToggleTransactionActiveModalProps {
   transactionId: number;
+  createdAt?: Date | string;
   currentStatus: boolean;
   onSuccess?: () => void;
 }
 
 export const ToggleTransactionActiveModal = ({
   transactionId,
+  createdAt,
   currentStatus,
   onSuccess,
 }: ToggleTransactionActiveModalProps) => {
@@ -31,6 +33,7 @@ export const ToggleTransactionActiveModal = ({
   const newStatusText = newStatus ? 'Active' : 'Inactive';
 
   const handleSubmit = async () => {
+    if (createdAt == null) return;
     setLoading(true);
 
     mutate(
@@ -40,6 +43,7 @@ export const ToggleTransactionActiveModal = ({
         values: { isActive: newStatus },
         meta: {
           gqlMutation: TRANSACTION_EDIT_MUTATION,
+          gqlVariables: { createdAt },
         },
       },
       {
@@ -71,7 +75,11 @@ export const ToggleTransactionActiveModal = ({
         <Button type="button" variant="outline" onClick={() => dispatch(closeModal())}>
           {translate('buttons.cancel')}
         </Button>
-        <Button variant="destructive" onClick={handleSubmit} disabled={loading}>
+        <Button
+          variant="destructive"
+          onClick={handleSubmit}
+          disabled={loading || createdAt == null}
+        >
           {loading ? translate('buttons.saving') : translate('buttons.confirmText')}
         </Button>
       </div>

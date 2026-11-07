@@ -15,11 +15,20 @@ import {
 } from '../../index.js';
 import { SessionsModule } from '../../src/modules/sessions/index.js';
 
+const createdAt = new Date('2026-11-07T00:00:00.000Z');
 const tenant = { id: 1, countryCode: 'US', partyId: 'S44' } as TenantDto;
 
 /** What the TransactionNotification trigger sends: the Transactions row, with no relations. */
 const aNotifiedRow = (overrides: Partial<TransactionDto> = {}) =>
-  ({ id: 7, transactionId: 'tx-7', stationId: 1, tenant, ...overrides }) as TransactionDto;
+  ({
+    id: 7,
+    createdAt,
+    tenantId: 1,
+    transactionId: 'tx-7',
+    stationId: 1,
+    tenant,
+    ...overrides,
+  }) as TransactionDto;
 
 const aFetchedTransaction = {
   id: 7,
@@ -56,12 +65,34 @@ function aSessionsModule(transactions: object[]) {
 }
 
 describe('SessionsModule.handleTransactionInsert', () => {
+  it('does not guess a partition when the timestamp is missing', async () => {
+    const { module, request, sessionBroadcaster } = aSessionsModule([aFetchedTransaction]);
+    await module.handleTransactionInsert(
+      anEvent(DtoEventType.INSERT, aNotifiedRow({ createdAt: undefined })),
+    );
+    expect(request).not.toHaveBeenCalled();
+    expect(sessionBroadcaster.broadcastPutSession).not.toHaveBeenCalled();
+  });
+
+  it('does not broadcast an ambiguous lookup result', async () => {
+    const { module, sessionBroadcaster } = aSessionsModule([
+      aFetchedTransaction,
+      aFetchedTransaction,
+    ]);
+    await module.handleTransactionInsert(anEvent(DtoEventType.INSERT, aNotifiedRow()));
+    expect(sessionBroadcaster.broadcastPutSession).not.toHaveBeenCalled();
+  });
+
   it('puts the session from the fetched transaction, not the bare notified row', async () => {
     const { module, request, sessionBroadcaster } = aSessionsModule([aFetchedTransaction]);
 
     await module.handleTransactionInsert(anEvent(DtoEventType.INSERT, aNotifiedRow()));
 
-    expect(request).toHaveBeenCalledWith(GET_TRANSACTION_BY_ID_QUERY, { id: 7 });
+    expect(request).toHaveBeenCalledWith(GET_TRANSACTION_BY_ID_QUERY, {
+      id: 7,
+      createdAt,
+      tenantId: 1,
+    });
     expect(sessionBroadcaster.broadcastPutSession).toHaveBeenCalledWith(
       tenant,
       aFetchedTransaction,
@@ -85,7 +116,11 @@ describe('SessionsModule.handleTransactionUpdate', () => {
       anEvent(DtoEventType.UPDATE, aNotifiedRow({ isActive: false })),
     );
 
-    expect(request).toHaveBeenCalledWith(GET_TRANSACTION_BY_ID_QUERY, { id: 7 });
+    expect(request).toHaveBeenCalledWith(GET_TRANSACTION_BY_ID_QUERY, {
+      id: 7,
+      createdAt,
+      tenantId: 1,
+    });
     expect(cdrBroadcaster.broadcastPostCdr).toHaveBeenCalledWith(aFetchedTransaction);
   });
 

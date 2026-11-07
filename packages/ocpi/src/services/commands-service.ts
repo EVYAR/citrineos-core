@@ -205,10 +205,18 @@ export class CommandsService {
     stopSession: StopSession,
     tenantPartner: TenantPartnerDto,
   ): Promise<OcpiCommandResponse> {
-    if (!tenantPartner.countryCode || !tenantPartner.partyId) {
-      this.logger.error('Missing country code or party ID for calling partner', {
-        tenantPartnerId: tenantPartner.id,
-      });
+    if (
+      !tenantPartner.countryCode ||
+      !tenantPartner.partyId ||
+      tenantPartner.id == null ||
+      tenantPartner.tenantId == null
+    ) {
+      this.logger.error(
+        'Missing tenant, partner ID, country code or party ID for calling partner',
+        {
+          tenantPartnerId: tenantPartner.id,
+        },
+      );
       return ResponseGenerator.buildInvalidOrMissingParametersResponse(
         {
           result: CommandResponseType.UNKNOWN_SESSION,
@@ -222,6 +230,8 @@ export class CommandsService {
       GetActiveTransactionForStopSessionQueryVariables
     >(GET_ACTIVE_TRANSACTION_FOR_STOP_SESSION_QUERY, {
       transactionId: stopSession.session_id,
+      tenantId: tenantPartner.tenantId,
+      tenantPartnerId: tenantPartner.id,
       countryCode: tenantPartner.countryCode,
       partyId: tenantPartner.partyId,
     });

@@ -250,6 +250,7 @@ export const createGenericAuthProvider = (
       const result = await signIn('generic', {
         username: email,
         password,
+        callbackUrl: '/overview',
         redirect: false,
       });
 
@@ -271,7 +272,7 @@ export const createGenericAuthProvider = (
       }
       saveUser({ ...genericAdminUser, email, roles: chosenRoles });
 
-      window.location.href = '/overview';
+      window.location.href = result.url || '/overview';
       return {
         success: true,
         redirectTo: '/overview',

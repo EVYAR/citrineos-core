@@ -20,6 +20,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@lib/client/components/ui/select';
+import { Input } from '@lib/client/components/ui/input';
+import { toDateTimeLocalValue, toIsoDateTimeValue } from '@lib/utils/date-time-local';
 import { Checkbox } from '@lib/client/components/ui/checkbox';
 import { Combobox, type ComboboxProps } from '@lib/client/components/combobox';
 import { MultiSelect, type MultiSelectProps } from '@lib/client/components/multi-select';
@@ -214,8 +216,40 @@ export const CheckboxFormField = <
   );
 };
 
+/**
+ * Keeps ISO 8601 values in form state while adapting them for a datetime-local
+ * input, whose browser value intentionally omits the time-zone offset.
+ */
+export const DateTimeLocalFormField = <
+  TFieldValues extends FieldValues = FieldValues,
+  TName extends FieldPath<TFieldValues> = FieldPath<TFieldValues>,
+>(
+  props: Props<TFieldValues, TName>,
+) => {
+  return (
+    <Controller
+      name={props.name}
+      control={props.control}
+      render={({ field, fieldState }) => (
+        <FieldWrapper {...{ ...props, field, fieldState }}>
+          <Input
+            id={field.name}
+            type="datetime-local"
+            value={toDateTimeLocalValue(field.value)}
+            onChange={(event) => field.onChange(toIsoDateTimeValue(event.target.value))}
+            onBlur={field.onBlur}
+            ref={field.ref}
+          />
+        </FieldWrapper>
+      )}
+    />
+  );
+};
+
 FormField.displayName = 'FormField';
 SelectFormField.displayName = 'SelectFormField';
 ComboboxFormField.displayName = 'ComboboxFormField';
 MultiSelectFormField.displayName = 'MultiSelectFormField';
 CheckboxFormField.displayName = 'CheckboxFormField';
+
+DateTimeLocalFormField.displayName = 'DateTimeLocalFormField';

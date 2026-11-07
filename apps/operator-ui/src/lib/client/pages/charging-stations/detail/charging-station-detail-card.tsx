@@ -47,7 +47,7 @@ import { ResetButton } from '@lib/client/pages/charging-stations/reset-button';
 import { ForceDisconnectButton } from '@lib/client/pages/charging-stations/force-disconnect-button';
 import { Skeleton } from '@lib/client/components/ui/skeleton';
 import { NoDataFoundCard } from '@lib/client/components/no-data-found-card';
-import { isEmpty } from '@lib/utils/assertion';
+import { stationDeletionBlockReason } from '@lib/utils/station-deletion';
 
 export interface ChargingStationDetailCardContentProps {
   id: number;
@@ -80,7 +80,7 @@ export const ChargingStationDetailCard = ({
   const station = data?.data;
 
   const handleDeleteClick = useCallback(() => {
-    if (!station) return;
+    if (!station || stationDeletionBlockReason(station)) return;
 
     mutate(
       {
@@ -145,7 +145,7 @@ export const ChargingStationDetailCard = ({
   if (station.latestOcppMessageTimestamp) {
     latestTimestamp = formatDate(station.latestOcppMessageTimestamp);
   }
-  const hasOcppMessageHistory = !isEmpty(station.ocppMessages);
+  const deletionBlockReason = stationDeletionBlockReason(station);
 
   const unknownText = translate('Common.unknown');
 
@@ -204,12 +204,8 @@ export const ChargingStationDetailCard = ({
               variant="destructive"
               size="sm"
               onClick={handleDeleteClick}
-              disabled={hasOcppMessageHistory}
-              title={
-                hasOcppMessageHistory
-                  ? 'Cannot delete a station that has OCPP message history'
-                  : undefined
-              }
+              disabled={deletionBlockReason !== undefined}
+              title={deletionBlockReason}
             >
               <Trash2 className={buttonIconSize} />
               {translate('buttons.delete')}
