@@ -67,7 +67,7 @@ export class OidcTokenProvider {
     };
     deadline.addEventListener('abort', cancel, { once: true });
     try {
-      response = await beforeTokenAbort(
+      const receivedResponse = await beforeTokenAbort<Response>(
         fetch(this.config.tokenUrl, {
           method: 'POST',
           signal: deadline,
@@ -85,9 +85,10 @@ export class OidcTokenProvider {
         }),
         deadline,
       );
+      response = receivedResponse;
       deadline.throwIfAborted();
-      if (!response.ok) throw new Error('OIDC token endpoint rejected request');
-      reader = response.body?.getReader();
+      if (!receivedResponse.ok) throw new Error('OIDC token endpoint rejected request');
+      reader = receivedResponse.body?.getReader();
       if (!reader) throw new Error('OIDC token response is missing');
       const chunks: Uint8Array[] = [];
       let length = 0;
