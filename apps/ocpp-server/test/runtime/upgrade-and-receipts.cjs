@@ -150,6 +150,47 @@ async function exerciseReceipts(f, name) {
   const sequelize = dal.DefaultSequelizeInstance.getInstance(config);
   try {
     await sequelize.authenticate();
+    // Requires a freshly built DAL after the nullable getter fix. No fabricated dates.
+    const preStatusStation = await models.ChargingStation.create({
+      tenantId: 1,
+      ocppConnectionName: 'SYNTHETIC-PRE-STATUS',
+      protocol: 'ocpp1.6',
+    });
+    const preStatusEvse = await models.Evse.create({
+      tenantId: 1,
+      stationId: preStatusStation.id,
+      evseTypeId: 1,
+    });
+    const preStatus = await models.Connector.create({
+      tenantId: 1,
+      stationId: preStatusStation.id,
+      evseId: preStatusEvse.id,
+      connectorId: 1,
+    });
+    const [rawPreStatus] = await sequelize.query('SELECT timestamp FROM "Connectors" WHERE id=$1', {
+      bind: [preStatus.id],
+    });
+    assert.equal(rawPreStatus[0].timestamp, null);
+    const readPreStatus = await models.Connector.findByPk(preStatus.id);
+    assert.ok(readPreStatus);
+    assert.equal(readPreStatus.timestamp, undefined);
+    assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(readPreStatus)), 'timestamp'), false);
+    await readPreStatus.update({ timestamp: '2026-11-07T11:59:00.000Z' });
+    await readPreStatus.reload();
+    assert.equal(readPreStatus.timestamp, '2026-11-07T11:59:00.000Z');
+    await readPreStatus.update({ timestamp: null });
+    await readPreStatus.reload();
+    assert.equal(readPreStatus.timestamp, undefined);
+    assert.equal(Object.hasOwn(JSON.parse(JSON.stringify(readPreStatus)), 'timestamp'), false);
+    f.report.assertions.push({
+      name: 'fresh-built-nullable-connector-read',
+      cases: [
+        'real newly commissioned row has SQL NULL timestamp',
+        'find/read/serialization omits absent evidence',
+        'observed Date survives exact ISO roundtrip',
+        'existing row reset to SQL NULL serializes safely',
+      ],
+    });
     const ingress = new dal.SequelizeStatusIngressRepository({
       config,
       sequelizeInstance: sequelize,

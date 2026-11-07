@@ -13,6 +13,10 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/ocpp-server..." build
 
+# Independent OCPP app identity; package version stays upstream2.1.0.
+ARG COMMIT_SHA
+RUN node -e 'const fs = require("node:fs"); const pkg = JSON.parse(fs.readFileSync("apps/ocpp-server/package.json", "utf8")); const sourceSha = process.env.COMMIT_SHA || null; if (sourceSha && !/^[a-f0-9]{40}$/.test(sourceSha)) throw new Error("COMMIT_SHA must be a full source SHA"); fs.writeFileSync("apps/ocpp-server/dist/build-info.json", JSON.stringify({component: pkg.name, version: pkg.version, sourceSha}) + "\n");'
+
 RUN pnpm --filter "@citrineos/ocpp-server" deploy --legacy --prod /deploy
 
 # The final stage, which copies built files and prepares the run environment

@@ -106,10 +106,10 @@ export class Connector extends Model implements ConnectorDto {
   @Column({
     type: DataType.DATE,
     get() {
-      return this.getDataValue('timestamp').toISOString();
+      return this.getDataValue('timestamp')?.toISOString();
     },
   })
-  declare timestamp: string;
+  declare timestamp?: string;
 
   @Column(DataType.STRING)
   declare info?: string | null;
