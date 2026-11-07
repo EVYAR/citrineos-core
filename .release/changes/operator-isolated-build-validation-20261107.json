@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Validate the synthetic Operator server build and traced Core transport on a separate feature-branch CI runner without deployment."
+}

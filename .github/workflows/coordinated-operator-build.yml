@@ -1,0 +1,71 @@
+name: Coordinated Operator build
+
+# Temporary feature-branch acceptance on an isolated hosted runner. This workflow
+# does not run on dev/prod, publish images, or invoke deployment webhooks.
+on:
+  push:
+    branches: [chore/upstream-sync-20261107]
+    paths:
+      - 'apps/operator-ui/**'
+      - 'packages/base/**'
+      - 'packages/types/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'scripts/validate-operator-isolated.mjs'
+      - '.github/workflows/coordinated-operator-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coordinated-operator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+          cache: pnpm
+      - name: Install exact workspace dependencies
+        run: pnpm install --frozen-lockfile --network-concurrency=4
+      - name: Build the two required shared packages sequentially
+        env:
+          NODE_OPTIONS: --max-old-space-size=2048
+        run: pnpm --workspace-concurrency=1 --filter '@citrineos/base...' run build
+      - name: Verify the isolated runner has room for the UI workload
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          fields = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+          available_mib = int(fields['MemAvailable'].split()[0]) // 1024
+          cgroup = Path('/sys/fs/cgroup')
+          if (cgroup / 'memory.max').exists():
+              maximum = (cgroup / 'memory.max').read_text().strip()
+              if maximum != 'max':
+                  cgroup_free = (int(maximum) - int((cgroup / 'memory.current').read_text())) // 1048576
+                  available_mib = min(available_mib, cgroup_free)
+          print({'availableMiB': available_mib, 'requiredMiB': 6144})
+          if available_mib < 6144:
+              raise SystemExit('Insufficient isolated runner headroom; no UI build launched')
+          PY
+      - name: Compile the synthetic server profile and verify standalone transport
+        run: node scripts/validate-operator-isolated.mjs 4096
+      - name: Retain source-bound acceptance result
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-build-validation-${{ github.sha }}
+          path: operator-build-validation.json
+          if-no-files-found: error
+          retention-days: 7
