@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ICommandsModuleApi } from './i-commands-module-api.js';
-import { Body, Ctx, JsonController, Param, Post } from 'routing-controllers';
+import { Body, Ctx, JsonController, Param, Post, QueryParam } from 'routing-controllers';
 import { type TenantPartnerDto, OCPPVersion } from '@citrineos/types';
 import { HttpStatus } from '@citrineos/base';
 import type {
@@ -15,7 +15,6 @@ import type {
   UnlockConnector,
 } from '../../../../index.js';
 import {
-  AsAdminEndpoint,
   AsOcpiFunctionalEndpoint,
   BaseController,
   CancelReservationSchema,
@@ -182,13 +181,13 @@ export class CommandsModuleApi extends BaseController implements ICommandsModule
   }
 
   @Post('/callback/:tenantPartnerId/:ocppVersion/:command/:commandId')
-  @AsAdminEndpoint()
   async postAsynchronousResponse(
     @Param('tenantPartnerId') tenantPartnerId: number,
     @Param('ocppVersion') ocppVersion: OCPPVersion,
     @Param('command') command: CommandType,
     @Param('commandId') commandId: string,
-    @Body() response: any,
+    @Body() response: unknown,
+    @QueryParam('capability') capability?: string,
   ): Promise<void> {
     await this.commandExecutor.handleAsyncCommandResponse(
       tenantPartnerId,
@@ -196,6 +195,7 @@ export class CommandsModuleApi extends BaseController implements ICommandsModule
       command,
       commandId,
       response,
+      capability,
     );
   }
 }

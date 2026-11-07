@@ -4,10 +4,12 @@
 
 import type { OcpiConfigInput } from '@citrineos/ocpi';
 import { ocpiGraphqlHeaders } from './graphql-headers.js';
+import { ocpiAdminAuth } from './admin-auth.js';
 import { ocpiCoreAuth } from './core-auth.js';
 
 export function createDockerOcpiConfig(): OcpiConfigInput {
   return {
+    oidc: ocpiAdminAuth(process.env),
     env: 'development',
 
     ocpiServer: {

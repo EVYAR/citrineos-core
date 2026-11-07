@@ -21,9 +21,10 @@ const coreMachineAuthSchema = z.object({
 
 export const oidcConfigSchema = z
   .object({
-    jwksUri: z.string(),
-    issuer: z.string(),
-    audience: z.string().optional(),
+    jwksUri: z.string().url(),
+    issuer: z.string().url(),
+    audience: z.string().trim().min(1),
+    allowedSubjects: z.array(z.string().trim().min(1)).min(1),
     cacheTime: z.number().optional(),
     rateLimit: z.boolean().optional(),
   })

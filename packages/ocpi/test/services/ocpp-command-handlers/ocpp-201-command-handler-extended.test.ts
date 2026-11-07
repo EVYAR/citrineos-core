@@ -130,7 +130,13 @@ describe('OCPP2_0_1_CommandHandler.sendStartSessionCommand', () => {
   it('posts RequestStartTransaction with the next remoteStartId and the mapped token', async () => {
     const { handler, sent, mapOcpiTokenTypeToOcppIdTokenType } = aHandler();
 
-    await handler.sendStartSessionCommand(aStartSession(), tenantPartner, chargingStation, 'cmd-1');
+    await handler.sendStartSessionCommand(
+      aStartSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-1',
+      'test-capability',
+    );
 
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe(commandUrls2_0_1.requestStartTransactionRequestUrl);
@@ -146,13 +152,20 @@ describe('OCPP2_0_1_CommandHandler.sendStartSessionCommand', () => {
   it('addresses the station and the OCPI callback through the core query parameters', async () => {
     const { handler, sent } = aHandler();
 
-    await handler.sendStartSessionCommand(aStartSession(), tenantPartner, chargingStation, 'cmd-2');
+    await handler.sendStartSessionCommand(
+      aStartSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-2',
+      'test-capability',
+    );
 
     expect(sent[0].options.additionalHeaders).toEqual({ Authorization: 'Bearer core' });
     expect(sent[0].options.queryParameters.params).toEqual({
       identifier: 'CS001',
       tenantId: 1,
-      callbackUrl: 'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.0.1/START_SESSION/cmd-2',
+      callbackUrl:
+        'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.0.1/START_SESSION/cmd-2?capability=test-capability',
     });
     expect(sent[0].responseUrl).toBe('http://msp.test/callback/start');
     expect(sent[0].commandId).toBe('cmd-2');
@@ -161,7 +174,13 @@ describe('OCPP2_0_1_CommandHandler.sendStartSessionCommand', () => {
   it('reads and upserts the remoteStartId sequence for the station', async () => {
     const { handler, graphqlRequest } = aHandler();
 
-    await handler.sendStartSessionCommand(aStartSession(), tenantPartner, chargingStation, 'cmd-3');
+    await handler.sendStartSessionCommand(
+      aStartSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-3',
+      'test-capability',
+    );
 
     expect(graphqlRequest).toHaveBeenCalledTimes(2);
     expect(graphqlRequest).toHaveBeenNthCalledWith(1, GET_SEQUENCE, {
@@ -185,7 +204,13 @@ describe('OCPP2_0_1_CommandHandler.sendStartSessionCommand', () => {
     const { handler, sent, graphqlRequest } = aHandler();
     graphqlRequest.mockResolvedValueOnce({ ChargingStationSequences: [] });
 
-    await handler.sendStartSessionCommand(aStartSession(), tenantPartner, chargingStation, 'cmd-4');
+    await handler.sendStartSessionCommand(
+      aStartSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-4',
+      'test-capability',
+    );
 
     expect(sent[0].payload.remoteStartId).toBe(1);
     expect(graphqlRequest).toHaveBeenNthCalledWith(
@@ -202,7 +227,13 @@ describe('OCPP2_0_1_CommandHandler.sendStartSessionCommand', () => {
       .mockResolvedValueOnce({ ChargingStationSequences: [{ value: 7 }] })
       .mockRejectedValueOnce(new Error('sequence upsert failed'));
 
-    await handler.sendStartSessionCommand(aStartSession(), tenantPartner, chargingStation, 'cmd-5');
+    await handler.sendStartSessionCommand(
+      aStartSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-5',
+      'test-capability',
+    );
 
     expect(sent).toHaveLength(1);
     expect(sent[0].payload.remoteStartId).toBe(8);
@@ -214,13 +245,19 @@ describe('OCPP2_0_1_CommandHandler.sendStopSessionCommand', () => {
   it('posts RequestStopTransaction with the OCPI session id as transactionId', async () => {
     const { handler, sent, postCommandResult } = aHandler();
 
-    await handler.sendStopSessionCommand(aStopSession(), tenantPartner, chargingStation, 'cmd-6');
+    await handler.sendStopSessionCommand(
+      aStopSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-6',
+      'test-capability',
+    );
 
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe(commandUrls2_0_1.requestStopTransactionRequestUrl);
     expect(sent[0].payload).toEqual({ transactionId: 'session-9' });
     expect(sent[0].options.queryParameters.params.callbackUrl).toBe(
-      'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.0.1/STOP_SESSION/cmd-6',
+      'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.0.1/STOP_SESSION/cmd-6?capability=test-capability',
     );
     expect(sent[0].responseUrl).toBe('http://msp.test/callback/stop');
     expect(postCommandResult).not.toHaveBeenCalled();
@@ -231,13 +268,19 @@ describe('OCPP2_0_1_CommandHandler.sendUnlockConnectorCommand', () => {
   it("translates OCPI evse/connector ids to the charger's own numbering", async () => {
     const { handler, sent, postCommandResult } = aHandler();
 
-    await handler.sendUnlockConnectorCommand(anUnlock(), tenantPartner, chargingStation, 'cmd-7');
+    await handler.sendUnlockConnectorCommand(
+      anUnlock(),
+      tenantPartner,
+      chargingStation,
+      'cmd-7',
+      'test-capability',
+    );
 
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe(commandUrls2_0_1.unlockConnectorRequestUrl);
     expect(sent[0].payload).toEqual({ evseId: 102, connectorId: 2 });
     expect(sent[0].options.queryParameters.params.callbackUrl).toBe(
-      'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.0.1/UNLOCK_CONNECTOR/cmd-7',
+      'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.0.1/UNLOCK_CONNECTOR/cmd-7?capability=test-capability',
     );
     expect(postCommandResult).not.toHaveBeenCalled();
   });
@@ -253,7 +296,13 @@ describe('OCPP2_0_1_CommandHandler.sendUnlockConnectorCommand', () => {
   ])('reports FAILED without sending OCPP when the %s', async (_name, unlock, station) => {
     const { handler, sent, postCommandResult } = aHandler();
 
-    await handler.sendUnlockConnectorCommand(unlock, tenantPartner, station, 'cmd-8');
+    await handler.sendUnlockConnectorCommand(
+      unlock,
+      tenantPartner,
+      station,
+      'cmd-8',
+      'test-capability',
+    );
 
     expect(sent).toHaveLength(0);
     expect(postCommandResult).toHaveBeenCalledTimes(1);
@@ -382,9 +431,22 @@ describe('OCPP2_1_CommandHandler', () => {
       tenantPartner,
       chargingStation,
       'cmd-12',
+      'test-capability',
     );
-    await handler.sendStopSessionCommand(aStopSession(), tenantPartner, chargingStation, 'cmd-12');
-    await handler.sendUnlockConnectorCommand(anUnlock(), tenantPartner, chargingStation, 'cmd-12');
+    await handler.sendStopSessionCommand(
+      aStopSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-12',
+      'test-capability',
+    );
+    await handler.sendUnlockConnectorCommand(
+      anUnlock(),
+      tenantPartner,
+      chargingStation,
+      'cmd-12',
+      'test-capability',
+    );
 
     expect(sent.map((message) => message.url)).toEqual([
       commandUrls2_1.requestStartTransactionRequestUrl,
@@ -396,10 +458,16 @@ describe('OCPP2_1_CommandHandler', () => {
   it('advertises ocpp2.1 in the callback url so the async response routes back to it', async () => {
     const { handler, sent } = aHandler(OCPP2_1_CommandHandler);
 
-    await handler.sendStopSessionCommand(aStopSession(), tenantPartner, chargingStation, 'cmd-13');
+    await handler.sendStopSessionCommand(
+      aStopSession(),
+      tenantPartner,
+      chargingStation,
+      'cmd-13',
+      'test-capability',
+    );
 
     expect(sent[0].options.queryParameters.params.callbackUrl).toBe(
-      'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.1/STOP_SESSION/cmd-13',
+      'http://ocpi.test/2.2.1/commands/callback/3/ocpp2.1/STOP_SESSION/cmd-13?capability=test-capability',
     );
   });
 });

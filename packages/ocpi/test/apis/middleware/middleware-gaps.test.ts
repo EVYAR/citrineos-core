@@ -63,20 +63,27 @@ function expectOcpiUnauthorized(ctx: ReturnType<typeof ocpiCtx>) {
 }
 
 describe('AdminAuthMiddleware', () => {
-  it('passes straight through when no oidc config is present', async () => {
+  it('fails closed when no oidc config is present', async () => {
     const middleware = new AdminAuthMiddleware({ config: {} } as never);
     const next = vi.fn().mockResolvedValue('handled');
     const ctx = ocpiCtx({});
 
-    await expect(middleware.use(ctx as never, next)).resolves.toBe('handled');
+    await expect(middleware.use(ctx as never, next)).resolves.toBeUndefined();
 
-    expect(next).toHaveBeenCalledTimes(1);
-    expect(ctx.status).toBe(0);
+    expect(next).not.toHaveBeenCalled();
+    expect(ctx.status).toBe(503);
   });
 
   it('delegates to the oidc middleware when oidc is configured', async () => {
     const middleware = new AdminAuthMiddleware({
-      config: { oidc: { jwksUri: 'https://idp.test/jwks.json', issuer: 'https://idp.test/' } },
+      config: {
+        oidc: {
+          jwksUri: 'https://idp.test/jwks.json',
+          issuer: 'https://idp.test/',
+          audience: 'ocpi-admin',
+          allowedSubjects: ['trusted-admin'],
+        },
+      },
     } as never);
     const next = vi.fn();
     const ctx = { headers: {}, state: {}, status: 0, body: undefined as unknown };
@@ -90,7 +97,12 @@ describe('AdminAuthMiddleware', () => {
 });
 
 describe('oidcAuthMiddleware', () => {
-  const config = { jwksUri: 'https://idp.test/jwks.json', issuer: 'https://idp.test/' };
+  const config = {
+    jwksUri: 'https://idp.test/jwks.json',
+    issuer: 'https://idp.test/',
+    audience: 'ocpi-admin',
+    allowedSubjects: ['trusted-admin'],
+  };
 
   it('rejects a non-Bearer scheme', async () => {
     const next = vi.fn();
@@ -115,7 +127,7 @@ describe('oidcAuthMiddleware', () => {
     await oidcAuthMiddleware(config)(ctx as never, next);
 
     expect(ctx.status).toBe(401);
-    expect(ctx.body).toEqual({ error: 'Invalid token', details: 'jwt malformed' });
+    expect(ctx.body).toEqual({ error: 'Invalid token' });
     expect(ctx.state.user).toBeUndefined();
     expect(next).not.toHaveBeenCalled();
   });

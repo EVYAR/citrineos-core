@@ -25,6 +25,58 @@ afterEach(() => {
   vi.useRealTimers();
 });
 describe('terminal callback delivery', () => {
+  it('bounds hanging fetch attempts and aborts them within the overall budget', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation(() => new Promise<Response>(() => {}));
+    const sending = notifier.notify(1, 'command', 'station', {});
+    await vi.advanceTimersByTimeAsync(15_000);
+    await sending;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const [, options] of fetchMock.mock.calls) expect(options?.signal?.aborted).toBe(true);
+  });
+
+  it('cancels hanging response bodies without reading them', async () => {
+    const cancel = vi.fn();
+    fetchMock.mockResolvedValue(
+      new Response(new ReadableStream<Uint8Array>({ cancel }), { status: 400 }),
+    );
+    await notifier.notify(1, 'command', 'station', {});
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('does not log callback credentials, raw bodies, status text or error messages', async () => {
+    vi.useFakeTimers();
+    const { logger } = createTestContainer();
+    const debug = logger.debug;
+    const error = logger.error;
+    notifier = new CallbackUrlNotifier({ cache, logger });
+    await cache.set(
+      'command',
+      'https://user:password@callback.test/private?capability=secret',
+      namespace,
+    );
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response('private-body', { status: 500, statusText: 'private-status' }),
+      )
+      .mockRejectedValue(new Error('secret-error'));
+    const sending = notifier.notify(1, 'command', 'station', {});
+    await vi.runAllTimersAsync();
+    await sending;
+    const logged = JSON.stringify([...debug.mock.calls, ...error.mock.calls]);
+    expect(logged).toContain('Callback transport failure');
+    for (const secret of [
+      'password',
+      'capability',
+      'private-body',
+      'private-status',
+      'secret-error',
+    ]) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+
   it('atomically claims one terminal outcome when charger response races timeout', async () => {
     await Promise.all([
       notifier.notify(1, 'command', 'station', { status: 'Accepted' }),

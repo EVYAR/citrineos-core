@@ -25,6 +25,7 @@ export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
     commandId: string,
+    capability: string,
   ): Promise<void> {
     const options: IRequestOptions = {
       additionalHeaders: this.config.commands.coreHeaders,
@@ -36,7 +37,7 @@ export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
     queryParameters.params['tenantId'] = tenantPartner.tenant!.id!;
     queryParameters.params['callbackUrl'] =
       this.config.commands.ocpiBaseUrl +
-      `/2.2.1/commands/callback/${tenantPartner.id}/${this.supportedVersion}/${CommandType.START_SESSION}/${commandId}`;
+      `/2.2.1/commands/callback/${tenantPartner.id}/${this.supportedVersion}/${CommandType.START_SESSION}/${commandId}?capability=${encodeURIComponent(capability)}`;
     options.queryParameters = queryParameters;
     let connectorId: number | undefined;
     if (startSession.connector_id !== null && startSession.connector_id !== undefined) {
@@ -71,6 +72,7 @@ export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
     commandId: string,
+    capability: string,
   ): Promise<void> {
     const options: IRequestOptions = {
       additionalHeaders: this.config.commands.coreHeaders,
@@ -82,7 +84,7 @@ export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
     queryParameters.params['tenantId'] = tenantPartner.tenant!.id!;
     queryParameters.params['callbackUrl'] =
       this.config.commands.ocpiBaseUrl +
-      `/2.2.1/commands/callback/${tenantPartner.id}/${this.supportedVersion}/${CommandType.STOP_SESSION}/${commandId}`;
+      `/2.2.1/commands/callback/${tenantPartner.id}/${this.supportedVersion}/${CommandType.STOP_SESSION}/${commandId}?capability=${encodeURIComponent(capability)}`;
     options.queryParameters = queryParameters;
 
     const requestStopTransactionRequest: OCPP1_6.RemoteStopTransactionRequest = {
@@ -103,6 +105,7 @@ export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
     tenantPartner: TenantPartnerDto,
     chargingStation: ChargingStationDto,
     commandId: string,
+    capability: string,
   ): Promise<void> {
     const options: IRequestOptions = {
       additionalHeaders: this.config.commands.coreHeaders,
@@ -114,7 +117,7 @@ export class OCPP1_6_CommandHandler extends OCPPCommandHandler {
     queryParameters.params['tenantId'] = tenantPartner.tenant!.id!;
     queryParameters.params['callbackUrl'] =
       this.config.commands.ocpiBaseUrl +
-      `/2.2.1/commands/callback/${tenantPartner.id}/${this.supportedVersion}/${CommandType.UNLOCK_CONNECTOR}/${commandId}`;
+      `/2.2.1/commands/callback/${tenantPartner.id}/${this.supportedVersion}/${CommandType.UNLOCK_CONNECTOR}/${commandId}?capability=${encodeURIComponent(capability)}`;
     options.queryParameters = queryParameters;
 
     const ocpp1_6ConnectorId = this.resolveOcpp16ConnectorId(

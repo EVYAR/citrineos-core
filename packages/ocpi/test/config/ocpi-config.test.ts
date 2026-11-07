@@ -127,6 +127,7 @@ describe('ocpiConfigInputSchema', () => {
         jwksUri: 'https://idp/jwks',
         issuer: 'https://idp',
         audience: 'ocpi',
+        allowedSubjects: ['trusted-admin'],
         cacheTime: 600,
         rateLimit: true,
       },
