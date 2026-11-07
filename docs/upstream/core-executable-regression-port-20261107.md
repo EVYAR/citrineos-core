@@ -2,7 +2,7 @@
 
 Branch: `test/core-v21-regression-gaps-20261107`; starting commit: `e3d8ec432`.
 
-Prepared only. No test execution or passing-suite claim. No runtime edits, schema edits, dependency changes, services, database, live API, station or SMS activity. Runtime fixes remain parent-owned. Unique none declaration: no additional unique archived regression sources beyond the four audited files are claimed covered by this change.
+Prepared only. No test execution or passing-suite claim. No runtime edits, schema edits, dependency changes, services, database, live API, station or SMS activity. Runtime fixes remain parent-owned. Coverage is limited to the four archived regression sources audited here.
 
 | New file                                                          | Existing Vitest project | Prepared expanded cases |
 | ----------------------------------------------------------------- | ----------------------- | ----------------------: |
@@ -42,7 +42,7 @@ pnpm exec vitest run --project ocpp packages/ocpp/test/server/citrineos-server.s
 pnpm typecheck:test
 pnpm test
 pnpm lint
-pnpm exec prettier --check packages/base/test/config/charging-callout-tenant-map.test.ts packages/base/test/config/real-time-admission-budget.test.ts packages/ocpp/test/server/citrineos-server.shutdown.test.ts packages/ocpp/test/server/hasura-final-cost-permissions.test.ts control/CORE_REGRESSION_GAPS_RESULT.md
+pnpm exec prettier --check packages/base/test/config/charging-callout-tenant-map.test.ts packages/base/test/config/real-time-admission-budget.test.ts packages/ocpp/test/server/citrineos-server.shutdown.test.ts packages/ocpp/test/server/hasura-final-cost-permissions.test.ts docs/upstream/core-executable-regression-port-20261107.md
 ```
 
-Full suite testcontainers prerequisites and any stack/round-trip verification remain parent-owned; none were started here. No PR or push is authorized by this handoff.
+Full suite testcontainers prerequisites and any stack/round-trip verification remain parent-owned; none were started here. No PR or push was performed by the helper.

@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Restore executable shutdown, Hasura permission-shape and admission configuration regressions against the new Core layout."
+}
