@@ -30,3 +30,7 @@
 .git
 **/playwright-report
 **/test-results
+
+# Keep runtime credentials and local sample configuration out of build layers.
+**/.env
+**/.env.*
