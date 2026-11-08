@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Lint OCPP runtime CommonJS fixtures with JavaScript recommended rules, explicit Node/CommonJS globals and Prettier, while scoping TypeScript project parsing and typed rules to TypeScript files; no fixtures are ignored or executed."
+}
