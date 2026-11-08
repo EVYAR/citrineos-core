@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
 // SPDX-License-Identifier: Apache-2.0
-// Build-only acceptance. Never starts an application or supplies live credentials.
+// Isolated build and synthetic loopback standalone acceptance. No live credentials.
 import assert from 'node:assert/strict';
+import {
+  operatorBuildCanaries,
+  validateOperatorStandalone,
+} from './validate-operator-standalone.mjs';
 import { spawnSync } from 'node:child_process';
 import {
   cpSync,
@@ -21,6 +25,7 @@ const app = resolve(root, 'apps/operator-ui');
 const heap = process.argv[2] ?? '1536';
 assert.ok(['1536', '2048', '4096'].includes(heap), 'Explicit supported Node heap required');
 assert.match(process.version, /^v24\./);
+const buildCanaries = operatorBuildCanaries();
 const env = {
   HOME: process.env.HOME,
   PATH: process.env.PATH,
@@ -50,7 +55,8 @@ Object.assign(env, {
   NEXT_PUBLIC_CITRINE_CORE_URL: 'https://core.invalid',
   NEXT_PUBLIC_APP_NAME: 'Isolated CitrineOS validation',
   NEXTAUTH_URL: 'http://127.0.0.1:39876',
-  NEXTAUTH_SECRET: 'isolated-build-only-never-a-deployed-secret',
+  ...buildCanaries,
+  OPERATOR_ADMIN_EMAIL: 'standalone-build@example.invalid',
 });
 // Masking sample variables above must never erase the workload's own limits.
 env.NODE_ENV = 'production';
@@ -67,8 +73,13 @@ const server = resolve(standalone, 'apps/operator-ui/server.js');
 assert.ok(existsSync(server), 'Expected monorepo standalone entry is missing');
 const isolated = mkdtempSync(join(tmpdir(), 'citrine-operator-artifact-'));
 let probe;
+let standaloneTransport;
 try {
   cpSync(standalone, isolated, { recursive: true, dereference: false, verbatimSymlinks: true });
+  cpSync(resolve(app, '.next/static'), resolve(isolated, 'apps/operator-ui/.next/static'), {
+    recursive: true,
+  });
+  cpSync(resolve(app, 'public'), resolve(isolated, 'apps/operator-ui/public'), { recursive: true });
   probe = spawnSync(
     process.execPath,
     [
@@ -100,6 +111,7 @@ assert.equal(typeof route.routeModule?.userland?.DELETE, 'function');`,
     { cwd: isolated, env, stdio: 'inherit', timeout: 30_000 },
   );
   assert.equal(probe.status, 0, 'Isolated standalone Core route loading failed');
+  standaloneTransport = await validateOperatorStandalone({ isolated, env, buildCanaries });
 } finally {
   rmSync(isolated, { recursive: true, force: true });
 }
@@ -116,7 +128,10 @@ writeFileSync(
       sourceSha: sha.stdout.trim(),
       buildExitCode: 0,
       standaloneCoreRouteVerified: true,
-      profile: 'synthetic-generic-server',
+      profile: 'actual-next-standalone-synthetic-loopback',
+      standaloneTransport,
+      realDatabaseCrud: false,
+      realCoreServerJwtAcceptance: false,
       deploymentPerformed: false,
       liveStationOrSmsTest: false,
       imageDigest: null,

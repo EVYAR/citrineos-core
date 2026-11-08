@@ -12,6 +12,7 @@ on:
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - 'scripts/validate-operator-isolated.mjs'
+      - 'scripts/validate-operator-standalone.mjs'
       - '.github/workflows/coordinated-operator-build.yml'
 
 permissions:
@@ -60,7 +61,7 @@ jobs:
           if available_mib < 6144:
               raise SystemExit('Insufficient isolated runner headroom; no UI build launched')
           PY
-      - name: Compile the synthetic server profile and verify standalone transport
+      - name: Build and run bounded standalone NextAuth and synthetic transport acceptance
         run: node scripts/validate-operator-isolated.mjs 4096
       - name: Retain source-bound acceptance result
         uses: actions/upload-artifact@v4
