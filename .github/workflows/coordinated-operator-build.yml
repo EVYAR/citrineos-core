@@ -1,19 +1,12 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
 name: Coordinated Operator build
 
-# Temporary feature-branch acceptance on an isolated hosted runner. This workflow
-# does not run on dev/prod, publish images, or invoke deployment webhooks.
+# Reused by Operator PR acceptance; manual dispatch runs the same synthetic profile.
 on:
-  push:
-    branches: [chore/upstream-sync-20261107]
-    paths:
-      - 'apps/operator-ui/**'
-      - 'packages/base/**'
-      - 'packages/types/**'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'scripts/validate-operator-isolated.mjs'
-      - 'scripts/validate-operator-standalone.mjs'
-      - '.github/workflows/coordinated-operator-build.yml'
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -39,34 +32,31 @@ jobs:
         with:
           node-version: '24.22.2'
           cache: pnpm
+      - name: Establish hosted job guard
+        run: python3 scripts/ci/bounded.py init
       - name: Install exact workspace dependencies
-        run: pnpm install --frozen-lockfile --network-concurrency=4
-      - name: Build the two required shared packages sequentially
-        env:
-          NODE_OPTIONS: --max-old-space-size=2048
-        run: pnpm --workspace-concurrency=1 --filter '@citrineos/base...' run build
-      - name: Verify the isolated runner has room for the UI workload
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          fields = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
-          available_mib = int(fields['MemAvailable'].split()[0]) // 1024
-          cgroup = Path('/sys/fs/cgroup')
-          if (cgroup / 'memory.max').exists():
-              maximum = (cgroup / 'memory.max').read_text().strip()
-              if maximum != 'max':
-                  cgroup_free = (int(maximum) - int((cgroup / 'memory.current').read_text())) // 1048576
-                  available_mib = min(available_mib, cgroup_free)
-          print({'availableMiB': available_mib, 'requiredMiB': 6144})
-          if available_mib < 6144:
-              raise SystemExit('Insufficient isolated runner headroom; no UI build launched')
-          PY
-      - name: Build and run bounded standalone NextAuth and synthetic transport acceptance
-        run: node scripts/validate-operator-isolated.mjs 4096
+        run: python3 scripts/ci/bounded.py run --stage install --profile install -- pnpm install --frozen-lockfile --network-concurrency=4
+      - name: Build required shared packages sequentially
+        run: python3 scripts/ci/bounded.py run --stage shared --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/base...' run build
+      - name: Operator unit regressions (runtime assertions, one worker)
+        run: >-
+          python3 scripts/ci/bounded.py run --stage operator-unit --profile build --
+          pnpm exec vitest run --project operator-ui --maxWorkers=1 --minWorkers=1
+          --fileParallelism=false --typecheck.enabled=false --reporter=default --reporter=json
+          --outputFile=reports/ci/operator-unit-runtime.json
+      - name: Native Operator TypeScript check
+        run: python3 scripts/ci/bounded.py run --stage operator-typecheck --profile typecheck -- pnpm exec tsc -p apps/operator-ui/tsconfig.json --noEmit
+      - name: Build once and exercise actual standalone HTTP/session/proxy headers
+        run: python3 scripts/ci/bounded.py run --stage operator --profile operator -- node scripts/validate-operator-isolated.mjs 4096
+      - name: Cleanup owned resources
+        if: always()
+        run: python3 scripts/ci/bounded.py cleanup
       - name: Retain source-bound acceptance result
         uses: actions/upload-artifact@v4
         with:
           name: operator-build-validation-${{ github.sha }}
-          path: operator-build-validation.json
+          path: |
+            operator-build-validation.json
+            reports/ci/
           if-no-files-found: error
           retention-days: 7

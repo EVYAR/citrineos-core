@@ -1,0 +1,72 @@
+# Hosted CI resource guard
+
+The automatic backend lane is `.github/workflows/test-build-server.yml`. It installs the
+frozen pnpm workspace, builds the OCPP and OCPI dependency closures sequentially, runs
+Vitest projects base/dal/ocpp/ocpi with one worker and no file parallelism, then runs the
+four native TypeScript test checks. `backend-report.py` reads actual Vitest JSON assertions;
+TypeScript `--listFiles` results are labelled input discovery, never executed test cases.
+The runtime report requires all twelve Boot archive integration assertions to pass.
+
+`unit-tests.yml` calls the existing Operator standalone workflow. It retains Operator Vitest unit regressions and a native TypeScript check, builds once and tests
+actual Next HTTP, password/CSRF/cookie/session and synthetic GraphQL/Core transport. The
+second sequential server checks HTTPS forwarded-protocol handling against an exact internal
+origin. HTTP transport with a proxy header is not a public TLS handshake or real database
+CRUD acceptance.
+
+Every guarded command refuses non-GitHub-hosted Linux execution. Workflows pin Ubuntu 24.04,
+Node 24.22.2 and pnpm 10.19.0, use read-only repository permissions and do not inherit deployment
+secrets. The child environment is allowlisted rather than copied from the runner.
+
+## Budgets and evidence
+
+`bounded.py` is a job-local standard-library wrapper, not a deployment runner. All profiles
+keep 1536 MiB available. Preflight requires the complete child/container budget plus that
+reserve. The monitor uses the smaller of host MemAvailable and finite cgroup remaining
+memory, measures the owned process group's RSS, and measures new containers through Docker
+stats (anonymous RSS, RSS, or conservative usage fallback). Missing statistics fail closed.
+
+| Profile   | Node heap MiB | Process RSS MiB | Container RSS sum MiB | Timeout seconds |
+| --------- | ------------: | --------------: | --------------------: | --------------: |
+| install   |          1536 |            2304 |                     0 |             900 |
+| build     |          1536 |            2304 |                     0 |            1200 |
+| runtime   |          1536 |            2304 |                  1024 |            1800 |
+| typecheck |          1536 |            2304 |                     0 |             900 |
+| lint      |          1536 |            2304 |                     0 |            1200 |
+| stdlib    |           128 |             640 |                     0 |             300 |
+| operator  |          4096 |            4608 |                     0 |            1500 |
+| e2e       |          1536 |            2304 |                  7168 |            3600 |
+
+Docker-capable jobs use an ephemeral Unix socket proxy. Before forwarding a container-create
+request it adds the job's random ownership label and enforces memory/swap, CPU and PID limits.
+The normal runtime cap is 512 MiB per container; manual E2E uses 4096 MiB (the existing EVerest manager requests 4 GiB). Smaller requested
+limits survive. These are actual Docker HostConfig limits, verified again against live
+containers, rather than a claim that Docker belongs to the Node process group. Docker build
+and daemon memory remain covered by the host/cgroup reserve monitor, not the child RSS metric.
+
+Pre-existing containers are recorded before commands start. Cleanup removes only containers
+absent from that baseline and carrying this job's exact label. Unexpected unlabelled new
+containers fail the job and are not adopted or removed. There is no global prune, host-wide
+kill or Docker restart. Child process groups and proxy sockets are closed on failure as well
+as success; workflow cleanup also runs with `always()`. Runtime containers are cleaned before
+the following TypeScript stages. Native status is retained separately from guard status;
+resource refusal/termination is not a successful test run. Stage names cannot be retried over
+existing evidence. JSON receipts pin the checkout commit; logs and receipts are mode 0600.
+
+## Optional full browser/simulator lane
+
+`operator-e2e-manual.yml` preserves full Operator browser and optional EVerest simulation
+coverage as hosted **manual** acceptance. It uses current root Compose files, a synthetic
+loopback JWT issuer and generated disposable credentials; it does not read deployment
+credentials or contact real IAM. It has no Newman or obsolete `Server/` paths. Its larger
+budget must pass preflight or the lane refuses; there is no shared-host fallback. The
+standalone PR lane remains the automatic UI acceptance lane.
+
+Manual fixtures and Compose overrides end in `.private.json` and are excluded from uploaded
+artifacts. Only result/guard evidence and browser reports are uploaded. A manual fixture PASS
+means synthetic hosted full-stack acceptance, not real IAM/dev/production acceptance.
+
+Source preparation has not executed application install/build/tests or this manual lane.
+Hosted execution after source review must establish compatibility of the real Docker clients,
+images and application tests. Small guard fixtures cover real Unix proxy create requests
+(content-length and chunked), budgets/ownership, native exit propagation and environment
+sanitization without Docker or application services.

@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   close-ai-slop:
-    if: github.repository == 'citrineos/citrineos'
+    if: github.repository == 'citrineos/citrineos-core'
     name: Close AI SLOP pull requests
     runs-on: ubuntu-latest
     steps:

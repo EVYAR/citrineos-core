@@ -298,63 +298,69 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
     upstream.requestTimeout = 15000;
     upstream.headersTimeout = 10000;
     fixtureOrigin = await listen(upstream);
-    reservation = createServer();
-    const origin = await listen(reservation);
-    const port = new URL(origin).port;
-    await closeServer(reservation);
-    phase = 'standalone-start';
-    assert.ok(!expired, 'Standalone validation cancelled');
-    child = spawn(process.execPath, ['--max-old-space-size=256', 'server.js'], {
-      cwd: join(isolated, 'apps/operator-ui'),
-      env: {
-        ...env,
-        NODE_OPTIONS: '--max-old-space-size=256',
-        HOSTNAME: '127.0.0.1',
-        PORT: port,
-        NEXTAUTH_URL: origin,
-        NEXTAUTH_SECRET: sessionSecret,
-        OPERATOR_ADMIN_EMAIL: email,
-        OPERATOR_ADMIN_PASSWORD: password,
-        OPERATOR_HASURA_URL: `${fixtureOrigin}/v1/graphql`,
-        OPERATOR_HASURA_ROLE: 'user',
-        HASURA_ADMIN_SECRET: adminSecret,
-        OPERATOR_CORE_TENANT_ID: '7',
-        // NextRequest normalizes numeric loopback hosts to localhost. Keep the
-        // exact internal origin separate from the browser's public Origin.
-        OPERATOR_REQUEST_ORIGIN: `http://localhost:${port}`,
-        OPERATOR_CORE_URL: fixtureOrigin,
-        OPERATOR_CORE_TOKEN_URL: `${fixtureOrigin}/token`,
-        OPERATOR_CORE_CLIENT_ID: clientId,
-        OPERATOR_CORE_CLIENT_SECRET: clientSecret,
-        OPERATOR_CORE_ISSUER: fixtureOrigin,
-      },
-      stdio: ['ignore', 'ignore', 'ignore'],
-    });
-    childExit = new Promise((resolve) => {
-      child.once('error', () => {
-        childError = true;
-        resolve();
+    const startStandalone = async (forwarded = false) => {
+      reservation = createServer();
+      const networkOrigin = await listen(reservation);
+      const origin = networkOrigin;
+      const publicOrigin = forwarded ? origin.replace('127.0.0.1', 'localhost') : origin;
+      const port = new URL(origin).port;
+      await closeServer(reservation);
+      phase = 'standalone-start';
+      assert.ok(!expired, 'Standalone validation cancelled');
+      child = spawn(process.execPath, ['--max-old-space-size=256', 'server.js'], {
+        cwd: join(isolated, 'apps/operator-ui'),
+        env: {
+          ...env,
+          NODE_OPTIONS: '--max-old-space-size=256',
+          HOSTNAME: '127.0.0.1',
+          PORT: port,
+          NEXTAUTH_URL: publicOrigin,
+          NEXTAUTH_SECRET: sessionSecret,
+          OPERATOR_ADMIN_EMAIL: email,
+          OPERATOR_ADMIN_PASSWORD: password,
+          OPERATOR_HASURA_URL: `${fixtureOrigin}/v1/graphql`,
+          OPERATOR_HASURA_ROLE: 'user',
+          HASURA_ADMIN_SECRET: adminSecret,
+          OPERATOR_CORE_TENANT_ID: '7',
+          // NextRequest normalizes numeric loopback hosts to localhost. Keep the
+          // exact internal origin separate from the browser's public Origin.
+          OPERATOR_REQUEST_ORIGIN: `${forwarded ? 'https' : 'http'}://localhost:${port}`,
+          OPERATOR_CORE_URL: fixtureOrigin,
+          OPERATOR_CORE_TOKEN_URL: `${fixtureOrigin}/token`,
+          OPERATOR_CORE_CLIENT_ID: clientId,
+          OPERATOR_CORE_CLIENT_SECRET: clientSecret,
+          OPERATOR_CORE_ISSUER: fixtureOrigin,
+        },
+        stdio: ['ignore', 'ignore', 'ignore'],
       });
-      child.once('exit', resolve);
-    });
-    let ready = false;
-    for (let attempt = 0; attempt < 100 && !ready; attempt++) {
-      assert.ok(
-        !expired && !childError && child.exitCode === null && child.signalCode === null,
-        'Standalone server exited before readiness',
-      );
-      try {
-        const response = await fetch(`${origin}/api/auth/providers`, {
-          signal: AbortSignal.timeout(500),
-          redirect: 'manual',
+      childExit = new Promise((resolve) => {
+        child.once('error', () => {
+          childError = true;
+          resolve();
         });
-        ready = response.ok && Boolean((await response.json()).generic);
-      } catch {
-        /* The owned server may still be binding its socket. */
+        child.once('exit', resolve);
+      });
+      let ready = false;
+      for (let attempt = 0; attempt < 100 && !ready; attempt++) {
+        assert.ok(
+          !expired && !childError && child.exitCode === null && child.signalCode === null,
+          'Standalone server exited before readiness',
+        );
+        try {
+          const response = await fetch(`${origin}/api/auth/providers`, {
+            signal: AbortSignal.timeout(500),
+            redirect: 'manual',
+          });
+          ready = response.ok && Boolean((await response.json()).generic);
+        } catch {
+          /* The owned server may still be binding its socket. */
+        }
+        if (!ready) await delay(200);
       }
-      if (!ready) await delay(200);
-    }
-    assert.ok(ready, 'Standalone readiness deadline exceeded');
+      assert.ok(ready, 'Standalone readiness deadline exceeded');
+      return { origin, publicOrigin };
+    };
+    const { origin } = await startStandalone();
     phase = 'unauthenticated-denial';
     const bareGraph = await request(origin, '/api/graphql', { method: 'POST', body: '{}' });
     assert.ok(
@@ -365,22 +371,30 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
     );
     assert.equal((await request(origin, '/api/core/permissions/user')).status, 401);
     assert.equal(graphqlReceipts.length + tokenReceipts.length + coreReceipts.length, 0);
-    const session = async (jar) =>
-      JSON.parse((await request(origin, '/api/auth/session', {}, jar)).text);
-    const login = async (jar, suppliedPassword, validCsrf = true) => {
-      const csrf = JSON.parse((await request(origin, '/api/auth/csrf', {}, jar)).text).csrfToken;
+    const session = async (jar, networkOrigin = origin) =>
+      JSON.parse((await request(networkOrigin, '/api/auth/session', {}, jar)).text);
+    const login = async (
+      jar,
+      suppliedPassword,
+      validCsrf = true,
+      networkOrigin = origin,
+      publicOrigin = networkOrigin,
+    ) => {
+      const csrf = JSON.parse(
+        (await request(networkOrigin, '/api/auth/csrf', {}, jar)).text,
+      ).csrfToken;
       assert.ok(typeof csrf === 'string' && csrf.length > 20, 'Missing normal NextAuth CSRF token');
       return request(
-        origin,
+        networkOrigin,
         '/api/auth/callback/generic',
         {
           method: 'POST',
-          headers: { 'content-type': 'application/x-www-form-urlencoded', origin },
+          headers: { 'content-type': 'application/x-www-form-urlencoded', origin: publicOrigin },
           body: new URLSearchParams({
             csrfToken: validCsrf ? csrf : 'invalid-csrf',
             username: email,
             password: suppliedPassword,
-            callbackUrl: `${origin}/overview`,
+            callbackUrl: `${publicOrigin}/overview`,
             json: 'true',
           }).toString(),
         },
@@ -581,6 +595,64 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
     scan(join(isolated, 'apps/operator-ui/public'));
     assert.ok(publicFiles > 0 && staticPath, 'No public chunks inspected');
     assert.equal((await request(origin, `/_next/static/${staticPath}`)).status, 200);
+    phase = 'forwarded-https-actual-next-request';
+    await stopChild();
+    childError = false;
+    const forwarded = await startStandalone(true);
+    const forwardedJar = new Map();
+    assert.equal(
+      (await login(forwardedJar, password, true, forwarded.origin, forwarded.publicOrigin)).status,
+      200,
+    );
+    assert.ok((await session(forwardedJar, forwarded.origin)).user?.roles.includes('admin'));
+    const forwardedPayload = {
+      query:
+        'query ReadFixture($id: Int!, $name: String!) { Locations(where: {id: {_eq: $id}, name: {_eq: $name}}) { id name } }',
+      operationName: 'ReadFixture',
+      variables: { id: 43, name: 'Proxy header fixture' },
+    };
+    const forwardedGraph = (protocol) =>
+      request(
+        forwarded.origin,
+        '/api/graphql',
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            origin: forwarded.publicOrigin,
+            'x-forwarded-proto': protocol,
+          },
+          body: JSON.stringify(forwardedPayload),
+        },
+        forwardedJar,
+      );
+    const forwardedCore = (protocol) =>
+      request(
+        forwarded.origin,
+        '/api/core/permissions/user',
+        {
+          headers: { origin: forwarded.publicOrigin, 'x-forwarded-proto': protocol },
+        },
+        forwardedJar,
+      );
+    const beforeForwardedGraph = graphqlReceipts.length;
+    const beforeForwardedCore = coreReceipts.length;
+    assert.equal((await forwardedGraph('https')).status, 200);
+    assert.equal((await forwardedCore('https')).status, 200);
+    assert.equal(graphqlReceipts.length, beforeForwardedGraph + 1);
+    assert.equal(coreReceipts.length, beforeForwardedCore + 1);
+    assert.equal((await forwardedGraph('http')).status, 403);
+    assert.equal((await forwardedCore('http')).status, 403);
+    assert.equal(
+      graphqlReceipts.length,
+      beforeForwardedGraph + 1,
+      'Mismatched proxy protocol reached GraphQL',
+    );
+    assert.equal(
+      coreReceipts.length,
+      beforeForwardedCore + 1,
+      'Mismatched proxy protocol reached Core',
+    );
     assert.equal(fixtureErrors.length, 0, 'Synthetic upstream contract failed');
     assert.ok(!expired, 'Standalone validation cancelled');
     return {
@@ -611,6 +683,13 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
       realDatabaseCrud: false,
       realHasuraAuthorization: false,
       browserAutomation: false,
+      proxyHeaderHandling: {
+        actualNextRequest: true,
+        forwardedHttpsAccepted: true,
+        mismatchedProtocolDenied: true,
+        publicTlsHandshakeTested: false,
+        standaloneServersSequential: 2,
+      },
       serverHeapMiB: 256,
       deploymentPerformed: false,
       harnessSha256: createHash('sha256')

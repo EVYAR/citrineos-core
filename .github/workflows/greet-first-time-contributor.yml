@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   greet:
-    if: github.repository == 'citrineos/citrineos'
+    if: github.repository == 'citrineos/citrineos-core'
     name: Greet first-time contributors
     runs-on: ubuntu-latest
     steps:

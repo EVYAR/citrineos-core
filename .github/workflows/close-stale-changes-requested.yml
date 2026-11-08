@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   sweep:
-    if: github.repository == 'citrineos/citrineos'
+    if: github.repository == 'citrineos/citrineos-core'
     name: Warn and close stale changes-requested pull requests
     runs-on: ubuntu-latest
     steps:
