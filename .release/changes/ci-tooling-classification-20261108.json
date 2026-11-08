@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Classify the dedicated scripts/ci directory as CI infrastructure while continuing to reject runtime or similarly named script changes declared as none."
+}
