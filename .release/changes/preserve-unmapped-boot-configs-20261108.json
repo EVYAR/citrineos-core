@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Archive unreferenced legacy Boot configurations without a matching station before the unchanged upstream Boot key migration; preserve typed payload and audit provenance with guarded transactional rollback."
+}
