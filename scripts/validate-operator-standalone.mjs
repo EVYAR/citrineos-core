@@ -319,6 +319,9 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
         OPERATOR_HASURA_ROLE: 'user',
         HASURA_ADMIN_SECRET: adminSecret,
         OPERATOR_CORE_TENANT_ID: '7',
+        // NextRequest normalizes numeric loopback hosts to localhost. Keep the
+        // exact internal origin separate from the browser's public Origin.
+        OPERATOR_REQUEST_ORIGIN: `http://localhost:${port}`,
         OPERATOR_CORE_URL: fixtureOrigin,
         OPERATOR_CORE_TOKEN_URL: `${fixtureOrigin}/token`,
         OPERATOR_CORE_CLIENT_ID: clientId,
