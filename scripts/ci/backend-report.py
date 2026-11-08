@@ -18,7 +18,9 @@ for project in projects:
     stage = json.loads((reports / ('runtime-' + project + '.json')).read_text())
     assert stage['nativeExitCode'] == stage['exitCode'] == 0
     assert runtime['success'] is True
-    executed = [test for suite in runtime['testResults'] for test in suite['assertionResults']]
+    discovered = [test for suite in runtime['testResults'] for test in suite['assertionResults']]
+    assert not any(test.get('meta', {}).get('typecheck') for test in discovered), 'Typed discovery leaked into runtime JSON'
+    executed = [test for test in discovered if not test.get('meta', {}).get('typecheck')]
     assert executed and len(executed) == runtime['numTotalTests']
     results.extend(executed)
     suites.extend(runtime['testResults'])

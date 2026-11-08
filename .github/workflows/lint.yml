@@ -5,6 +5,7 @@ name: Linter
 
 on:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   # Rerun check when the PR is updated, https://stackoverflow.com/a/72408109

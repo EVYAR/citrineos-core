@@ -48,6 +48,8 @@ jobs:
         run: python3 scripts/ci/bounded.py run --stage operator-typecheck --profile typecheck -- pnpm exec tsc -p apps/operator-ui/tsconfig.json --noEmit
       - name: Build once and exercise actual standalone HTTP/session/proxy headers
         run: python3 scripts/ci/bounded.py run --stage operator --profile operator -- node scripts/validate-operator-isolated.mjs 4096
+      - name: Separate actual runtime, native TypeScript and standalone evidence
+        run: python3 scripts/ci/operator-report.py
       - name: Cleanup owned resources
         if: always()
         run: python3 scripts/ci/bounded.py cleanup
