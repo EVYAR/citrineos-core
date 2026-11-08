@@ -41,7 +41,7 @@ jobs:
       - name: Operator unit regressions (runtime assertions, one worker)
         run: >-
           python3 scripts/ci/bounded.py run --stage operator-unit --profile build --
-          pnpm exec vitest run --project operator-ui --maxWorkers=1 --minWorkers=1
+          pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project operator-ui --maxWorkers=1 --minWorkers=1
           --fileParallelism=false --typecheck.enabled=false --reporter=default --reporter=json
           --outputFile=reports/ci/operator-unit-runtime.json
       - name: Native Operator TypeScript check

@@ -2,7 +2,7 @@
 
 The automatic backend lane is `.github/workflows/test-build-server.yml`. It installs the
 frozen pnpm workspace, builds the OCPP and OCPI dependency closures sequentially, runs
-Vitest projects base/dal/ocpp/ocpi with one worker and no file parallelism, then runs the
+Vitest projects base/dal/ocpp/ocpi in separate sequential processes with one worker and no file parallelism, then runs the
 four native TypeScript test checks. `backend-report.py` reads actual Vitest JSON assertions;
 TypeScript `--listFiles` results are labelled input discovery, never executed test cases.
 The runtime report requires all twelve Boot archive integration assertions to pass.
@@ -29,7 +29,7 @@ stats (anonymous RSS, RSS, or conservative usage fallback). Missing statistics f
 | --------- | ------------: | --------------: | --------------------: | --------------: |
 | install   |          1536 |            2304 |                     0 |             900 |
 | build     |          1536 |            2304 |                     0 |            1200 |
-| runtime   |          1536 |            2304 |                  1024 |            1800 |
+| runtime   |          1536 |            3072 |                  1024 |            1800 |
 | typecheck |          1536 |            2304 |                     0 |             900 |
 | lint      |          1536 |            2304 |                     0 |            1200 |
 | stdlib    |           128 |             640 |                     0 |             300 |
@@ -70,3 +70,12 @@ Hosted execution after source review must establish compatibility of the real Do
 images and application tests. Small guard fixtures cover real Unix proxy create requests
 (content-length and chunked), budgets/ownership, native exit propagation and environment
 sanitization without Docker or application services.
+
+The first hosted combined runtime process hit RSS 2326.20 MiB against 2304 MiB, with host
+minimum available 12901 MiB. Parent approved runtime RSS 3072 MiB only; the Node heap 1536,
+Docker RSS 1024 and fixed reserve 1536 remain unchanged. The derived runtime config explicitly
+disables typechecking on inline projects: Vitest 3.2.7 does not propagate that CLI override.
+It preserves the normal monorepo aliases, test selection and timeouts. Each project now has
+its own guard receipt and actual runtime JSON; the combined report sums only those actual
+assertions. Native TSC still runs separately after successful builds even if runtime tests
+fail, and a runtime failure remains a failing workflow.
