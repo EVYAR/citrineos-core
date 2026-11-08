@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Restore authenticated tenant and partner boundaries on OCPI token reads, reject ambiguous or mismatched results, and keep standard OCPI request fields unchanged."
+}

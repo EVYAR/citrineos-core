@@ -2,10 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { OcpiConfigInput } from '@citrineos/ocpi-base';
+import { ocpiCacheFromEnv, type OcpiConfigInput } from '@citrineos/ocpi';
+import { ocpiGraphqlHeaders } from './graphql-headers.js';
+import { ocpiAdminAuth } from './admin-auth.js';
+import { ocpiCoreAuth } from './core-auth.js';
 
 export function createDockerOcpiConfig(): OcpiConfigInput {
   return {
+    oidc: ocpiAdminAuth(process.env),
     env: 'development',
 
     ocpiServer: {
@@ -51,18 +55,10 @@ export function createDockerOcpiConfig(): OcpiConfigInput {
       password: process.env.DB_PASS || 'citrine',
     },
 
-    cache: {
-      ...(process.env.REDIS_HOST
-        ? {
-            redis: {
-              host: process.env.REDIS_HOST,
-              port: parseInt(process.env.REDIS_PORT || '6379'),
-            },
-          }
-        : { memory: true }),
-    },
+    cache: ocpiCacheFromEnv(process.env),
 
     graphql: {
+      headers: ocpiGraphqlHeaders(process.env.OCPI_GRAPHQL_HEADERS),
       endpoint: process.env.GRAPHQL_ENDPOINT || 'http://graphql-engine:8080/v1/graphql',
     },
 
@@ -70,6 +66,7 @@ export function createDockerOcpiConfig(): OcpiConfigInput {
       timeout: parseInt(process.env.COMMANDS_TIMEOUT || '30'),
       ocpiBaseUrl: process.env.COMMANDS_OCPI_BASE_URL || 'http://citrineos-ocpi:8085/ocpi',
       coreHeaders: JSON.parse(process.env.COMMANDS_CORE_HEADERS || '{}'),
+      coreAuth: ocpiCoreAuth(process.env),
       ocpp1_6: {
         remoteStartTransactionRequestUrl:
           process.env.COMMANDS_OCPP1_6_REMOTE_START_TRANSACTION_REQUEST_URL ||
@@ -91,6 +88,17 @@ export function createDockerOcpiConfig(): OcpiConfigInput {
         unlockConnectorRequestUrl:
           process.env.COMMANDS_OCPP2_0_1_UNLOCK_CONNECTOR_REQUEST_URL ||
           'http://citrine:8080/ocpp/2.0.1/evdriver/unlockConnector',
+      },
+      ocpp2_1: {
+        requestStartTransactionRequestUrl:
+          process.env.COMMANDS_OCPP2_1_REQUEST_START_TRANSACTION_REQUEST_URL ||
+          'http://citrine:8080/ocpp/2.1/evdriver/requestStartTransaction',
+        requestStopTransactionRequestUrl:
+          process.env.COMMANDS_OCPP2_1_REQUEST_STOP_TRANSACTION_REQUEST_URL ||
+          'http://citrine:8080/ocpp/2.1/evdriver/requestStopTransaction',
+        unlockConnectorRequestUrl:
+          process.env.COMMANDS_OCPP2_1_UNLOCK_CONNECTOR_REQUEST_URL ||
+          'http://citrine:8080/ocpp/2.1/evdriver/unlockConnector',
       },
     },
 

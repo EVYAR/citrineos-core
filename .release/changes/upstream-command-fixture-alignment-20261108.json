@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Align inherited sender and OCPI token fixtures with tenant-scoped callback registration, fail-closed dispatch, authoritative router connection checks and current token diagnostics."
+}

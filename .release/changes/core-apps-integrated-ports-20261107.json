@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Preserve EVYAR UI locked tariffs, ISO expiry and server auth configuration; block station history deletion, carry OCPI tenant/partition identities through notifications and command ownership without changing wire IDs or contractual pricing, and package independent OCPI/UI mirror images with app-specific build metadata."
+}

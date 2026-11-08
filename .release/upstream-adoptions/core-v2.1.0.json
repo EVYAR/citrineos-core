@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "component": "citrineos-core",
+  "repository": "https://github.com/citrineos/citrineos-core.git",
+  "tag": "v2.1.0",
+  "commit": "4fd7599b91c2fb6e6065e7c9b94be69880cced27",
+  "previousForkCommit": "fb92180ae1ded83ce94864c0640e2e537b2ef7b6",
+  "reason": "The owner selected the latest stable release on 2026-11-07 and authorized the coordinated Core, OCPI, operator UI and adapter upgrade. Preserve vendor versions while porting EVYAR behavior; release and deployment remain subject to separate acceptance.",
+  "reviewDocument": "docs/upstream/README.md"
+}

@@ -1,0 +1,79 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import type { Transaction as SequelizeTransaction } from 'sequelize';
+import type { ChargingStationSequenceTypeEnumType } from '@citrineos/types';
+import type { IChargingStationSequenceRepository } from '../repositories.js';
+import { ChargingStationSequence } from '../../models/charging-station-sequence/charging-station-sequence.js';
+import { SequelizeRepository, type SequelizeRepositoryDependencies } from './base.js';
+import { resolveStationIdOrThrow } from './resolve-station-id.js';
+
+export class SequelizeChargingStationSequenceRepository
+  extends SequelizeRepository<ChargingStationSequence>
+  implements IChargingStationSequenceRepository
+{
+  private static readonly SEQUENCE_START = 1;
+
+  constructor({ config, logger, sequelizeInstance }: SequelizeRepositoryDependencies) {
+    super({ config, namespace: ChargingStationSequence.MODEL_NAME, logger, sequelizeInstance });
+  }
+
+  /**
+   * Converts a Sequelize bigint value to a JavaScript number.
+   * Sequelize returns PostgreSQL BIGINT columns as strings to avoid precision loss,
+   * but OCPP requires numeric types (e.g., requestId in GetChargingProfilesRequest).
+   *
+   * @param value - The value from Sequelize (may be string or number)
+   * @returns A JavaScript number
+   */
+  private _ensureNumber(value: string | number | null | undefined): number {
+    if (value === null || value === undefined) {
+      return SequelizeChargingStationSequenceRepository.SEQUENCE_START;
+    }
+    if (typeof value === 'string') {
+      const parsed = parseInt(value, 10);
+      if (isNaN(parsed)) {
+        return SequelizeChargingStationSequenceRepository.SEQUENCE_START;
+      }
+      return parsed;
+    }
+    return Number(value);
+  }
+
+  async getNextSequenceValue(
+    tenantId: number,
+    ocppConnectionName: string,
+    type: ChargingStationSequenceTypeEnumType,
+    existingTransaction?: SequelizeTransaction,
+  ): Promise<number> {
+    const next = async (transaction: SequelizeTransaction) => {
+      const stationId = await resolveStationIdOrThrow(
+        tenantId,
+        ocppConnectionName,
+        `allocate a ${type} sequence value`,
+        transaction,
+      );
+      const [storedSequence, sequenceCreated] = await this.readOrCreateByQuery(tenantId, {
+        where: {
+          tenantId: tenantId,
+          stationId,
+          type: type,
+        },
+        defaults: {
+          value: SequelizeChargingStationSequenceRepository.SEQUENCE_START,
+        },
+        transaction,
+      });
+
+      if (!sequenceCreated) {
+        await storedSequence.increment('value', { transaction });
+        await storedSequence.reload({ transaction });
+      }
+
+      return this._ensureNumber(storedSequence.get('value'));
+    };
+    return existingTransaction ? next(existingTransaction) : this.s.transaction(next);
+  }
+}
+
+export default SequelizeChargingStationSequenceRepository;

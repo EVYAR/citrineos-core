@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { type AuthProviderType, AuthProviderTypeEnum } from '../providers/auth-provider/types';
+import { type AuthProviderType, AuthProviderTypeEnum } from '@lib/providers/auth-provider/types';
 
 const getConfig: () => {
   appName: string;
@@ -12,7 +12,6 @@ const getConfig: () => {
   googleMapsOverviewMapId?: string;
   defaultMapCenterLatitude: number;
   defaultMapCenterLongitude: number;
-  hasuraAdminSecret?: string; // Not recommended for use in production; use your authProvider instead.
   hasuraClaim?: string;
   tenantId: string;
   apiUrl: string;
@@ -21,10 +20,10 @@ const getConfig: () => {
   citrineCoreUrl?: string;
   fileServer?: string;
   logoUrl?: string;
-  metricsUrl?: string;
   adminEmail?: string;
   adminPassword?: string;
   authProvider: AuthProviderType;
+  coreTransport: 'client' | 'server';
   keycloakUrl?: string; // The publicly accessible Keycloak URL that user browsers will be redirected to for login.
   keycloakServerUrl?: string; // If your application server needs to use a different URL to reach Keycloak (e.g., an internal service URL in Kubernetes), set this. Otherwise, the server will use KEYCLOAK_URL.
   keycloakRealm?: string;
@@ -61,18 +60,23 @@ const getConfig: () => {
     defaultMapCenterLongitude: process.env.NEXT_PUBLIC_DEFAULT_MAP_CENTER_LONGITUDE
       ? parseFloat(process.env.NEXT_PUBLIC_DEFAULT_MAP_CENTER_LONGITUDE)
       : -98.583333, // Approximate center of contiguous USA
-    hasuraAdminSecret: process.env.HASURA_ADMIN_SECRET,
     hasuraClaim: process.env.NEXT_PUBLIC_HASURA_CLAIM || 'https://hasura.io/jwt/claims',
     tenantId: process.env.NEXT_PUBLIC_TENANT_ID || '1',
-    apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090/v1/graphql',
+    apiUrl:
+      authProvider === 'generic'
+        ? '/api/graphql'
+        : process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090/v1/graphql',
     wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8090/v1/graphql',
     citrineCoreUrl: process.env.NEXT_PUBLIC_CITRINE_CORE_URL,
     fileServer: process.env.NEXT_PUBLIC_FILE_SERVER_URL,
     logoUrl: process.env.NEXT_PUBLIC_LOGO_URL,
-    metricsUrl: process.env.NEXT_PUBLIC_METRICS_URL,
-    adminEmail: process.env.NEXT_PUBLIC_ADMIN_EMAIL,
-    adminPassword: process.env.ADMIN_PASSWORD,
+    adminEmail:
+      process.env.OPERATOR_ADMIN_EMAIL ||
+      process.env.ADMIN_EMAIL ||
+      process.env.NEXT_PUBLIC_ADMIN_EMAIL,
+    adminPassword: process.env.OPERATOR_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD,
     authProvider,
+    coreTransport: process.env.NEXT_PUBLIC_CORE_TRANSPORT === 'server' ? 'server' : 'client',
     keycloakUrl: process.env.NEXT_PUBLIC_KEYCLOAK_URL,
     keycloakServerUrl: process.env.KEYCLOAK_SERVER_URL,
     keycloakRealm: process.env.KEYCLOAK_REALM,

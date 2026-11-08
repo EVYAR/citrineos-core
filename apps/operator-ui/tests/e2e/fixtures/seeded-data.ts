@@ -2,22 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { ApiClient } from './api-client';
 import { shortId } from '../utils/random';
+import type { ApiClient } from './api-client';
 
 // Schema reference for seeds + lookups:
 //   ChargingStations.id                 — int auto-inc PK
 //   ChargingStations.ocppConnectionName — string identifier (the OCPP name
 //                                         the charger uses when it connects)
 //   Child tables (Transactions, Connectors, Evses, StatusNotifications,
-//   LatestStatusNotifications, OCPPMessages, …):
+//   OCPPMessages, …):
 //     stationId          — int FK to ChargingStations.id
-//     ocppConnectionName — string identifier (populated by a BEFORE INSERT/
-//                          UPDATE trigger `populate_station_id` when the row
-//                          is written with `stationId` null, so seeds may
-//                          set `ocppConnectionName` alone and the trigger
-//                          fills in the int FK from tenant + connection
-//                          name).
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -39,6 +33,7 @@ export interface SeededTransaction {
   readonly id: number;
   readonly stationId: number;
   readonly ocppConnectionName: string;
+  readonly createdAt: string;
 }
 
 // Minimal authorization for OCPP RemoteStart command flows.
@@ -72,6 +67,7 @@ export async function seedLocation(
         address: overrides.address ?? '1 Test Street',
         city: overrides.city ?? 'Testville',
         country: overrides.country ?? 'US',
+        coordinates: { type: 'Point', coordinates: [-119.4179, 36.7783] },
         createdAt: now,
         updatedAt: now,
       },
@@ -84,8 +80,23 @@ export async function seedLocation(
 }
 
 export async function deleteLocation(api: ApiClient, id: number): Promise<void> {
+  // A station left behind by a failed test (e.g. a UI-created one whose
+  // inline cleanup never ran) FK-pins the location. Every station under an
+  // e2e location is itself e2e-owned, so clear them first — status rows
+  // before stations, same FK order the purge uses.
+  await api
+    .gql(
+      `mutation ClearLocationStations($locationId: Int!) {
+         delete_StatusNotifications(where: { ChargingStation: { locationId: { _eq: $locationId } } }) { affected_rows }
+         delete_ChargingStations(where: { locationId: { _eq: $locationId } }) { affected_rows }
+       }`,
+      { locationId: id },
+    )
+    .catch(() => undefined);
+  // Hasura exposes Locations.id as Int — declaring it bigint! makes the
+  // mutation fail validation before it runs, so every seeded location leaked.
   await api.gql(
-    `mutation DeleteLocation($id: bigint!) {
+    `mutation DeleteLocation($id: Int!) {
        delete_Locations_by_pk(id: $id) { id }
      }`,
     { id },
@@ -147,22 +158,35 @@ export async function seedTransaction(
 ): Promise<SeededTransaction> {
   const transactionId = overrides.transactionId ?? `${shortId()}-tx`;
   const now = nowIso();
-  // The Transactions table's int `stationId` FK is populated by the
-  // populate_station_id trigger from `ocppConnectionName` + tenant.
+  // Transactions store only the station FK; resolve the caller's connection
+  // name to it
+  const { ChargingStations } = await api.gql<{ ChargingStations: { id: number }[] }>(
+    `query LookupStationForTransaction($name: String!) {
+       ChargingStations(where: { ocppConnectionName: { _eq: $name } }, limit: 1) { id }
+     }`,
+    { name: ocppConnectionName },
+  );
+  const station = ChargingStations[0];
+  if (!station) {
+    throw new Error(
+      `Cannot seed a transaction: no charging station named '${ocppConnectionName}'.`,
+    );
+  }
   const data = await api.gql<{
     insert_Transactions_one: {
       id: number;
       stationId: number;
       transactionId: string;
+      createdAt: string;
     };
   }>(
     `mutation SeedTransaction($obj: Transactions_insert_input!) {
-       insert_Transactions_one(object: $obj) { id stationId transactionId }
+       insert_Transactions_one(object: $obj) { id stationId transactionId createdAt }
      }`,
     {
       obj: {
         transactionId,
-        ocppConnectionName,
+        stationId: station.id,
         isActive: overrides.isActive ?? true,
         totalKwh: overrides.totalKwh ?? 0,
         createdAt: now,
@@ -175,6 +199,7 @@ export async function seedTransaction(
     id: data.insert_Transactions_one.id,
     stationId: data.insert_Transactions_one.stationId,
     ocppConnectionName,
+    createdAt: data.insert_Transactions_one.createdAt,
   };
 }
 
@@ -186,7 +211,7 @@ export async function seedTransaction(
 // Transaction.End for a row to be plotted.
 export async function seedMeterValues(
   api: ApiClient,
-  transactionDatabaseId: number,
+  transaction: SeededTransaction,
   count = 6,
 ): Promise<void> {
   const baseTime = Date.now();
@@ -197,7 +222,8 @@ export async function seedMeterValues(
     const context =
       i === 0 ? 'Transaction.Begin' : i === count - 1 ? 'Transaction.End' : 'Sample.Periodic';
     return {
-      transactionDatabaseId,
+      transactionDatabaseId: transaction.id,
+      transactionCreatedAt: transaction.createdAt,
       timestamp: ts,
       sampledValue: [
         {
@@ -306,21 +332,13 @@ export async function purgeAllE2eRows(api: ApiClient): Promise<void> {
   // Postgres trigger on child tables that fails the delete unless
   // StatusNotifications referencing the station are cleared first.
   //
-  // The `e2e-` prefix marker is on `ocppConnectionName` (a string column).
-  // `stationId` is the int FK and is not _like-matchable, so all the cleanup
-  // filters target `ocppConnectionName` instead.
+  // The `e2e-` prefix marker is on `ChargingStations.ocppConnectionName`. These
+  // child tables link to the station by the int `stationId` FK, which is not
+  // _like-matchable, so the filters reach the name through the relation.
   await api
     .gql(
       `mutation PurgeStatusNotifications {
-         delete_StatusNotifications(where: { ocppConnectionName: { _like: "e2e-%" } }) { affected_rows }
-       }`,
-    )
-    .catch(() => undefined);
-
-  await api
-    .gql(
-      `mutation PurgeLatestStatusNotifications {
-         delete_LatestStatusNotifications(where: { ocppConnectionName: { _like: "e2e-%" } }) { affected_rows }
+         delete_StatusNotifications(where: { ChargingStation: { ocppConnectionName: { _like: "e2e-%" } } }) { affected_rows }
        }`,
     )
     .catch(() => undefined);
@@ -351,16 +369,15 @@ export async function purgeAllE2eRows(api: ApiClient): Promise<void> {
     })
     .catch(() => undefined);
 
-  // Authorizations: e2e seeds use uppercase suffix, so match by idToken prefix
-  // OR by the full e2e- token format. Both shapes are produced by
-  // seedAuthorization(); the regex covers either.
+  // Authorizations: every e2e-seeded token starts with E2E- (the old
+  // "%-RFID" match was over-broad — on a shared DB it would take out any
+  // authorization whose token merely ends in -RFID).
   await api
     .gql(
       `mutation PurgeAuthorizations {
          delete_Authorizations(
            where: { _or: [
              { idToken: { _ilike: "E2E-%" } },
-             { idToken: { _ilike: "%-RFID" } },
              { idToken: { _eq: "_PROBE_E2E_AUTH" } }
            ] }
          ) { affected_rows }
@@ -372,6 +389,26 @@ export async function purgeAllE2eRows(api: ApiClient): Promise<void> {
     .gql(
       `mutation PurgeLocations {
          delete_Locations(where: { name: { _like: "e2e-%" } }) { affected_rows }
+       }`,
+    )
+    .catch(() => undefined);
+
+  // Partners register under the reserved ZZ country code and tariffs under the
+  // XTS test currency (see the partners/tariffs specs) — both markers exist so
+  // rows a crashed run leaves behind can be swept here without touching real
+  // data.
+  await api
+    .gql(
+      `mutation PurgeTenantPartners {
+         delete_TenantPartners(where: { countryCode: { _eq: "ZZ" } }) { affected_rows }
+       }`,
+    )
+    .catch(() => undefined);
+
+  await api
+    .gql(
+      `mutation PurgeTariffs {
+         delete_Tariffs(where: { currency: { _eq: "XTS" } }) { affected_rows }
        }`,
     )
     .catch(() => undefined);

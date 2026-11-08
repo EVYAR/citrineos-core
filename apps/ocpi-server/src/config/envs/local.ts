@@ -2,10 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { OcpiConfigInput } from '@citrineos/ocpi-base';
+import type { OcpiConfigInput } from '@citrineos/ocpi';
+import { ocpiGraphqlHeaders } from './graphql-headers.js';
+import { ocpiAdminAuth } from './admin-auth.js';
+import { ocpiCoreAuth } from './core-auth.js';
 
 export function createLocalOcpiConfig(): OcpiConfigInput {
   return {
+    oidc: ocpiAdminAuth(process.env),
     env: 'development',
 
     ocpiServer: {
@@ -56,6 +60,7 @@ export function createLocalOcpiConfig(): OcpiConfigInput {
     },
 
     graphql: {
+      headers: ocpiGraphqlHeaders(process.env.OCPI_GRAPHQL_HEADERS),
       endpoint: process.env.GRAPHQL_ENDPOINT || 'http://localhost:8090/v1/graphql',
     },
 
@@ -63,6 +68,7 @@ export function createLocalOcpiConfig(): OcpiConfigInput {
       timeout: parseInt(process.env.COMMANDS_TIMEOUT || '30'),
       ocpiBaseUrl: process.env.COMMANDS_OCPI_BASE_URL || 'http://localhost:8085/ocpi',
       coreHeaders: JSON.parse(process.env.COMMANDS_CORE_HEADERS || '{}'),
+      coreAuth: ocpiCoreAuth(process.env),
       ocpp1_6: {
         remoteStartTransactionRequestUrl:
           process.env.COMMANDS_OCPP1_6_REMOTE_START_TRANSACTION_REQUEST_URL ||
@@ -84,6 +90,17 @@ export function createLocalOcpiConfig(): OcpiConfigInput {
         unlockConnectorRequestUrl:
           process.env.COMMANDS_OCPP2_0_1_UNLOCK_CONNECTOR_REQUEST_URL ||
           'http://localhost:8080/ocpp/2.0.1/evdriver/unlockConnector',
+      },
+      ocpp2_1: {
+        requestStartTransactionRequestUrl:
+          process.env.COMMANDS_OCPP2_1_REQUEST_START_TRANSACTION_REQUEST_URL ||
+          'http://localhost:8080/ocpp/2.1/evdriver/requestStartTransaction',
+        requestStopTransactionRequestUrl:
+          process.env.COMMANDS_OCPP2_1_REQUEST_STOP_TRANSACTION_REQUEST_URL ||
+          'http://localhost:8080/ocpp/2.1/evdriver/requestStopTransaction',
+        unlockConnectorRequestUrl:
+          process.env.COMMANDS_OCPP2_1_UNLOCK_CONNECTOR_REQUEST_URL ||
+          'http://localhost:8080/ocpp/2.1/evdriver/unlockConnector',
       },
     },
 

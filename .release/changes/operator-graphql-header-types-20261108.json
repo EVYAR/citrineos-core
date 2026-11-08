@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Normalize GraphQL header pairs across fetch type definitions and keep strict validation of malformed header entries."
+}

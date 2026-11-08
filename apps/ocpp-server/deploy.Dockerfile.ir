@@ -8,6 +8,8 @@ ARG NPM_REGISTRY=https://npm.ev-yar.ir/
 FROM ${NODE_IMAGE} AS build
 WORKDIR /usr/local/apps/citrineos
 
+RUN apk add --no-cache python3 py3-setuptools make g++ cmake
+
 # Use the internal Verdaccio mirror directly because Corepack's metadata lookup
 # against the public npm registry is not reliably reachable from the Iran host.
 ARG NPM_REGISTRY
@@ -23,24 +25,27 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm --workspace-concurrency=1 --filter "@citrineos/ocpp-server..." build
 
+# Independent OCPP app identity; package version stays upstream2.1.0.
+ARG COMMIT_SHA
+RUN node -e 'const fs = require("node:fs"); const pkg = JSON.parse(fs.readFileSync("apps/ocpp-server/package.json", "utf8")); const sourceSha = process.env.COMMIT_SHA || null; if (sourceSha && !/^[a-f0-9]{40}$/.test(sourceSha)) throw new Error("COMMIT_SHA must be a full source SHA"); fs.writeFileSync("apps/ocpp-server/dist/build-info.json", JSON.stringify({component: pkg.name, version: pkg.version, sourceSha}) + "\n");'
+
+RUN pnpm --filter "@citrineos/ocpp-server" deploy --legacy --prod /deploy
+
 FROM ${NODE_IMAGE} AS runtime
 
-ARG NPM_REGISTRY
-RUN npm config set registry "$NPM_REGISTRY" \
-    && npm config set replace-registry-host always \
-    && npm config set audit false \
-    && npm config set fund false \
-    && npm install --global pnpm@10.19.0
+COPY --from=build /deploy /usr/local/apps/citrineos/apps/ocpp-server
+# pnpm deploy honours the package's `files` list (["dist"]), so runtime files
+# living outside dist/ must be copied explicitly.
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc
+# static assets read from the image by k8s (hasura's copy-metadata initContainer).
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/db/hasura-metadata /usr/local/apps/citrineos/apps/ocpp-server/db/hasura-metadata
 
-COPY --from=build /usr/local/apps/citrineos /usr/local/apps/citrineos
-
-WORKDIR /usr/local/apps/citrineos
+WORKDIR /usr/local/apps/citrineos/apps/ocpp-server
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
 
 ARG COMMIT_SHA
 LABEL org.opencontainers.image.revision=$COMMIT_SHA
-
-EXPOSE ${PORT}
 
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]

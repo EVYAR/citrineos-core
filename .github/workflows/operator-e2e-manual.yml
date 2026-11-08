@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+name: Manual synthetic Operator and EVerest
+on:
+  workflow_dispatch:
+    inputs:
+      everest:
+        description: 'Include the simulated EVerest lane (never a physical charger)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: manual-operator-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Establish hosted job ownership
+        run: python3 scripts/ci/bounded.py init --docker
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+          cache: pnpm
+      - run: python3 scripts/ci/bounded.py run --stage install --profile install -- pnpm install --frozen-lockfile --network-concurrency=4
+      - run: python3 scripts/ci/bounded.py run --stage browser-install --profile install -- pnpm --filter @citrineos/operator-ui exec playwright install --with-deps chromium
+      - run: python3 scripts/ci/bounded.py run --stage fixture --profile stdlib -- node scripts/ci/manual-operator-e2e.mjs prepare
+      - run: python3 scripts/ci/bounded.py run --stage ui-build --profile operator -- node scripts/ci/manual-operator-e2e.mjs build
+      - name: Current monorepo synthetic full-stack/browser acceptance
+        env:
+          EVEREST_REQUESTED: ${{ inputs.everest && 'everest' || 'browser' }}
+        run: python3 scripts/ci/bounded.py run --stage manual-e2e --profile e2e -- node scripts/ci/manual-operator-e2e.mjs run "$EVEREST_REQUESTED"
+      - name: Remove only this job's newly created labelled containers
+        if: always()
+        run: python3 scripts/ci/bounded.py cleanup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: manual-operator-result-${{ github.sha }}
+          path: |
+            reports/ci/*result.json
+            reports/ci/*e2e.json
+            reports/ci/job.json
+            apps/operator-ui/reports/
+          if-no-files-found: warn
+          retention-days: 7

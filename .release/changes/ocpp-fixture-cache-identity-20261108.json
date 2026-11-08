@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Correct the connection-cache fixture key/namespace and verify current-socket and boot-status readback, use the actual protocol enum for registration, and assert tenant-scoped callback outcomes and commissioned OCPP identities separately from database foreign keys."
+}

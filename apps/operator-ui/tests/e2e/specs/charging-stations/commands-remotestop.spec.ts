@@ -3,12 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { test, expect } from '../../fixtures';
-import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.page';
-import { ModalHarness } from '../../pages/components/modal.po';
+import { ChargingStationDetailPage } from '../../pages/charging-stations/detail-page';
+import { ModalHarness } from '../../pages/components/modal-po';
 
 test.use({ storageState: 'playwright/.auth/admin.json' });
 
-// Source contract (charging.station.detail.card.tsx:471-482):
+// Source contract (charging-station-detail-card.tsx:471-482):
 // StopTransactionButton only renders when hasActiveTransactions === true.
 // Specs that exercise the modal therefore seed a transaction first via the
 // seededTransaction fixture; specs that only verify the gating behaviour
@@ -20,7 +20,7 @@ test.describe('charging-stations › RemoteStop command', () => {
     everestStation,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(everestStation.id);
+    await detail.goto(everestStation.ocppConnectionName);
 
     // The detail page mutually-exclusively renders StartTransaction (when
     // hasActiveTransactions=false) or StopTransaction (when true). The
@@ -42,7 +42,7 @@ test.describe('charging-stations › RemoteStop command', () => {
     expect(seededTransaction.stationId).toBe(seededStation.id);
 
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(seededStation.id);
+    await detail.goto(seededStation.ocppConnectionName);
 
     await detail.commandBar.remoteStopButton.click();
     const modal = new ModalHarness(page, /(remote stop|stop transaction)/i);
@@ -56,7 +56,7 @@ test.describe('charging-stations › RemoteStop command', () => {
     seededStation,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(seededStation.id);
+    await detail.goto(seededStation.ocppConnectionName);
 
     // hasActiveTransactions === false → StartTransactionButton is shown,
     // StopTransactionButton is not rendered. This is the source-level

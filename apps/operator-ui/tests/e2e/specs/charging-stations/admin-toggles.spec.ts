@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { test, expect } from '../../fixtures';
-import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.page';
+import { ChargingStationDetailPage } from '../../pages/charging-stations/detail-page';
 
 test.use({ storageState: 'playwright/.auth/admin.json' });
 
@@ -13,7 +13,7 @@ test.describe('charging-stations › admin toggles', () => {
     everestStation,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(everestStation.id);
+    await detail.goto(everestStation.ocppConnectionName);
     // ForceDisconnect is rendered as a primary command-bar button.
     await expect(detail.commandBar.forceDisconnectButton).toBeVisible({
       timeout: 30_000,

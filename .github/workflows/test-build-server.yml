@@ -1,83 +1,95 @@
-# SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
 #
 # SPDX-License-Identifier: Apache-2.0
-name: Test Server on Pull Request
-
+name: Backend build and tests
 on:
   pull_request:
-
+    paths:
+      - 'apps/ocpp-server/**'
+      - 'apps/ocpi-server/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig*.json'
+      - 'vitest.config.ts'
+      - '.nvmrc'
+      - '.github/workflows/test-build-server.yml'
+  workflow_dispatch:
+    inputs:
+      ocpp_fixture_focus:
+        description: 'Run only the reviewed OCPP fixture regression files (not full backend acceptance)'
+        type: boolean
+        default: false
+permissions:
+  contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: backend-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-
 jobs:
-  changes:
-    runs-on: [self-hosted, linux, x64, evjex]
-    outputs:
-      server: ${{ steps.filter.outputs.server }}
-      shared: ${{ steps.filter.outputs.shared }}
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
         with:
-          filters: |
-            shared:
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'package.json'
-              - 'tsconfig*.json'
-              - '.github/workflows/**'
-            server:
-              - 'apps/ocpp-server/**'
-              - 'packages/**'
-
-  build:
-    needs: changes
-    if: ${{ needs.changes.outputs.server == 'true' || needs.changes.outputs.shared == 'true' }}
-    runs-on: [self-hosted, linux, x64, evjex]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+          persist-credentials: false
+      - name: Refuse self-hosted execution and establish job ownership
+        run: python3 scripts/ci/bounded.py init --docker
+      - uses: pnpm/action-setup@v4
         with:
-          node-version: "24.16.0"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Build and Run Docker Compose
-        run: docker compose -f ${{ github.workspace }}/docker-compose.yml -f ${{ github.workspace }}/docker-compose.local.yml up -d --build
-
-      - name: Install Newman
-        run: |
-          npm install -g newman
-          sleep 10
-
-      - name: Integration test
-        run: |
-          RETRY_COUNT=0
-          MAX_RETRIES=5
-          RETRY_DELAY=10
-          until [ $RETRY_COUNT -ge $MAX_RETRIES ]
-          do
-            newman run ${{ github.workspace }}/.github/workflows/tests/CI/collection.json -e ${{ github.workspace }}/.github/workflows/tests/CI/environment.json --reporters cli && break
-            RETRY_COUNT=$((RETRY_COUNT+1))
-            echo "Retry $RETRY_COUNT/$MAX_RETRIES in $RETRY_DELAY seconds..."
-            sleep $RETRY_DELAY
-          done
+          version: 10.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+          cache: pnpm
+      - name: Guard fixtures (standard library only)
+        run: python3 scripts/ci/bounded.py run --stage guard-fixtures --profile stdlib -- python3 -B -m unittest discover -s scripts/ci/tests -v
+      - name: Frozen dependency install
+        run: python3 scripts/ci/bounded.py run --stage install --profile install -- pnpm install --frozen-lockfile --network-concurrency=4
+      - name: Build Core closure sequentially
+        id: core
+        run: python3 scripts/ci/bounded.py run --stage build-core --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/ocpp-server...' run build
+      - name: Build OCPI closure sequentially
+        id: ocpi
+        run: python3 scripts/ci/bounded.py run --stage build-ocpi --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/ocpi-server...' run build
+      - name: Runtime backend projects or explicit manual OCPP fixture scope
+        env:
+          OCPP_FIXTURE_FOCUS: ${{ inputs.ocpp_fixture_focus && 'true' || 'false' }}
         shell: bash
-
-      - name: Get logs for all containers
-        if: failure()
         run: |
-          docker ps -a
-          docker container ls -aq | xargs -I {} docker logs {}
-
-      - name: Clean up
-        run: docker compose -f ${{ github.workspace }}/docker-compose.yml -f ${{ github.workspace }}/docker-compose.local.yml down
+          set -uo pipefail
+          if [ "$OCPP_FIXTURE_FOCUS" = 'true' ]; then
+            python3 scripts/ci/bounded.py run --stage runtime-ocpp-fixtures --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project ocpp --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile=reports/runtime-ocpp-fixtures.json packages/ocpp/test/apis/permission-catalog.test.ts packages/ocpp/test/server/server-and-auth-gaps.test.ts packages/ocpp/test/modules/ocpp-router/message-router-impl.test.ts packages/ocpp/test/modules/ocpp-router/router-outstanding-call.test.ts packages/ocpp/test/modules/transactions/status-notification-service.test.ts packages/ocpp/test/modules/transactions/transaction-service.test.ts packages/ocpp/test/services/authorizer/real-time-authorizer.test.ts packages/ocpp/test/handlers/requests/2/status-and-monitoring-requests.test.ts packages/ocpp/test/providers/status-ingress-repository.test.ts
+          else
+            status=0
+            for project in base dal ocpp ocpi; do
+              python3 scripts/ci/bounded.py run --stage "runtime-$project" --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project "$project" --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="reports/runtime-$project.json" || status=$?
+            done
+            exit "$status"
+          fi
+      - name: Native TypeScript test checks and input discovery (not runtime case counts)
+        if: ${{ !cancelled() && steps.core.outcome == 'success' && steps.ocpi.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for project in base dal ocpp ocpi; do
+            python3 scripts/ci/bounded.py run --stage "typecheck-$project" --profile typecheck -- pnpm exec tsc -p "packages/$project/tsconfig.json" --listFiles
+          done
+      - name: Source-bound runtime versus TypeScript evidence
+        if: ${{ success() && !inputs.ocpp_fixture_focus }}
+        run: python3 scripts/ci/backend-report.py
+      - name: Explicit focused evidence (never full backend acceptance)
+        if: ${{ success() && inputs.ocpp_fixture_focus }}
+        run: python3 scripts/ci/ocpp-fixture-report.py
+      - name: Clean only this job's newly created labelled containers
+        if: always()
+        run: python3 scripts/ci/bounded.py cleanup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-evidence-${{ github.sha }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: warn

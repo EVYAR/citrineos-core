@@ -5,19 +5,28 @@ name: Linter
 
 on:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   # Rerun check when the PR is updated, https://stackoverflow.com/a/72408109
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   linter:
     name: Linter
-    runs-on: [self-hosted, linux, x64, evjex]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Establish hosted guard
+        run: python3 scripts/ci/bounded.py init
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -27,11 +36,24 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.2'
           cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: python3 scripts/ci/bounded.py run --stage install --profile install -- pnpm install --frozen-lockfile --network-concurrency=4
 
       - name: Lint
-        run: pnpm run lint
+        run: python3 scripts/ci/bounded.py run --stage lint --profile lint -- pnpm --workspace-concurrency=1 -r run lint
+
+      - name: Cleanup owned resources
+        if: always()
+        run: python3 scripts/ci/bounded.py cleanup
+
+      - name: Retain native guard logs and measurements
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-evidence-${{ github.sha }}
+          path: reports/ci/
+          if-no-files-found: warn
+          retention-days: 7

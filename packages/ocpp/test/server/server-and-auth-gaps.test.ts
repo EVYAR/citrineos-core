@@ -1,0 +1,392 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import type { FastifyRequest } from 'fastify';
+import type { ILogObj } from 'tslog';
+import { Logger } from 'tslog';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ICache } from '@citrineos/base';
+import type { Sequelize } from '@citrineos/dal';
+import type { RabbitMQConnectionManager, WebsocketNetworkConnection } from '@/transport/index.js';
+import type { SchemaFinding, SchemaValidationReport } from '@/util/index.js';
+import { HealthCheckService } from '@/server/health-check-service.js';
+import { LocalBypassAuthProvider } from '@/apis/authorization/provider/local-by-pass-auth-provider.js';
+import { OidcTokenProvider } from '@/apis/authorization/oidc-token-provider.js';
+
+const hiddenLogger = new Logger<ILogObj>({ type: 'hidden' });
+
+describe('HealthCheckService', () => {
+  function aCache(ping = vi.fn().mockResolvedValue(undefined)) {
+    return { cache: { ping } as unknown as ICache, ping };
+  }
+
+  function aSequelize(pool: unknown = { size: 1, waiting: 0 }): Sequelize {
+    return { connectionManager: { pool } } as unknown as Sequelize;
+  }
+
+  function aNetworkConnection(servers: Record<string, boolean>): WebsocketNetworkConnection {
+    const map = new Map(Object.entries(servers).map(([id, listening]) => [id, { listening }]));
+    return { getHttpServers: () => map } as unknown as WebsocketNetworkConnection;
+  }
+
+  function aFinding(message: string, severity: SchemaFinding['severity'] = 'error'): SchemaFinding {
+    return { kind: 'missing-column', severity, table: 'transactions', message };
+  }
+
+  function aSchemaReport(
+    errors: SchemaFinding[] = [],
+    warnings: SchemaFinding[] = [],
+  ): SchemaValidationReport {
+    return {
+      findings: [...errors, ...warnings],
+      errors,
+      warnings,
+      tablesChecked: 1,
+      columnsChecked: 1,
+    };
+  }
+
+  function aConnectionManager(isConnected: () => boolean) {
+    const spy = vi.fn(isConnected);
+    return {
+      manager: { isConnected: spy } as unknown as RabbitMQConnectionManager,
+      isConnected: spy,
+    };
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reports pass when every dependency is healthy', async () => {
+    const { cache, ping } = aCache();
+    const { manager } = aConnectionManager(() => true);
+    const service = new HealthCheckService(
+      aNetworkConnection({ main: true }),
+      manager,
+      cache,
+      aSequelize(),
+      60,
+      hiddenLogger,
+    );
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('pass');
+    expect(result.checks).toEqual({
+      'websocket:main': { status: 'pass' },
+      rabbitmq: { status: 'pass' },
+      cache: { status: 'pass' },
+      database: { status: 'pass' },
+    });
+    expect(ping).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails readiness when rabbitmq is disconnected', async () => {
+    const { cache } = aCache();
+    const { manager, isConnected } = aConnectionManager(() => false);
+    const service = new HealthCheckService(null, manager, cache, aSequelize(), 60, hiddenLogger);
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('fail');
+    expect(result.checks['rabbitmq']).toEqual({ status: 'fail', error: 'not connected' });
+    expect(isConnected).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails readiness when one websocket server stops listening', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(
+      aNetworkConnection({ a: true, b: false }),
+      null,
+      cache,
+      aSequelize(),
+      60,
+      hiddenLogger,
+    );
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('fail');
+    expect(result.checks['websocket:a']).toEqual({ status: 'pass' });
+    expect(result.checks['websocket:b']).toEqual({
+      status: 'fail',
+      error: 'server not listening',
+    });
+  });
+
+  it('fails readiness when the cache ping rejects', async () => {
+    const { cache, ping } = aCache(vi.fn().mockRejectedValue(new Error('redis down')));
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('fail');
+    expect(result.checks['cache']).toEqual({ status: 'fail', error: 'cache unavailable' });
+    expect(ping).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails readiness when the sequelize pool is missing', async () => {
+    const { cache } = aCache();
+    // null instead of undefined: undefined would trigger the helper's default healthy pool
+    const service = new HealthCheckService(null, null, cache, aSequelize(null), 60, hiddenLogger);
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('fail');
+    expect(result.checks['database']).toEqual({ status: 'fail', error: 'pool unavailable' });
+  });
+
+  it('fails readiness when connections wait on an empty pool', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(
+      null,
+      null,
+      cache,
+      aSequelize({ size: 0, waiting: 3 }),
+      60,
+      hiddenLogger,
+    );
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('fail');
+    expect(result.checks['database']).toEqual({ status: 'fail', error: 'database unavailable' });
+  });
+
+  it('only checks cache and database when websocket and rabbitmq are absent', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(null, undefined, cache, aSequelize(), 60, hiddenLogger);
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('pass');
+    expect(Object.keys(result.checks)).toEqual(['cache', 'database']);
+  });
+
+  it('omits the schema check until a report is set', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+
+    const result = await service.checkReadiness();
+
+    expect(result.checks['schema']).toBeUndefined();
+  });
+
+  it('warns without failing readiness when the schema report holds suppressed errors', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+    service.setSchemaValidationReport(aSchemaReport([aFinding('column a missing')]));
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('pass');
+    expect(result.checks['schema']).toEqual({
+      status: 'warn',
+      error:
+        '1 schema validation error(s) suppressed by validateSchemaSeverity=warn: column a missing',
+    });
+  });
+
+  it('lists at most five suppressed schema errors', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+    service.setSchemaValidationReport(
+      aSchemaReport(Array.from({ length: 6 }, (_, i) => aFinding(`finding ${i}`))),
+    );
+
+    const result = await service.checkReadiness();
+
+    expect(result.checks['schema'].error).toBe(
+      '6 schema validation error(s) suppressed by validateSchemaSeverity=warn: ' +
+        'finding 0; finding 1; finding 2; finding 3; finding 4',
+    );
+  });
+
+  it('reports warning-only findings as a count', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+    service.setSchemaValidationReport(aSchemaReport([], [aFinding('wider column', 'warning')]));
+
+    const result = await service.checkReadiness();
+
+    expect(result.status).toBe('pass');
+    expect(result.checks['schema']).toEqual({
+      status: 'warn',
+      error: '1 schema validation warning(s)',
+    });
+  });
+
+  it('passes the schema check for a clean report', async () => {
+    const { cache } = aCache();
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+    service.setSchemaValidationReport(aSchemaReport());
+
+    const result = await service.checkReadiness();
+
+    expect(result.checks['schema']).toEqual({ status: 'pass' });
+  });
+
+  it('fails readiness without touching dependencies once shutdown has started', async () => {
+    const { cache, ping } = aCache();
+    const service = new HealthCheckService(null, null, cache, aSequelize(), 60, hiddenLogger);
+
+    service.shutdown();
+    const result = await service.checkReadiness();
+
+    expect(result).toEqual({
+      status: 'fail',
+      checks: { shutdown: { status: 'fail', error: 'shutting down' } },
+    });
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('fails liveness after readiness has been failing longer than the threshold', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const { cache } = aCache();
+    const { manager } = aConnectionManager(() => false);
+    const service = new HealthCheckService(null, manager, cache, aSequelize(), 1, hiddenLogger);
+
+    await service.checkReadiness();
+    expect(service.checkLiveness()).toEqual({ status: 'pass', checks: {} });
+
+    vi.setSystemTime(new Date('2026-01-01T00:00:03Z'));
+    expect(service.checkLiveness()).toEqual({
+      status: 'fail',
+      checks: {
+        readiness: { status: 'fail', error: 'Not ready for 3s (threshold: 1s)' },
+      },
+    });
+  });
+
+  it('passes liveness again once readiness recovers', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    let connected = false;
+    const { cache } = aCache();
+    const { manager } = aConnectionManager(() => connected);
+    const service = new HealthCheckService(null, manager, cache, aSequelize(), 1, hiddenLogger);
+
+    await service.checkReadiness();
+    vi.setSystemTime(new Date('2026-01-01T00:00:05Z'));
+    connected = true;
+    await service.checkReadiness();
+
+    expect(service.checkLiveness()).toEqual({ status: 'pass', checks: {} });
+  });
+});
+
+describe('LocalBypassAuthProvider', () => {
+  it('hands out the fixed bypass token', async () => {
+    const provider = new LocalBypassAuthProvider(['admin', 'user'], hiddenLogger);
+
+    await expect(provider.extractToken({} as FastifyRequest)).resolves.toBe('local-bypass-token');
+  });
+
+  it('authenticates any token as the local admin user', async () => {
+    const provider = new LocalBypassAuthProvider(['admin', 'user'], hiddenLogger);
+
+    const result = await provider.authenticateToken('whatever');
+
+    expect(result.isAuthenticated).toBe(true);
+    expect(result.user).toEqual({
+      id: 'local-admin',
+      name: 'Local Admin',
+      email: 'admin@local',
+      roles: ['admin', 'user'],
+      groups: ['administrators'],
+      tenantId: '1',
+      metadata: { isLocalBypass: true },
+    });
+  });
+
+  it('authorizes any user for any request', async () => {
+    const provider = new LocalBypassAuthProvider(['admin', 'user'], hiddenLogger);
+    const user = (await provider.authenticateToken('whatever')).user!;
+
+    const result = await provider.authorizeUser(user, {
+      method: 'DELETE',
+      url: '/anything',
+    } as FastifyRequest);
+
+    expect(result.isAuthorized).toBe(true);
+  });
+});
+
+describe('OidcTokenProvider', () => {
+  const oidcConfig = {
+    tokenUrl: 'http://idp.test/token',
+    clientId: 'client-1',
+    clientSecret: 's3cret',
+    audience: 'aud-1',
+  };
+
+  function tokenResponse(accessToken: string, expiresIn = 3600) {
+    return Response.json({ access_token: accessToken, expires_in: expiresIn });
+  }
+
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('requests a token with the client credentials grant', async () => {
+    fetchMock.mockResolvedValue(tokenResponse('tok-1'));
+    const provider = new OidcTokenProvider(oidcConfig, hiddenLogger);
+
+    await expect(provider.getToken()).resolves.toBe('tok-1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [
+      string,
+      { method: string; body: URLSearchParams },
+    ];
+    expect(url).toBe('http://idp.test/token');
+    expect(init.method).toBe('POST');
+    expect(init.body.get('grant_type')).toBe('client_credentials');
+    expect(init.body.get('client_id')).toBe('client-1');
+    expect(init.body.get('client_secret')).toBe('s3cret');
+    expect(init.body.get('audience')).toBe('aud-1');
+  });
+
+  it('reuses the cached token while it is still valid', async () => {
+    fetchMock.mockResolvedValue(tokenResponse('tok-1'));
+    const provider = new OidcTokenProvider(oidcConfig, hiddenLogger);
+
+    await provider.getToken();
+    await expect(provider.getToken()).resolves.toBe('tok-1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('fetches a fresh token once the cached one expires', async () => {
+    // expires_in of 60 leaves nothing after the 60s safety margin, so the cache entry is already stale
+    fetchMock
+      .mockResolvedValueOnce(tokenResponse('tok-1', 60))
+      .mockResolvedValueOnce(tokenResponse('tok-2'));
+    const provider = new OidcTokenProvider(oidcConfig, hiddenLogger);
+
+    await expect(provider.getToken()).resolves.toBe('tok-1');
+    await expect(provider.getToken()).resolves.toBe('tok-2');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws when the token endpoint answers with an error', async () => {
+    fetchMock.mockResolvedValue(
+      new Response('invalid client', { status: 401, statusText: 'Unauthorized' }),
+    );
+    const provider = new OidcTokenProvider(oidcConfig, hiddenLogger);
+
+    await expect(provider.getToken()).rejects.toEqual(new Error('OIDC token request failed'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});

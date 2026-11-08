@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "af5f736f16e2c7390255b2e49d66769e41a7863f",
+  "entries": [
+    {
+      "archivedPath": "docs/upstream/historical-migrations/20260921080000-add-ocpp-message-read-indexes.ts.txt",
+      "originalCommit": "af5f736f16e2c7390255b2e49d66769e41a7863f",
+      "originalPath": "apps/ocpp-server/migrations/20260921080000-add-ocpp-message-read-indexes.ts",
+      "sha256": "59dca80589d28d9a4ad852b01339eb9cbbe28e5489a23c4059a5668bfb7c7f29",
+      "reason": "Retired from active migration discovery during upstream synchronization; preserve byte-identical frozen baseline evidence without altering applied history."
+    },
+    {
+      "archivedPath": "docs/upstream/historical-migrations/20260921090000-add-live-meter-read-indexes.ts.txt",
+      "originalCommit": "a72c8dc262f02cb4063fffa5c4e91d6699dbb9ba",
+      "originalPath": "apps/ocpp-server/migrations/20260921090000-add-live-meter-read-indexes.ts",
+      "sha256": "bfca6552d82024f6859d0110a60df3bc146d1eb3a3f5fc8b36e15b2f8dcca8e4",
+      "reason": "Historical live meter read indexes; source reverted by 3d8c4902b493bad8c6f7f2c3ffb8eb8c58877c76 before the frozen baseline. Actual restored history retains the applied ledger row and both indexes; evidence only, never reactivate prepartition DDL."
+    },
+    {
+      "archivedPath": "docs/upstream/historical-migrations/20261006090000-remove-stale-ocpp16-null-evse-latest-status.ts.txt",
+      "originalCommit": "af5f736f16e2c7390255b2e49d66769e41a7863f",
+      "originalPath": "apps/ocpp-server/migrations/20261006090000-remove-stale-ocpp16-null-evse-latest-status.ts",
+      "sha256": "1ae892e883ee88dc235a12a262aab3ece7429475dc36a81c5f713b0553174351",
+      "reason": "Retired from active migration discovery during upstream synchronization; preserve byte-identical frozen baseline evidence without altering applied history."
+    },
+    {
+      "archivedPath": "docs/upstream/historical-migrations/20261020210000-bind-status-ingress.ts.txt",
+      "originalCommit": "af5f736f16e2c7390255b2e49d66769e41a7863f",
+      "originalPath": "apps/ocpp-server/migrations/20261020210000-bind-status-ingress.ts",
+      "sha256": "c2313dc05ce1072c728830f02dd487ee83b19353454270b54e0dd3a879947e29",
+      "reason": "Retired from active migration discovery during upstream synchronization; preserve byte-identical frozen baseline evidence without altering applied history."
+    }
+  ]
+}

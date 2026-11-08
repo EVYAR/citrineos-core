@@ -14,9 +14,16 @@ const withNextIntl = createNextIntlPlugin(resolve(__dirname, 'src/lib/i18n/reque
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: 'standalone',
-  transpilePackages: ['@citrineos/base'],
+  // The Core transport is server-only and uses Node APIs. Keep its protocol/
+  // infrastructure dependency tree as a traced Node package rather than Webpack input.
+  serverExternalPackages: ['@citrineos/base'],
+  experimental: {
+    cpus: 1,
+    webpackBuildWorker: true,
+    webpackMemoryOptimizations: true,
+  },
   // Trace from the monorepo root so the standalone output bundles workspace
-  // dependencies (@citrineos/base) correctly.
+  // dependencies (@citrineos/types) correctly.
   outputFileTracingRoot: resolve(__dirname, '../..'),
   devIndicators: {
     position: 'bottom-right',

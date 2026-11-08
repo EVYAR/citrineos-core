@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Exclude local and runtime environment files from the default Core Docker build context."
+}

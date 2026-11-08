@@ -1,0 +1,5 @@
+{
+  "type": "patch",
+  "summary": "Restore OCPI transaction and meter-value notification triggers on current Core partition parents after a coordinated upgrade.",
+  "migration": "Run Core migrations before OCPI migrations against their shared database and public.SequelizeMeta ledger. New additive OCPI migration 20261107210000 preserves existing standard bindings or creates missing bindings atomically; missing notification functions or conflicting bindings abort the repair. Historic migrations and recorded ledger rows remain unchanged. Down intentionally preserves bindings because their preexisting provenance cannot safely be inferred. This repair does not roll back Core partitioning or reset data. Database acceptance for the new paired fixture remains pending a parent-granted execution window. Vendor package versions and public protocol bodies are unchanged."
+}

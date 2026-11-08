@@ -1,0 +1,5 @@
+{
+  "type": "none",
+  "summary": "Remove the proposed duplicate OCPI trigger repair and verify upstream's existing restoration migration instead.",
+  "migration": "The proposed 20261107210000 OCPI repair was never applied to development or production and is removed from this feature before rollout. Upstream Core migration 20260924120000 already restores the two notification bindings after partitioning. The earlier pending declaration is retained as append-only review history; this record supersedes its proposed migration instructions. Existing applied migrations and database history are unchanged."
+}

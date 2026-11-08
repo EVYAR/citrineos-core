@@ -6,8 +6,15 @@ import { FlatCompat } from '@eslint/eslintrc';
 import eslintPluginReact from 'eslint-plugin-react';
 import tseslint from 'typescript-eslint';
 import { sharedConfigs } from '../../eslint.config.base.js';
+import { createRequire } from 'node:module';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const compat = new FlatCompat();
+const require = createRequire(import.meta.url);
+const compat = new FlatCompat({
+  baseDirectory: dirname(fileURLToPath(import.meta.url)),
+  resolvePluginsRelativeTo: dirname(require.resolve('eslint-config-next/package.json')),
+});
 const nextConfigs = compat.extends('next/core-web-vitals').map((config) => {
   const { useEslintrc, extensions, ...rest } = config;
   return rest;

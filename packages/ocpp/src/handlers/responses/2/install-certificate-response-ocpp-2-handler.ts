@@ -1,0 +1,61 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import {
+  AbstractHandler,
+  type AbstractHandlerDependencies,
+  AsResponseHandler,
+  type IMessage,
+} from '@citrineos/base';
+import {
+  type HandlerProperties,
+  OCPP_2_VER_LIST,
+  OCPP_CallAction,
+  OCPP2_request_types,
+  OCPP2_response_types,
+} from '@citrineos/types';
+import type { InstallCertificateHelperService } from '@services/certificate/install-certificate-helper-service.js';
+
+@AsResponseHandler(OCPP_2_VER_LIST, OCPP_CallAction.InstallCertificate)
+export class InstallCertificateResponseOcpp2Handler extends AbstractHandler {
+  protected _installCertificateHelperService: InstallCertificateHelperService;
+
+  constructor({
+    logger,
+    installCertificateHelperService,
+  }: AbstractHandlerDependencies & {
+    installCertificateHelperService: InstallCertificateHelperService;
+  }) {
+    super(logger);
+
+    this._installCertificateHelperService = installCertificateHelperService;
+  }
+
+  async handle(
+    message: IMessage<
+      OCPP2_response_types.InstallCertificateResponse,
+      OCPP2_request_types.InstallCertificateRequest
+    >,
+    props?: HandlerProperties,
+  ) {
+    this._logger.debug(
+      this.createHandlerReceivedMessageLog('InstallCertificateResponse'),
+      message,
+      props,
+    );
+
+    const tenantId = message.context.tenantId;
+    const ocppConnectionName = message.context.ocppConnectionName;
+
+    const requestPayload = message.request;
+
+    await this._installCertificateHelperService.finalizeInstalledCertificate(
+      tenantId,
+      ocppConnectionName,
+      message.payload.status,
+      undefined,
+      requestPayload?.certificateType,
+      requestPayload?.certificate,
+    );
+  }
+}

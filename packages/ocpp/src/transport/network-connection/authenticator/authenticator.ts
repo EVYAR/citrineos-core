@@ -1,0 +1,66 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import type { AuthenticationOptions, IAuthenticator } from '@citrineos/base';
+import type { ILogObj } from 'tslog';
+import { Logger } from 'tslog';
+import { IncomingMessage } from 'http';
+import { UnknownStationFilter } from './unknown-station-filter.js';
+import { BasicAuthenticationFilter } from './basic-authentication-filter.js';
+import { ClientCertificateFilter } from './client-certificate-filter.js';
+import { ConnectedStationFilter } from './connected-station-filter.js';
+import { NetworkProfileFilter } from './network-profile-filter.js';
+import { getClientIdFromUrl } from '../util.js';
+
+export class Authenticator implements IAuthenticator {
+  protected _logger: Logger<ILogObj>;
+  private _unknownStationFilter: UnknownStationFilter;
+  private _connectedStationFilter: ConnectedStationFilter;
+  private _networkProfileFilter: NetworkProfileFilter;
+  private _basicAuthenticationFilter: BasicAuthenticationFilter;
+  private _clientCertificateFilter: ClientCertificateFilter;
+
+  constructor({
+    unknownStationFilter,
+    connectedStationFilter,
+    networkProfileFilter,
+    basicAuthenticationFilter,
+    clientCertificateFilter,
+    logger,
+  }: {
+    unknownStationFilter: UnknownStationFilter;
+    connectedStationFilter: ConnectedStationFilter;
+    networkProfileFilter: NetworkProfileFilter;
+    basicAuthenticationFilter: BasicAuthenticationFilter;
+    clientCertificateFilter: ClientCertificateFilter;
+    logger: Logger<ILogObj>;
+  }) {
+    this._unknownStationFilter = unknownStationFilter;
+    this._connectedStationFilter = connectedStationFilter;
+    this._networkProfileFilter = networkProfileFilter;
+    this._basicAuthenticationFilter = basicAuthenticationFilter;
+    this._clientCertificateFilter = clientCertificateFilter;
+    this._logger = logger.getSubLogger({ name: this.constructor.name });
+  }
+
+  async authenticate(
+    request: IncomingMessage,
+    tenantId: number,
+    options: AuthenticationOptions,
+  ): Promise<{ identifier: string }> {
+    const identifier = getClientIdFromUrl(request.url as string);
+    this._logger.debug(`Starting authentication for identifier: ${identifier}`);
+
+    await this._unknownStationFilter.authenticate(tenantId, identifier, request, options);
+    await this._connectedStationFilter.authenticate(tenantId, identifier, request, options);
+    await this._networkProfileFilter.authenticate(tenantId, identifier, request, options);
+    await this._basicAuthenticationFilter.authenticate(tenantId, identifier, request, options);
+    await this._clientCertificateFilter.authenticate(tenantId, identifier, request, options);
+
+    this._logger.debug(`Authentication successful for identifier: ${identifier}`);
+    return { identifier };
+  }
+}
+
+export default Authenticator;

@@ -2,8 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { DEFAULT_TENANT_ID } from '@config/defineConfig.js';
-
 /**
  * Cache namespace, used for grouping cache entries
  */
@@ -12,31 +10,22 @@ export enum CacheNamespace {
   ChargingStation = 'cs',
   TenantPathMapping = 'tpm',
   Transactions = 'tx',
+  /**
+   * Payloads of the Calls the CSMS sent and is awaiting a response to, keyed by correlationId.
+   */
+  CallRequests = 'call_req',
   Connections = 'conn',
   Protocol = 'prtcl',
+  /**
+   * Cache boot status is used to keep track of the overall boot process for Rejected or Pending.
+   * When Accepting a boot, blacklist needs to be cleared if and only if there was a previously
+   * Rejected or Pending boot. When starting to configure charger, i.e. sending GetBaseReport or
+   * SetVariables, this should only be done if configuring is not still ongoing from a previous
+   * BootNotificationRequest. Cache boot status mediates this behavior.
+   */
+  BootStatus = 'boot_status',
   Other = 'other',
 }
-
-export const PATH_DELIMITER = ':';
-export const getCacheTenantPathMappingKey = (serverId: string, path: string): string => {
-  return serverId + PATH_DELIMITER + path;
-};
-
-/*
- * Helper methods to create a unique identifier used in the cache and queues.
- * This is usually a combination between the tenantId and the ocppConnectionName.
- */
-export const IDENTIFIER_DELIMITER = ':';
-export const createIdentifier = (tenantId: number, ...args: any[]): string =>
-  [tenantId, ...(args ?? [])].join(IDENTIFIER_DELIMITER);
-export const getTenantIdFromIdentifier = (identifier: string): number => {
-  const identifierSplit = identifier.split(IDENTIFIER_DELIMITER);
-  return identifierSplit?.[0] ? Number(identifierSplit?.[0]) : DEFAULT_TENANT_ID;
-};
-export const getStationIdFromIdentifier = (identifier: string): string => {
-  const identifierSplit = identifier.split(IDENTIFIER_DELIMITER);
-  return identifierSplit?.[1] ?? identifier;
-};
 
 /**
  * Used in the Connections Namespace as the value, to represent a websocket connection

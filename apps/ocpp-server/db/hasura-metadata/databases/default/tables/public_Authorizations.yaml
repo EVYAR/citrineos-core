@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+table:
+  name: Authorizations
+  schema: public
+object_relationships:
+  - name: GroupAuthorization
+    using:
+      foreign_key_constraint_on: groupAuthorizationId
+  - name: Tariff
+    using:
+      foreign_key_constraint_on: tariffId
+  - name: Tenant
+    using:
+      foreign_key_constraint_on: tenantId
+  - name: TenantPartner
+    using:
+      foreign_key_constraint_on: tenantPartnerId
+array_relationships:
+  - name: Authorizations
+    using:
+      foreign_key_constraint_on:
+        column: groupAuthorizationId
+        table:
+          name: Authorizations
+          schema: public
+  - name: LocalListAuthorizations
+    using:
+      foreign_key_constraint_on:
+        column: authorizationId
+        table:
+          name: LocalListAuthorizations
+          schema: public
+  - name: Transactions
+    using:
+      foreign_key_constraint_on:
+        column: authorizationId
+        table:
+          name: Transactions
+          schema: public
+  - name: localListAuthorizationsByGroupauthorizationid
+    using:
+      foreign_key_constraint_on:
+        column: groupAuthorizationId
+        table:
+          name: LocalListAuthorizations
+          schema: public
+insert_permissions:
+  - role: user
+    permission:
+      check:
+        tenantId:
+          _eq: x-hasura-tenant-id
+      columns: '*'
+    comment: ''
+select_permissions:
+  - role: user
+    permission:
+      columns: '*'
+      filter:
+        tenantId:
+          _eq: x-hasura-tenant-id
+      allow_aggregations: true
+    comment: ''
+update_permissions:
+  - role: user
+    permission:
+      columns: '*'
+      filter:
+        tenantId:
+          _eq: x-hasura-tenant-id
+      check:
+        tenantId:
+          _eq: x-hasura-tenant-id
+    comment: ''
+delete_permissions:
+  - role: user
+    permission:
+      filter:
+        tenantId:
+          _eq: x-hasura-tenant-id
+    comment: ''
