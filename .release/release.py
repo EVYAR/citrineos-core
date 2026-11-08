@@ -96,6 +96,68 @@ def is_nonruntime(path):
             bool(re.search(r'(^|/)(__tests__|tests|test)/|\.(test|spec)\.[^/]+$', path)))
 
 
+def check_upstream_adoption(cfg, base, current):
+    if cfg.get('upstream') is not True:
+        fail('Version changes belong in a reviewed release PR, not a feature PR')
+    previous_config = source_at(base, '.release/component.json')
+    if not previous_config or json.loads(previous_config).get('upstream') is not True:
+        fail('An upstream adoption cannot change an ordinary component into an upstream fork')
+    paths = git('diff', '--name-only', '--diff-filter=A', base, 'HEAD', '--',
+                '.release/upstream-adoptions').splitlines()
+    candidates = []
+    for path in paths:
+        if not path.endswith('.json'):
+            continue
+        record = read_json(path)
+        if record.get('schemaVersion') != 1 or record.get('component') != cfg['name']:
+            fail(path + ': invalid upstream adoption component/schema')
+        if (not cfg.get('upstreamRepository') or
+                record.get('repository') != cfg['upstreamRepository']):
+            fail(path + ': upstream repository must match the component configuration')
+        for key in ('tag', 'reason', 'reviewDocument'):
+            if not isinstance(record.get(key), str) or not record[key].strip():
+                fail(path + ': ' + key + ' is required')
+        review = Path(record['reviewDocument'])
+        if review.is_absolute() or '..' in review.parts or not source_at('HEAD', str(review)):
+            fail(path + ': reviewDocument must identify committed repository documentation')
+        for key in ('commit', 'previousForkCommit'):
+            sha = record.get(key, '')
+            if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
+                fail(path + ': ' + key + ' must be a full commit SHA')
+            if subprocess.run(['git', 'merge-base', '--is-ancestor', sha, 'HEAD'],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+                fail(path + ': ' + key + ' must be retained in the current ancestry')
+        if subprocess.run(['git', 'merge-base', '--is-ancestor', base, record['previousForkCommit']],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+            fail(path + ': the previous fork must include the comparison base')
+        if not subprocess.run(['git', 'merge-base', '--is-ancestor', record['commit'],
+                               record['previousForkCommit']], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode:
+            fail(path + ': the selected upstream was already included before this adoption')
+        upstream_source = source_at(record['commit'], cfg['versionFile'])
+        if not upstream_source:
+            fail(path + ': selected upstream version source is unavailable')
+        upstream_version = (json.loads(upstream_source).get('version')
+                            if cfg['versionFile'].endswith('.json') else upstream_source.strip())
+        if upstream_version == current:
+            candidates.append(record)
+    if len(candidates) != 1:
+        fail('Version adoption needs exactly one new upstream record matching the vendor version')
+    selected = candidates[0]
+    package_paths = git('ls-tree', '-r', '--name-only', selected['commit'], '--',
+                        'package.json', 'apps', 'packages').splitlines()
+    for path in package_paths:
+        if path != 'package.json' and not re.fullmatch(r'(apps|packages)/[^/]+/package\.json', path):
+            continue
+        upstream_package = json.loads(source_at(selected['commit'], path))
+        if 'version' not in upstream_package:
+            continue
+        adopted_source = source_at('HEAD', path)
+        if (not adopted_source or
+                json.loads(adopted_source).get('version') != upstream_package['version']):
+            fail(path + ': preserve the selected upstream package version')
+
+
 def check(base, release=False):
     cfg = config()
     current = version(cfg)
@@ -146,13 +208,22 @@ def check(base, release=False):
     else:
         if not new:
             fail('Add .release/changes/<unique-name>.json declaring patch, minor, major or none')
+        added_adoptions = [path for path in git('diff', '--name-only', '--diff-filter=A', base,
+                          'HEAD', '--', '.release/upstream-adoptions').splitlines()
+                           if path.endswith('.json')]
+        if added_adoptions and not (old_version and current != old_version):
+            fail('New upstream adoption records require an actual vendor version change')
         if old_version and current != old_version:
-            fail('Version changes belong in a reviewed release PR, not a feature PR')
+            check_upstream_adoption(cfg, base, current)
         if all(x['type'] == 'none' for x in new) and any(not is_nonruntime(p) for p in changed):
             fail('Runtime/package changes cannot declare type none')
         modified = git('diff', '--name-only', '--diff-filter=MD', base, 'HEAD', '--', '.release/changes').splitlines()
         if modified:
             fail('Pending change declarations are append-only until consumed by a release PR')
+        changed_adoptions = git('diff', '--name-only', '--diff-filter=MD', base, 'HEAD', '--',
+                                '.release/upstream-adoptions').splitlines()
+        if changed_adoptions:
+            fail('Upstream adoption records are append-only')
     for lock in ('package-lock.json', 'npm-shrinkwrap.json'):
         if Path(lock).exists() and cfg['versionFile'] == 'package.json':
             data = read_json(lock)
