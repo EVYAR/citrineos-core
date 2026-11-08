@@ -509,21 +509,20 @@ describe('StatusNotificationRequestOcpp2Handler', () => {
       DEFAULT_TENANT_ID,
       STATION_ID,
       payload,
+      message.context,
+      message.protocol,
     );
     expect(ocppSender.sendCallResultWithMessage).toHaveBeenCalledOnce();
     expect(ocppSender.sendCallResultWithMessage).toHaveBeenCalledWith(message, {});
   });
 
-  it('logs a processing failure and still acknowledges', async () => {
+  it('propagates a durable processing failure without acknowledging', async () => {
     const failure = new Error('constraint violation');
     statusNotificationService.processStatusNotification.mockRejectedValue(failure);
     const message = makeMessage(OCPP_CallAction.StatusNotification, payload);
 
-    await handler.handle(message);
+    await expect(handler.handle(message)).rejects.toBe(failure);
 
-    expect(logger.error).toHaveBeenCalledOnce();
-    expect(logger.error).toHaveBeenCalledWith('Failed to process status notification', failure);
-    expect(ocppSender.sendCallResultWithMessage).toHaveBeenCalledOnce();
-    expect(ocppSender.sendCallResultWithMessage).toHaveBeenCalledWith(message, {});
+    expect(ocppSender.sendCallResultWithMessage).not.toHaveBeenCalled();
   });
 });

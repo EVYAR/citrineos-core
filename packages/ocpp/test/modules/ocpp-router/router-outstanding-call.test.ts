@@ -27,6 +27,7 @@ import type { CallbackUrlNotifier } from '@modules/ocpp-router/callback-url-noti
 import { MemoryCache } from '@citrineos/base';
 import { ConnectionNotFoundError, type MessagesExchangeSink } from '@/transport/index.js';
 import { createTestContainer, getTestInstance } from '@test/test-container.js';
+import { makeStatusIngressRepository } from '@test/providers/status-ingress-repository.js';
 import {
   aMockDeadLetterPublisher,
   aMockReemitter,
@@ -84,6 +85,7 @@ describe('MessageRouterImpl with a MemoryCache', () => {
         setChargingStationIsOnlineAndOCPPVersion: vi.fn().mockResolvedValue(undefined),
         readChargingStationByOcppConnectionName: vi.fn().mockResolvedValue(undefined),
       } as unknown as IChargingStationRepository,
+      statusIngressRepository: makeStatusIngressRepository(),
       reemitter,
       deadLetterPublisher,
     });

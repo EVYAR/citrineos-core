@@ -55,8 +55,9 @@ const connector = { id: 100 } as ConnectorDto;
 
 const REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS = 5;
 const testConfig = {
+  realTimeAuthRequestTimeoutMs: REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS * 1000,
   timeouts: {
-    realTimeAuthRequestTimeoutSeconds: REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS,
+    realTimeAuthDefaultTimeoutSeconds: 15,
   },
 } as SystemConfig;
 

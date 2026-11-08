@@ -10,6 +10,7 @@ import {
   type ICache,
   type IMessageHandler,
   type IMessageSender,
+  type IWebsocketConnection,
   OcppError,
   RequestBuilder,
 } from '@citrineos/base';
@@ -41,6 +42,7 @@ import { MemoryCache } from '@citrineos/base';
 import type { CallbackUrlNotifier } from '@modules/ocpp-router/callback-url-notifier.js';
 import type { MessagesExchangeSink } from '@/transport/index.js';
 import { createTestContainer, getTestInstance } from '@test/test-container.js';
+import { makeStatusIngressRepository } from '@test/providers/status-ingress-repository.js';
 import { ConnectionNotFoundError } from '@/transport/index.js';
 import {
   aMockDeadLetterPublisher,
@@ -172,6 +174,7 @@ describe('MessageRouterImpl', () => {
       networkHook,
       ocppValidator: undefined,
       chargingStationRepository,
+      statusIngressRepository: makeStatusIngressRepository(),
       reemitter,
       deadLetterPublisher,
     });
@@ -1154,6 +1157,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
@@ -1594,6 +1598,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
@@ -1619,6 +1624,18 @@ describe('MessageRouterImpl', () => {
           OCPP2_0_1.RegistrationStatusEnumType.Pending,
         );
       }
+      await memoryCache.set(
+        CacheNamespace.Connections,
+        JSON.stringify({
+          id: 'fixture-server',
+          allowUnknownChargingStations: false,
+          timeConnected: timestamp.toISOString(),
+          protocol,
+          statusIngressConnection: 'fixture-socket',
+        } satisfies IWebsocketConnection),
+        IDENTIFIER,
+      );
+      await router.registerConnection(TENANT_ID, STATION_ID, protocol, undefined, 'fixture-socket');
       await memoryCache.set(
         CacheNamespace.BootStatus,
         OCPP2_0_1.RegistrationStatusEnumType.Pending,
@@ -1695,6 +1712,7 @@ describe('MessageRouterImpl', () => {
           JSON.stringify([MessageTypeId.Call, 'triggered-1', triggeredAction, {}]),
           timestamp,
           protocol,
+          'fixture-socket',
         );
 
         expect(callErrorsSent()).toEqual([]);
@@ -1779,6 +1797,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
@@ -1843,6 +1862,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });

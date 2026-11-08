@@ -324,7 +324,7 @@ describe('OidcTokenProvider', () => {
   };
 
   function tokenResponse(accessToken: string, expiresIn = 3600) {
-    return { ok: true, json: async () => ({ access_token: accessToken, expires_in: expiresIn }) };
+    return Response.json({ access_token: accessToken, expires_in: expiresIn });
   }
 
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -381,14 +381,12 @@ describe('OidcTokenProvider', () => {
   });
 
   it('throws when the token endpoint answers with an error', async () => {
-    fetchMock.mockResolvedValue({
-      ok: false,
-      statusText: 'Unauthorized',
-      text: async () => 'invalid client',
-    });
+    fetchMock.mockResolvedValue(
+      new Response('invalid client', { status: 401, statusText: 'Unauthorized' }),
+    );
     const provider = new OidcTokenProvider(oidcConfig, hiddenLogger);
 
-    await expect(provider.getToken()).rejects.toThrow('Failed to fetch OIDC token: Unauthorized');
+    await expect(provider.getToken()).rejects.toEqual(new Error('OIDC token request failed'));
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

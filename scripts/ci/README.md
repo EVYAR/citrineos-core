@@ -79,3 +79,10 @@ It preserves the normal monorepo aliases, test selection and timeouts. Each proj
 its own guard receipt and actual runtime JSON; the combined report sums only those actual
 assertions. Native TSC still runs separately after successful builds even if runtime tests
 fail, and a runtime failure remains a failing workflow.
+
+Manual backend dispatch may set `ocpp_fixture_focus=true` to run the nine reviewed OCPP
+fixture files only. PR/default dispatch remains the complete four-project runtime lane.
+The focused receipt is labelled OCPP_NINE_FIXTURE_FILES_NOT_FULL_BACKEND_ACCEPTANCE and keeps
+native TypeScript checks separate. Its in-memory receipt fixture models serialized ownership,
+identity and rollback only; projection application fails without an explicit database fixture.
+It does not replace or claim PostgreSQL atomicity/integration acceptance.

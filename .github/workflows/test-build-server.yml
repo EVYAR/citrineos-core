@@ -17,6 +17,11 @@ on:
       - '.nvmrc'
       - '.github/workflows/test-build-server.yml'
   workflow_dispatch:
+    inputs:
+      ocpp_fixture_focus:
+        description: 'Run only the reviewed OCPP fixture regression files (not full backend acceptance)'
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -49,15 +54,21 @@ jobs:
       - name: Build OCPI closure sequentially
         id: ocpi
         run: python3 scripts/ci/bounded.py run --stage build-ocpi --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/ocpi-server...' run build
-      - name: Runtime backend tests including testcontainers and all twelve Boot archive cases
+      - name: Runtime backend projects or explicit manual OCPP fixture scope
+        env:
+          OCPP_FIXTURE_FOCUS: ${{ inputs.ocpp_fixture_focus && 'true' || 'false' }}
         shell: bash
         run: |
           set -uo pipefail
-          status=0
-          for project in base dal ocpp ocpi; do
-            python3 scripts/ci/bounded.py run --stage "runtime-$project" --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project "$project" --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="reports/runtime-$project.json" || status=$?
-          done
-          exit "$status"
+          if [ "$OCPP_FIXTURE_FOCUS" = 'true' ]; then
+            python3 scripts/ci/bounded.py run --stage runtime-ocpp-fixtures --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project ocpp --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile=reports/runtime-ocpp-fixtures.json packages/ocpp/test/apis/permission-catalog.test.ts packages/ocpp/test/server/server-and-auth-gaps.test.ts packages/ocpp/test/modules/ocpp-router/message-router-impl.test.ts packages/ocpp/test/modules/ocpp-router/router-outstanding-call.test.ts packages/ocpp/test/modules/transactions/status-notification-service.test.ts packages/ocpp/test/modules/transactions/transaction-service.test.ts packages/ocpp/test/services/authorizer/real-time-authorizer.test.ts packages/ocpp/test/handlers/requests/2/status-and-monitoring-requests.test.ts packages/ocpp/test/providers/status-ingress-repository.test.ts
+          else
+            status=0
+            for project in base dal ocpp ocpi; do
+              python3 scripts/ci/bounded.py run --stage "runtime-$project" --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project "$project" --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="reports/runtime-$project.json" || status=$?
+            done
+            exit "$status"
+          fi
       - name: Native TypeScript test checks and input discovery (not runtime case counts)
         if: ${{ !cancelled() && steps.core.outcome == 'success' && steps.ocpi.outcome == 'success' }}
         shell: bash
@@ -67,7 +78,11 @@ jobs:
             python3 scripts/ci/bounded.py run --stage "typecheck-$project" --profile typecheck -- pnpm exec tsc -p "packages/$project/tsconfig.json" --listFiles
           done
       - name: Source-bound runtime versus TypeScript evidence
+        if: ${{ success() && !inputs.ocpp_fixture_focus }}
         run: python3 scripts/ci/backend-report.py
+      - name: Explicit focused evidence (never full backend acceptance)
+        if: ${{ success() && inputs.ocpp_fixture_focus }}
+        run: python3 scripts/ci/ocpp-fixture-report.py
       - name: Clean only this job's newly created labelled containers
         if: always()
         run: python3 scripts/ci/bounded.py cleanup

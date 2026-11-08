@@ -52,6 +52,7 @@ describe('TransactionService', () => {
 
     transactionRepositoryMock = {
       readAllActiveTransactionsByAuthorizationId: vi.fn(),
+      readTransactionByStationIdAndTransactionId: vi.fn().mockResolvedValue(undefined),
       updateTransactionByStationIdAndTransactionId: vi.fn(),
     } as unknown as Mocked<IMeterValueRepository & ITransactionRepository>;
 
@@ -205,10 +206,17 @@ describe('TransactionService', () => {
       auth.status = AuthorizationStatusEnum.Accepted;
     });
     authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
+    const own = aTransaction((transaction) => {
+      transaction.id = 1;
+    });
+    const other = aTransaction((transaction) => {
+      transaction.id = 2;
+    });
     transactionRepositoryMock.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([
-      aTransaction(),
-      aTransaction(),
+      own,
+      other,
     ]);
+    transactionRepositoryMock.readTransactionByStationIdAndTransactionId.mockResolvedValue(own);
     authorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
     realTimeAuthorizer.authorize.mockResolvedValue(AuthorizationStatusEnum.Accepted);
 
@@ -223,6 +231,13 @@ describe('TransactionService', () => {
       messageContext,
     );
 
+    expect(
+      transactionRepositoryMock.readTransactionByStationIdAndTransactionId,
+    ).toHaveBeenCalledWith(
+      DEFAULT_TENANT_ID,
+      messageContext.ocppConnectionName,
+      transactionEventRequest.transactionInfo.transactionId,
+    );
     expect(response.idTokenInfo?.status).toBe(OCPP2_0_1.AuthorizationStatusEnumType.ConcurrentTx);
   });
 
@@ -434,6 +449,7 @@ describe('TransactionService', () => {
     beforeEach(() => {
       transactionRepositoryMock = {
         readAllActiveTransactionsByAuthorizationId: vi.fn(),
+        readTransactionByStationIdAndTransactionId: vi.fn().mockResolvedValue(undefined),
         deactivateActiveTransactionsByStationIdAndEvseId: vi
           .fn()
           .mockResolvedValue([{ id: 1, transactionId: 'txn-old', isActive: false }]),

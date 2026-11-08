@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Refresh OCPP test fixtures for typed status-ingress ownership/receipt transactions, explicit machine permission grants, streamed OIDC responses, current timeout configuration, transaction ownership reads and durable status-handler acknowledgement boundaries; add an explicitly scoped hosted fixture dispatch without changing application code."
+}

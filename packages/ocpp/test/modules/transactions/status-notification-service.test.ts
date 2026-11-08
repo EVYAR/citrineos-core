@@ -14,6 +14,7 @@ import {
 } from '@citrineos/dal';
 import { StatusNotificationService } from '@modules/transactions/status-notification-service.js';
 import { createTestContainer, getTestInstance } from '@test/test-container.js';
+import { makeStatusIngressRepository } from '@test/providers/status-ingress-repository.js';
 import { OCPP1_6, OCPP2_0_1 } from '@citrineos/types';
 import { beforeEach, describe, expect, it, type Mocked, vi } from 'vitest';
 import {
@@ -114,6 +115,7 @@ describe('StatusNotificationService', () => {
       chargingStationRepository: locationRepository,
       evseRepository: locationRepository,
       statusNotificationRepository: locationRepository,
+      statusIngressRepository: makeStatusIngressRepository(),
       cache,
       networkAlertService,
     });
