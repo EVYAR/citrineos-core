@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Validate reviewed upstream stable adoption through append-only source pins, ancestry, repository and exact vendor package versions while retaining ordinary release, declaration and publication gates."
+}
