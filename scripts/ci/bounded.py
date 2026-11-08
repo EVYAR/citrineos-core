@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ephemeral hosted-job resource guard. No application, Docker or subprocess starts on import."""
 import argparse
+from datetime import datetime
 from enum import Enum
 import fcntl
 import http.client
@@ -78,8 +79,8 @@ def group_rss(pid, proc=Path('/proc')):
 
 
 def container_memory(stats):
-    memory = stats.get('memory_stats', {})
-    detail = memory.get('stats', {})
+    memory = stats.get('memory_stats') or {}
+    detail = memory.get('stats') or {}
     if 'anon' in detail:
         return int(detail['anon'])
     if 'rss' in detail:
@@ -140,6 +141,75 @@ class Docker:
 def owned_container(container, state):
     return (container['Id'] not in state['baselineContainers'] and
             container.get('Labels', {}).get(LABEL) == state['nonce'])
+
+
+class StatsDecision(str, Enum):
+    MISSING_INSPECT = 'missing-inspect'
+    INSPECT_UNAVAILABLE = 'inspect-unavailable'
+    OWNERSHIP_MISMATCH = 'identity-or-ownership-mismatch'
+    LIMITS_CHANGED = 'limits-changed'
+    STILL_RUNNING = 'still-running'
+    INCOMPLETE_STOP = 'incomplete-stop'
+    VERIFIED_EXITED = 'verified-exited'
+
+
+def stopped_owned_inspect(info, identity, state, cap, original_limits):
+    if info is None:
+        return StatsDecision.MISSING_INSPECT
+    if not isinstance(info, dict):
+        return StatsDecision.INCOMPLETE_STOP
+    config = info.get('Config') or {}
+    labels = config.get('Labels') or {} if isinstance(config, dict) else {}
+    if (info.get('Id') != identity or not isinstance(labels, dict)
+            or not owned_container({'Id': info.get('Id'), 'Labels': labels}, state)):
+        return StatsDecision.OWNERSHIP_MISMATCH
+    host = info.get('HostConfig') or {}
+    if not isinstance(host, dict):
+        return StatsDecision.LIMITS_CHANGED
+    memory = host.get('Memory', 0)
+    swap = host.get('MemorySwap')
+    if not (type(memory) is int and type(swap) is int and 0 < memory <= cap
+            and (memory, swap) == original_limits and swap == memory):
+        return StatsDecision.LIMITS_CHANGED
+    observed = info.get('State') or {}
+    if not isinstance(observed, dict):
+        return StatsDecision.INCOMPLETE_STOP
+    if observed.get('Running') is True:
+        return StatsDecision.STILL_RUNNING
+    finished = observed.get('FinishedAt')
+    if not isinstance(finished, str):
+        return StatsDecision.INCOMPLETE_STOP
+    try:
+        finished_at = datetime.fromisoformat(finished.replace('Z', '+00:00'))
+    except ValueError:
+        return StatsDecision.INCOMPLETE_STOP
+    if (observed.get('Running') is False and observed.get('Status') == 'exited'
+            and observed.get('Restarting') is False and observed.get('Paused') is False
+            and observed.get('Dead') is False and isinstance(observed.get('OOMKilled'), bool)
+            and finished_at.tzinfo is not None and finished_at.year > 1):
+        return StatsDecision.VERIFIED_EXITED
+    return StatsDecision.INCOMPLETE_STOP
+
+
+def capture_container_recheck(path, identity, info):
+    fields = ('Running', 'Status', 'FinishedAt', 'OOMKilled', 'Restarting', 'Paused', 'Dead', 'ExitCode')
+    def bounded(value):
+        if isinstance(value, str):
+            return value[:256]
+        return value if value is None or isinstance(value, (bool, int)) else '[invalid type]'
+    observed = (info.get('State') or {}) if isinstance(info, dict) else {}
+    config = (info.get('Config') or {}) if isinstance(info, dict) else {}
+    labels = (config.get('Labels') or {}) if isinstance(config, dict) else {}
+    observed = observed if isinstance(observed, dict) else {}
+    labels = labels if isinstance(labels, dict) else {}
+    snapshot = {'requestedId': bounded(identity), 'capturedAt': time.time(), 'inspectPresent': info is not None,
+                'observedId': bounded(info.get('Id')) if isinstance(info, dict) else None,
+                'ownershipLabel': bounded(labels.get(LABEL)),
+                'state': {key: bounded(observed.get(key)) for key in fields}}
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a') as output:
+        os.fchmod(output.fileno(), 0o600)
+        output.write(json.dumps(snapshot) + '\n')
 
 
 class BudgetProxy(socketserver.ThreadingUnixStreamServer):
@@ -324,7 +394,8 @@ def run(root, stage, profile, command):
     heap, rss_limit, docker_limit, timeout = PROFILES[profile]
     directory = root / 'reports/ci'
     target = directory / (stage + '.json')
-    if target.exists():
+    private_rechecks = directory / (stage + '-container-stats.private.jsonl')
+    if target.exists() or private_rechecks.exists():
         raise RuntimeError('Stage evidence already exists; automatic retry refused')
     result = {'sourceSha': state['sourceSha'], 'stage': stage, 'profile': profile, 'heapMiB': heap,
               'rssBudgetMiB': rss_limit, 'dockerRssBudgetMiB': docker_limit, 'reserveMiB': RESERVE,
@@ -345,6 +416,8 @@ def run(root, stage, profile, command):
     stopped = False
     guard_phase = 'setup'
     container_id = None
+    stats_rechecks = stopped_rechecks = 0
+    stats_decisions = {}
     def stop_owned(*_):
         nonlocal stopped
         stopped = True
@@ -396,9 +469,34 @@ def run(root, stage, profile, command):
                         if info['State']['Running']:
                             guard_phase = 'container-stats-request'
                             stats = docker.request('GET', '/containers/' + container['Id'] + '/stats?stream=false&one-shot=true')
-                            if stats is not None:
-                                guard_phase = 'container-stats-memory'
-                                docker_rss += container_memory(stats) / MIB
+                            guard_phase = 'container-stats-memory'
+                            try:
+                                docker_rss += container_memory(stats if stats is not None else {}) / MIB
+                            except GuardInvariantError as error:
+                                if error.code != InvariantCode.MEMORY_STATS:
+                                    raise
+                                guard_phase = 'container-stats-fresh-inspect'
+                                try:
+                                    fresh = docker.request('GET', '/containers/' + container['Id'] + '/json')
+                                except (GuardInvariantError, OSError, ValueError):
+                                    decision = StatsDecision.INSPECT_UNAVAILABLE
+                                    stats_decisions[decision.value] = stats_decisions.get(decision.value, 0) + 1
+                                    raise
+                                decision = stopped_owned_inspect(fresh, container['Id'], state, cap,
+                                                                 (host['Memory'], host['MemorySwap']))
+                                stats_decisions[decision.value] = stats_decisions.get(decision.value, 0) + 1
+                                guard_phase = 'container-stats-private-capture'
+                                capture_container_recheck(private_rechecks, container['Id'], fresh)
+                                stats_rechecks += 1
+                                guard_phase = 'container-stats-fresh-verification'
+                                if decision == StatsDecision.OWNERSHIP_MISMATCH:
+                                    raise GuardInvariantError(InvariantCode.OWNERSHIP)
+                                if decision == StatsDecision.LIMITS_CHANGED:
+                                    raise GuardInvariantError(InvariantCode.LIVE_LIMITS)
+                                if decision != StatsDecision.VERIFIED_EXITED:
+                                    raise GuardInvariantError(InvariantCode.MEMORY_STATS)
+                                stopped_rechecks += 1
+                                info = fresh
                         if info['State']['OOMKilled']:
                             result['terminationReason'] = 'owned-container-oom'
                 maximum, docker_maximum, minimum = max(maximum, rss), max(docker_maximum, docker_rss), min(minimum, available)
@@ -457,7 +555,9 @@ def run(root, stage, profile, command):
         for sig, handler in previous.items():
             signal.signal(sig, handler)
         os.close(lock)
-        result.update(seconds=round(time.monotonic() - started, 2), maxOwnedRssMiB=round(maximum, 2),
+        result.update(containerStatsRechecks=stats_rechecks, verifiedStoppedRechecks=stopped_rechecks,
+                      containerStatsDecisions=stats_decisions,
+                      seconds=round(time.monotonic() - started, 2), maxOwnedRssMiB=round(maximum, 2),
                       maxOwnedContainerRssMiB=round(docker_maximum, 2), minAvailableMiB=minimum)
         record(target, result)
     print(json.dumps(result))

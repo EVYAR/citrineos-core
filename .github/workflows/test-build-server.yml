@@ -90,6 +90,8 @@ jobs:
         if: always()
         with:
           name: backend-evidence-${{ github.sha }}
-          path: reports/
+          path: |
+            reports/
+            !reports/ci/*.private.jsonl
           retention-days: 7
           if-no-files-found: warn

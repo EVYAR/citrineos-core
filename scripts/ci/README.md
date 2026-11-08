@@ -95,3 +95,32 @@ shows one possible lifecycle race; it does not prove that historical cause. The 
 hosted DAL diagnostic run 42469015168 completed 1085 runtime assertions including all twelve
 Boot archive cases, with zero typed-discovery entries; this is DAL-only evidence, not full
 backend acceptance.
+
+## Fresh container evidence after unavailable statistics
+
+A running inspect snapshot followed by unavailable stats now triggers exactly one fresh inspect
+of that same already-owned container ID. Zero RSS is accepted only when the fresh inspect
+still proves the exact ID and job ownership label, requires Memory and MemorySwap to equal
+the original inspected values exactly (a smaller valid cap also fails), and reports Running=false,
+Status=exited, no paused/restarting/dead state, and a valid nonzero timezone-aware FinishedAt.
+A missing/deleted inspect, changed owner/ID/limits, still-running state, or incomplete stop
+state fails closed. There is no last-known RSS substitution, grace timer or stats retry.
+An OOM flag still fails the stage, and an independent native process failure retains its exit.
+All profiles, reserve, aggregate accounting and owned cleanup rules are unchanged.
+
+Each recheck writes a bounded allowlist of ID, ownership label and State fields to a mode-0600
+`*-container-stats.private.jsonl` file. Environment variables, arbitrary labels, daemon error
+bodies and health logs are never copied. The Core repository is public, so these snapshots
+remain runner-private and are excluded from the normal uploaded backend artifact. Public
+receipts retain recheck/verified-stopped counts and fixed decision-enum counts: `missing-inspect`,
+`inspect-unavailable`, `identity-or-ownership-mismatch`, `limits-changed`, `still-running`,
+`incomplete-stop` and `verified-exited`. This summary contains no IDs, ownership nonces,
+timestamps, environment values or raw errors. Runner-private snapshots are ephemeral
+unless root separately arranges private collection. This change does not provide a private
+external artifact sink or claim that a previous missing-stats failure was a stopped-container race.
+
+Standard-library fixtures use real temporary Unix HTTP sockets and tiny owned child processes,
+not Docker or application services. They distinguish stop-between-inspect/stats from still-running
+empty stats, missing fresh inspect, changed ID/ownership/limits, incomplete/restarting state,
+OOM and nonzero native exits. They do not establish DAL/OCPP acceptance. A new full hosted run
+requires root's review of this follow-up diff.
