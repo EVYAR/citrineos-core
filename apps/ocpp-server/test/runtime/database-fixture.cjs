@@ -447,29 +447,59 @@ function makeFixture(grant) {
       );
     }
     const archiveRoot = 'docs/upstream/historical-migrations';
-    const retiredArchives = fs
-      .readdirSync(path.join(root, archiveRoot))
-      .filter((entry) => entry.endsWith('.ts.txt'))
-      .sort()
-      .map((entry) => {
-        const originalPath = 'apps/ocpp-server/migrations/' + entry.slice(0, -4);
-        const archivedPath = archiveRoot + '/' + entry;
-        const archived = fs.readFileSync(path.join(root, archivedPath));
-        const original = git('show', baseline + ':' + originalPath);
-        assert.deepEqual(archived, original, 'Historic source archive must remain byte-identical');
-        const stem = entry.slice(0, -7);
-        // These spellings classify actual rows only; no alias is inserted into SequelizeMeta.
-        const knownSpellings = [stem + '.js', stem + '.ts', stem + '.ts.txt'];
-        return {
-          archivedPath,
-          archiveSha256: sha(archived),
-          originalCommit: baseline,
-          originalPath,
-          originalSha256: sha(original),
-          recordedNamesBefore: before.filter((value) => knownSpellings.includes(value)),
-          recordedNamesAfter: after.filter((value) => knownSpellings.includes(value)),
-        };
-      });
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(root, archiveRoot, 'provenance.json'), 'utf8'),
+    );
+    assert.equal(manifest.schemaVersion, 1);
+    assert.equal(manifest.baselineCommit, baseline);
+    assert.ok(Array.isArray(manifest.entries) && manifest.entries.length > 0);
+    const archivedPaths = new Set();
+    const originalPaths = new Set();
+    const retiredArchives = manifest.entries.map((entry) => {
+      assert.ok(entry && typeof entry === 'object');
+      assert.equal(typeof entry.archivedPath, 'string');
+      assert.equal(typeof entry.originalPath, 'string');
+      const filename = path.posix.basename(entry.originalPath);
+      assert.match(filename, /^[0-9]{14}-[a-z0-9-]+\.ts$/);
+      assert.equal(entry.originalPath, 'apps/ocpp-server/migrations/' + filename);
+      assert.equal(entry.archivedPath, archiveRoot + '/' + filename + '.txt');
+      assert.ok(!archivedPaths.has(entry.archivedPath), 'Duplicate archive provenance');
+      assert.ok(!originalPaths.has(entry.originalPath), 'Duplicate original migration');
+      archivedPaths.add(entry.archivedPath);
+      originalPaths.add(entry.originalPath);
+      assert.match(entry.originalCommit, /^[a-f0-9]{40}$/);
+      assert.match(entry.sha256, /^[a-f0-9]{64}$/);
+      assert.ok(typeof entry.reason === 'string' && entry.reason.trim().length > 0);
+      git('merge-base', '--is-ancestor', entry.originalCommit, manifest.baselineCommit);
+      const archiveFile = path.join(root, entry.archivedPath);
+      const stat = fs.lstatSync(archiveFile);
+      assert.ok(stat.isFile() && !stat.isSymbolicLink(), 'Archive must be a regular file');
+      const archived = fs.readFileSync(archiveFile);
+      const original = git('show', entry.originalCommit + ':' + entry.originalPath);
+      assert.equal(sha(original), entry.sha256, 'Original source SHA differs from manifest');
+      assert.equal(sha(archived), entry.sha256, 'Archive SHA differs from manifest');
+      assert.deepEqual(archived, original, 'Historic source archive must remain byte-identical');
+      const stem = filename.slice(0, -3);
+      // These spellings classify actual rows only; no alias is inserted into SequelizeMeta.
+      const knownSpellings = [stem + '.js', stem + '.ts', stem + '.ts.txt'];
+      return {
+        archivedPath: entry.archivedPath,
+        archiveSha256: sha(archived),
+        originalCommit: entry.originalCommit,
+        originalPath: entry.originalPath,
+        originalSha256: sha(original),
+        recordedNamesBefore: before.filter((value) => knownSpellings.includes(value)),
+        recordedNamesAfter: after.filter((value) => knownSpellings.includes(value)),
+      };
+    });
+    assert.deepEqual(
+      fs
+        .readdirSync(path.join(root, archiveRoot))
+        .filter((entry) => entry.endsWith('.ts.txt'))
+        .sort(),
+      [...archivedPaths].map((entry) => path.posix.basename(entry)).sort(),
+      'Manifest must describe the exact archive file set',
+    );
     const c = await connect(name);
     let database;
     try {
