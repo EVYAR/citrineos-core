@@ -447,9 +447,30 @@ function makeFixture(grant) {
       );
     }
     const archiveRoot = 'docs/upstream/historical-migrations';
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(root, archiveRoot, 'provenance.json'), 'utf8'),
+    const archiveDirectory = path.join(fs.realpathSync(root), archiveRoot);
+    assert.equal(
+      fs.realpathSync(archiveDirectory),
+      archiveDirectory,
+      'Historical archive directory must not traverse symlinks',
     );
+    const readArchiveFile = (filename) => {
+      assert.equal(path.basename(filename), filename, 'Archive filename must be a basename');
+      const file = path.join(archiveDirectory, filename);
+      assert.equal(
+        path.dirname(file),
+        archiveDirectory,
+        'Archive path escapes canonical directory',
+      );
+      const stat = fs.lstatSync(file);
+      assert.ok(stat.isFile() && !stat.isSymbolicLink(), `${filename} must be a regular file`);
+      assert.equal(
+        fs.realpathSync(file),
+        file,
+        `${filename} escapes canonical archive directory`,
+      );
+      return fs.readFileSync(file);
+    };
+    const manifest = JSON.parse(readArchiveFile('provenance.json').toString('utf8'));
     assert.equal(manifest.schemaVersion, 1);
     assert.equal(manifest.baselineCommit, baseline);
     assert.ok(Array.isArray(manifest.entries) && manifest.entries.length > 0);
@@ -471,14 +492,16 @@ function makeFixture(grant) {
       assert.match(entry.sha256, /^[a-f0-9]{64}$/);
       assert.ok(typeof entry.reason === 'string' && entry.reason.trim().length > 0);
       git('merge-base', '--is-ancestor', entry.originalCommit, manifest.baselineCommit);
-      const archiveFile = path.join(root, entry.archivedPath);
-      const stat = fs.lstatSync(archiveFile);
-      assert.ok(stat.isFile() && !stat.isSymbolicLink(), 'Archive must be a regular file');
-      const archived = fs.readFileSync(archiveFile);
+      const archived = readArchiveFile(filename + '.txt');
       const original = git('show', entry.originalCommit + ':' + entry.originalPath);
-      assert.equal(sha(original), entry.sha256, 'Original source SHA differs from manifest');
-      assert.equal(sha(archived), entry.sha256, 'Archive SHA differs from manifest');
-      assert.deepEqual(archived, original, 'Historic source archive must remain byte-identical');
+      const originalSha256 = sha(original);
+      const archiveSha256 = sha(archived);
+      assert.equal(originalSha256, entry.sha256, `${filename}: original source SHA mismatch`);
+      assert.equal(archiveSha256, entry.sha256, `${filename}: archive SHA mismatch`);
+      assert.ok(
+        archived.equals(original),
+        `${filename}: source/archive byte mismatch (${originalSha256}/${archiveSha256})`,
+      );
       const stem = filename.slice(0, -3);
       // These spellings classify actual rows only; no alias is inserted into SequelizeMeta.
       const knownSpellings = [stem + '.js', stem + '.ts', stem + '.ts.txt'];

@@ -31,6 +31,8 @@ existing rows. Application wiring and normal CLI discovery are unchanged.
 
 Unique new runtime behavior: none. New migration/ledger mutations: none. New legacy alias
 resolvers: none. Source/provenance rejection checks in `migrationProof` cover malformed
-paths/basenames, duplicate entries, mismatched file sets, symlinks, invalid digests,
-non-ancestor source commits and archive/source byte divergence. No tests, installs,
+paths/basenames, duplicate entries, mismatched file sets, symlinked manifests/archives
+and directory traversal, invalid digests,
+non-ancestor source commits and archive/source byte divergence. Body mismatch diagnostics
+contain filenames and hashes only, never raw source buffers. No tests, installs,
 builds, services or remote calls were run for this change; parent verification is pending.
