@@ -29,7 +29,6 @@ import {
   type OcppRequest,
   type OcppResponse,
   OCPPVersion,
-  type OCPPVersionType,
   type RawCall,
   type RawCallError,
   type RawCallResult,
