@@ -86,3 +86,12 @@ The focused receipt is labelled OCPP_NINE_FIXTURE_FILES_NOT_FULL_BACKEND_ACCEPTA
 native TypeScript checks separate. Its in-memory receipt fixture models serialized ownership,
 identity and rollback only; projection application fails without an explicit database fixture.
 It does not replace or claim PostgreSQL atomicity/integration acceptance.
+
+The DAL diagnostic-only integration records safe invariant codes, current guard phase,
+container identity and HTTP status when an invariant fails. It does not retain raw daemon
+response bodies or change thresholds, ownership, failure behavior or cleanup. The historical
+unclassified guard failure's cause remains unknown. A classified empty-stats socket fixture
+shows one possible lifecycle race; it does not prove that historical cause. The separate
+hosted DAL diagnostic run 42469015168 completed 1085 runtime assertions including all twelve
+Boot archive cases, with zero typed-discovery entries; this is DAL-only evidence, not full
+backend acceptance.

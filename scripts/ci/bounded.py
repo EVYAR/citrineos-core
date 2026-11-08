@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Ephemeral hosted-job resource guard. No application, Docker or subprocess starts on import."""
 import argparse
+from enum import Enum
 import fcntl
 import http.client
 import json
@@ -32,6 +33,20 @@ PROFILES = {
     'operator': (4096, 4608, 0, 1500),
     'e2e': (1536, 2304, 7168, 3600),
 }
+
+
+class InvariantCode(str, Enum):
+    DOCKER_RESPONSE = 'docker-response-invalid'
+    MEMORY_STATS = 'container-memory-statistics-unavailable'
+    OWNERSHIP = 'unexpected-container-ownership'
+    LIVE_LIMITS = 'live-container-budget-mismatch'
+
+
+class GuardInvariantError(RuntimeError):
+    def __init__(self, code: InvariantCode, http_status: int | None = None):
+        super().__init__(code.value)
+        self.code = code
+        self.http_status = http_status
 
 
 def hosted(environment):
@@ -71,7 +86,7 @@ def container_memory(stats):
         return int(detail['rss'])
     if 'usage' in memory:
         return int(memory['usage'])
-    raise RuntimeError('Running container memory statistics unavailable')
+    raise GuardInvariantError(InvariantCode.MEMORY_STATS)
 
 
 def bounded_create(options, nonce, cap):
@@ -113,7 +128,7 @@ class Docker:
             response = client.getresponse()
             body = response.read(2097153)
             if response.status not in (200, 204, 404) or len(body) > 2097152:
-                raise RuntimeError('Docker guard request failed')
+                raise GuardInvariantError(InvariantCode.DOCKER_RESPONSE, response.status)
             return json.loads(body) if body and response.status != 404 else None
         finally:
             client.close()
@@ -328,6 +343,8 @@ def run(root, stage, profile, command):
     maximum = docker_maximum = 0
     minimum = available
     stopped = False
+    guard_phase = 'setup'
+    container_id = None
     def stop_owned(*_):
         nonlocal stopped
         stopped = True
@@ -354,26 +371,33 @@ def run(root, stage, profile, command):
             proc = subprocess.Popen(command, cwd=root, env=environment, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             result['ownedProcessGroup'] = proc.pid
             while proc.poll() is None:
+                guard_phase, container_id = 'host-and-process-memory', None
                 available = available_mib()
                 rss = group_rss(proc.pid) / MIB
                 docker_rss = 0
                 if state['docker']:
                     docker = Docker()
+                    guard_phase = 'container-list'
                     for container in docker.containers():
                         if container['Id'] in state['baselineContainers']:
                             continue
+                        guard_phase, container_id = 'container-ownership', container['Id']
                         if not owned_container(container, state):
-                            raise RuntimeError('Unexpected unlabelled container; refusing to adopt or delete it')
+                            raise GuardInvariantError(InvariantCode.OWNERSHIP)
+                        guard_phase = 'container-inspect'
                         info = docker.request('GET', '/containers/' + container['Id'] + '/json')
                         if info is None:
                             continue
+                        guard_phase = 'container-limits'
                         host = info['HostConfig']
                         cap = (4096 if profile == 'e2e' else 512) * MIB
                         if not (0 < host['Memory'] <= cap and host['MemorySwap'] == host['Memory']):
-                            raise RuntimeError('Live container budget differs from enforced create limits')
+                            raise GuardInvariantError(InvariantCode.LIVE_LIMITS)
                         if info['State']['Running']:
+                            guard_phase = 'container-stats-request'
                             stats = docker.request('GET', '/containers/' + container['Id'] + '/stats?stream=false&one-shot=true')
                             if stats is not None:
+                                guard_phase = 'container-stats-memory'
                                 docker_rss += container_memory(stats) / MIB
                         if info['State']['OOMKilled']:
                             result['terminationReason'] = 'owned-container-oom'
@@ -396,7 +420,13 @@ def run(root, stage, profile, command):
             result['exitCode'] = 75 if result.get('terminationReason') else (result['nativeExitCode'] if result['nativeExitCode'] >= 0 else 1)
             result['status'] = 'guard-terminated' if result.get('terminationReason') else 'completed'
     except BaseException as error:
-        result.update(status='guard-failed', exitCode=1, exceptionType=type(error).__name__)
+        result.update(status='guard-failed', exitCode=1, exceptionType=type(error).__name__, guardPhase=guard_phase)
+        if container_id is not None:
+            result['guardContainerId'] = container_id
+        if isinstance(error, GuardInvariantError):
+            result['invariantCode'] = error.code.value
+            if error.http_status is not None:
+                result['dockerHttpStatus'] = error.http_status
         if proc and proc.poll() is None:
             stop_owned()
             try:
