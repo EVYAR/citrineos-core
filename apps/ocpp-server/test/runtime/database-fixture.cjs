@@ -463,11 +463,7 @@ function makeFixture(grant) {
       );
       const stat = fs.lstatSync(file);
       assert.ok(stat.isFile() && !stat.isSymbolicLink(), `${filename} must be a regular file`);
-      assert.equal(
-        fs.realpathSync(file),
-        file,
-        `${filename} escapes canonical archive directory`,
-      );
+      assert.equal(fs.realpathSync(file), file, `${filename} escapes canonical archive directory`);
       return fs.readFileSync(file);
     };
     const manifest = JSON.parse(readArchiveFile('provenance.json').toString('utf8'));
