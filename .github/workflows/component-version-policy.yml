@@ -4,6 +4,12 @@ on:
     branches: [dev, prod]
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
+    inputs:
+      validation_base:
+        description: Optional comparison ref for manual accepted-policy validation
+        required: false
+        type: string
+        default: ''
 concurrency:
   group: component-version-policy-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -25,11 +31,11 @@ jobs:
       - name: Test release policy safeguards
         run: python3 -B -m unittest discover -s .release/tests -v
       - name: Validate PR declaration or reviewed release
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.validation_base != ''
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-          HEAD_BRANCH: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.validation_base }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref || 'dev' }}
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
