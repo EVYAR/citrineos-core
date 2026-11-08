@@ -12,7 +12,7 @@ import { MessagesModule } from '@modules/messages/messages.js';
 import type { WebhookDispatcher } from '@modules/messages/webhook-dispatcher.js';
 import { aConnectionEvent, aFrameEvent } from '@test/providers/messages-event-provider.js';
 import { createTestContainer, getTestInstance } from '@test/test-container.js';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 
 describe('MessagesModule', () => {
   const { container, logger } = createTestContainer();
@@ -40,7 +40,7 @@ describe('MessagesModule', () => {
       call: string[];
     };
   };
-  let webhookDispatcher: { shutdown: ReturnType<typeof vi.fn> };
+  let webhookDispatcher: { shutdown: Mock<WebhookDispatcher['shutdown']> };
   let networkAlertSweeper: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> };
 
   function buildModule(): MessagesModule {
@@ -49,7 +49,7 @@ describe('MessagesModule', () => {
       messagesDeadLetterConsumer: deadLetterConsumer as unknown as MessagesDeadLetterConsumer,
       ocppDeadLetterConsumer: ocppDeadLetterConsumer as unknown as OcppDeadLetterConsumer,
       messagesEventPipeline: pipeline as unknown as MessagesEventPipeline,
-      webhookDispatcher: webhookDispatcher as unknown as WebhookDispatcher,
+      webhookDispatcher,
       networkAlertSweeper,
     });
   }
@@ -84,7 +84,9 @@ describe('MessagesModule', () => {
         call: [],
       },
     };
-    webhookDispatcher = { shutdown: vi.fn() };
+    webhookDispatcher = {
+      shutdown: vi.fn<WebhookDispatcher['shutdown']>().mockResolvedValue(undefined),
+    };
     networkAlertSweeper = { start: vi.fn(), stop: vi.fn() };
   });
 
@@ -179,6 +181,40 @@ describe('MessagesModule', () => {
   });
 
   describe('shutdown', () => {
+    it('waits for deferred webhook drain before resolving shutdown', async () => {
+      let finishDrain!: () => void;
+      let enteredDrain!: () => void;
+      const drained = new Promise<void>((resolve) => {
+        finishDrain = resolve;
+      });
+      const entered = new Promise<void>((resolve) => {
+        enteredDrain = resolve;
+      });
+      webhookDispatcher.shutdown.mockImplementation(() => {
+        enteredDrain();
+        return drained;
+      });
+      let settled = false;
+      const stopping = buildModule()
+        .shutdown()
+        .then(() => {
+          settled = true;
+        });
+      try {
+        await entered;
+        await Promise.resolve();
+        expect(consumer.shutdown).toHaveBeenCalledOnce();
+        expect(deadLetterConsumer.shutdown).toHaveBeenCalledOnce();
+        expect(ocppDeadLetterConsumer.shutdown).toHaveBeenCalledOnce();
+        expect(webhookDispatcher.shutdown).toHaveBeenCalledOnce();
+        expect(settled).toBe(false);
+      } finally {
+        finishDrain();
+        await stopping;
+      }
+      expect(settled).toBe(true);
+    });
+
     it('should stop every consumer before releasing the dispatchers refresh timer', async () => {
       const order: string[] = [];
       consumer.shutdown.mockImplementation(async () => void order.push('consumer'));
@@ -186,7 +222,9 @@ describe('MessagesModule', () => {
       ocppDeadLetterConsumer.shutdown.mockImplementation(
         async () => void order.push('ocpp-dead-letter'),
       );
-      webhookDispatcher.shutdown.mockImplementation(() => void order.push('dispatcher'));
+      webhookDispatcher.shutdown.mockImplementation(async () => {
+        order.push('dispatcher');
+      });
 
       await buildModule().shutdown();
 
