@@ -446,6 +446,7 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
       const response = await graphql(query, name, variables, {
         authorization: 'Bearer browser-sentinel',
       });
+      phase = `graphql-crud-${name}-http-${response.status}-upstream-${graphqlReceipts.length}-fixture-errors-${fixtureErrors.length}`;
       assert.equal(response.status, 200);
       assert.equal(response.headers.get('cache-control'), 'no-store');
       const row = { id: variables.id, name: variables.name ?? 'Synthetic row' };

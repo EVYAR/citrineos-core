@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Report only bounded phase names, HTTP statuses and synthetic receipt counts when standalone Operator transport acceptance fails."
+}
