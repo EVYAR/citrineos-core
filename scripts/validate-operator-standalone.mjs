@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign, verify } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -25,6 +25,8 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
   let child;
   let childExit;
   let childError = false;
+  let childStartup;
+  let standaloneStarts = 0;
   let watchdog;
   let expired = false;
   let upstream;
@@ -299,6 +301,57 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
     upstream.headersTimeout = 10000;
     fixtureOrigin = await listen(upstream);
     const startStandalone = async (forwarded = false) => {
+      standaloneStarts++;
+      let startupOutput = '';
+      let startupTruncated = false;
+      let startupReady = false;
+      const captureStartup = (chunk) => {
+        if (startupReady || startupTruncated) return;
+        startupOutput += chunk.toString('utf8');
+        if (startupOutput.length > 16384) {
+          startupOutput = startupOutput.slice(0, 16384);
+          startupTruncated = true;
+        }
+      };
+      childStartup = () => {
+        let output = startupTruncated
+          ? startupOutput.slice(0, startupOutput.lastIndexOf('\n'))
+          : startupOutput;
+        for (const secret of secrets) output = output.split(secret).join('[REDACTED]');
+        output = output.replace(
+          /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+          '[REDACTED JWT]',
+        );
+        output = output
+          .split('\n')
+          .map((line) =>
+            /(?:password|secret|authorization|cookie|access[_-]?token|refresh[_-]?token)\s*[:=]/i.test(
+              line,
+            )
+              ? '[REDACTED sensitive diagnostic line]'
+              : line,
+          )
+          .join('\n');
+        const directory = new URL('../reports/ci/', import.meta.url);
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(
+          new URL(`operator-standalone-startup-${standaloneStarts}.json`, directory),
+          JSON.stringify(
+            {
+              phase,
+              childExitCode: child?.exitCode,
+              childSignal: child?.signalCode,
+              childSpawnFailed: childError,
+              readinessReached: startupReady,
+              truncated: startupTruncated,
+              sanitizedStartupOutput: output,
+            },
+            null,
+            2,
+          ) + '\n',
+          { mode: 0o600 },
+        );
+      };
       reservation = createServer();
       const networkOrigin = await listen(reservation);
       const origin = networkOrigin;
@@ -331,8 +384,10 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
           OPERATOR_CORE_CLIENT_SECRET: clientSecret,
           OPERATOR_CORE_ISSUER: fixtureOrigin,
         },
-        stdio: ['ignore', 'ignore', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
       });
+      child.stdout.on('data', captureStartup);
+      child.stderr.on('data', captureStartup);
       childExit = new Promise((resolve) => {
         child.once('error', () => {
           childError = true;
@@ -358,6 +413,8 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
         if (!ready) await delay(200);
       }
       assert.ok(ready, 'Standalone readiness deadline exceeded');
+      startupReady = true;
+      childStartup();
       return { origin, publicOrigin };
     };
     const { origin } = await startStandalone();
@@ -697,6 +754,7 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
         .digest('hex'),
     };
   } catch {
+    childStartup?.();
     // Avoid assertion diffs, credentials, cookies and child output in hosted logs.
     throw new Error(`Isolated standalone transport failed during ${phase}`);
   } finally {

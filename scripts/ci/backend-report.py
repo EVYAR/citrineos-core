@@ -10,13 +10,22 @@ ROOT = Path(__file__).resolve().parents[2]
 reports = ROOT / 'reports/ci'
 job = json.loads((reports / 'job.json').read_text())
 projects = ['base', 'dal', 'ocpp', 'ocpi']
-runtime = json.loads((ROOT / 'reports/backend-runtime.json').read_text())
-stage = json.loads((reports / 'backend-runtime.json').read_text())
-assert stage['nativeExitCode'] == stage['exitCode'] == 0
-assert runtime['success'] is True
-results = [test for suite in runtime['testResults'] for test in suite['assertionResults']]
-assert results and len(results) == runtime['numTotalTests']
-boot = [suite for suite in runtime['testResults'] if suite['name'].replace('\\', '/').endswith('/packages/dal/test/migrations/boot-config-archive-integration.test.ts')]
+results = []
+suites = []
+project_runtime = {}
+for project in projects:
+    runtime = json.loads((ROOT / 'reports' / ('runtime-' + project + '.json')).read_text())
+    stage = json.loads((reports / ('runtime-' + project + '.json')).read_text())
+    assert stage['nativeExitCode'] == stage['exitCode'] == 0
+    assert runtime['success'] is True
+    discovered = [test for suite in runtime['testResults'] for test in suite['assertionResults']]
+    assert not any(test.get('meta', {}).get('typecheck') for test in discovered), 'Typed discovery leaked into runtime JSON'
+    executed = [test for test in discovered if not test.get('meta', {}).get('typecheck')]
+    assert executed and len(executed) == runtime['numTotalTests']
+    results.extend(executed)
+    suites.extend(runtime['testResults'])
+    project_runtime[project] = {'totalAssertions': len(executed), 'nativeExitCode': stage['nativeExitCode']}
+boot = [suite for suite in suites if suite['name'].replace('\\', '/').endswith('/packages/dal/test/migrations/boot-config-archive-integration.test.ts')]
 assert len(boot) == 1 and len(boot[0]['assertionResults']) == 12
 assert all(test['status'] == 'passed' for test in boot[0]['assertionResults'])
 typed = {}
@@ -32,7 +41,7 @@ summary = {'sourceSha': job['sourceSha'], 'runtime': {'totalAssertions': len(res
     'passed': sum(test['status'] == 'passed' for test in results),
     'failed': sum(test['status'] == 'failed' for test in results),
     'other': sum(test['status'] not in ('passed', 'failed') for test in results),
-    'typecheckEnabledInRuntime': False, 'bootArchiveIntegrationPassed': 12},
+    'projects': project_runtime, 'projectProcessesSequential': True, 'typecheckEnabledInRuntime': False, 'bootArchiveIntegrationPassed': 12},
     'typescript': typed, 'scope': 'HOSTED_BACKEND_TESTS_NOT_DEPLOYMENT_OR_STATION_ACCEPTANCE'}
 (reports / 'backend-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
 print(json.dumps(summary))

@@ -25,7 +25,7 @@ LABEL = 'io.citrineos.hosted-ci-job'
 PROFILES = {
     'install': (1536, 2304, 0, 900),
     'build': (1536, 2304, 0, 1200),
-    'runtime': (1536, 2304, 1024, 1800),
+    'runtime': (1536, 3072, 1024, 1800),
     'typecheck': (1536, 2304, 0, 900),
     'lint': (1536, 2304, 0, 1200),
     'stdlib': (128, 640, 0, 300),

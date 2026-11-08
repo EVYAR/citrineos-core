@@ -44,16 +44,22 @@ jobs:
       - name: Frozen dependency install
         run: python3 scripts/ci/bounded.py run --stage install --profile install -- pnpm install --frozen-lockfile --network-concurrency=4
       - name: Build Core closure sequentially
+        id: core
         run: python3 scripts/ci/bounded.py run --stage build-core --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/ocpp-server...' run build
       - name: Build OCPI closure sequentially
+        id: ocpi
         run: python3 scripts/ci/bounded.py run --stage build-ocpi --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/ocpi-server...' run build
       - name: Runtime backend tests including testcontainers and all twelve Boot archive cases
-        run: >-
-          python3 scripts/ci/bounded.py run --stage backend-runtime --profile runtime --
-          pnpm exec vitest run --project base --project dal --project ocpp --project ocpi
-          --maxWorkers=1 --minWorkers=1 --fileParallelism=false --typecheck.enabled=false
-          --reporter=default --reporter=json --outputFile=reports/backend-runtime.json
+        shell: bash
+        run: |
+          set -uo pipefail
+          status=0
+          for project in base dal ocpp ocpi; do
+            python3 scripts/ci/bounded.py run --stage "runtime-$project" --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project "$project" --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="reports/runtime-$project.json" || status=$?
+          done
+          exit "$status"
       - name: Native TypeScript test checks and input discovery (not runtime case counts)
+        if: ${{ !cancelled() && steps.core.outcome == 'success' && steps.ocpi.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
