@@ -27,6 +27,8 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
   let childError = false;
   let childStartup;
   let standaloneStarts = 0;
+  const diagnosticStatuses = {};
+  const diagnosticBooleans = {};
   let watchdog;
   let expired = false;
   let upstream;
@@ -120,6 +122,7 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
         await reader?.cancel().catch(() => undefined);
         reader?.releaseLock();
       }
+      diagnosticStatuses[phase] = response.status;
       const text = Buffer.concat(chunks).toString('utf8');
       noSecrets(text);
       noSecrets(JSON.stringify([...response.headers]));
@@ -355,7 +358,7 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
       reservation = createServer();
       const networkOrigin = await listen(reservation);
       const origin = networkOrigin;
-      const publicOrigin = forwarded ? origin.replace('127.0.0.1', 'localhost') : origin;
+      const publicOrigin = forwarded ? 'https://operator.example.invalid' : origin;
       const port = new URL(origin).port;
       await closeServer(reservation);
       phase = 'standalone-start';
@@ -656,12 +659,18 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
     await stopChild();
     childError = false;
     const forwarded = await startStandalone(true);
+    phase = 'forwarded-login';
     const forwardedJar = new Map();
     assert.equal(
       (await login(forwardedJar, password, true, forwarded.origin, forwarded.publicOrigin)).status,
       200,
     );
-    assert.ok((await session(forwardedJar, forwarded.origin)).user?.roles.includes('admin'));
+    phase = 'forwarded-session';
+    const forwardedSession = await session(forwardedJar, forwarded.origin);
+    diagnosticBooleans.forwardedSessionAdmin = Boolean(
+      forwardedSession.user?.roles.includes('admin'),
+    );
+    assert.ok(diagnosticBooleans.forwardedSessionAdmin);
     const forwardedPayload = {
       query:
         'query ReadFixture($id: Int!, $name: String!) { Locations(where: {id: {_eq: $id}, name: {_eq: $name}}) { id name } }',
@@ -694,11 +703,15 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
       );
     const beforeForwardedGraph = graphqlReceipts.length;
     const beforeForwardedCore = coreReceipts.length;
+    phase = 'forwarded-graphql-https';
     assert.equal((await forwardedGraph('https')).status, 200);
+    phase = 'forwarded-core-https';
     assert.equal((await forwardedCore('https')).status, 200);
     assert.equal(graphqlReceipts.length, beforeForwardedGraph + 1);
     assert.equal(coreReceipts.length, beforeForwardedCore + 1);
+    phase = 'forwarded-graphql-mismatched-protocol';
     assert.equal((await forwardedGraph('http')).status, 403);
+    phase = 'forwarded-core-mismatched-protocol';
     assert.equal((await forwardedCore('http')).status, 403);
     assert.equal(
       graphqlReceipts.length,
@@ -753,8 +766,32 @@ export async function validateOperatorStandalone({ isolated, env, buildCanaries 
         .update(readFileSync(new URL(import.meta.url)))
         .digest('hex'),
     };
-  } catch {
+  } catch (error) {
     childStartup?.();
+    const sourceLine =
+      error instanceof Error
+        ? Number(/validate-operator-standalone\.mjs:(\d+)/.exec(error.stack ?? '')?.[1] ?? 0)
+        : 0;
+    const diagnostic = {
+      phase,
+      sourceLine,
+      errorType: error instanceof Error ? error.name : 'UnknownError',
+      statuses: diagnosticStatuses,
+      booleans: diagnosticBooleans,
+    };
+    if (error instanceof assert.AssertionError) {
+      for (const key of ['actual', 'expected']) {
+        if (typeof error[key] === 'number' || typeof error[key] === 'boolean')
+          diagnostic[key] = error[key];
+      }
+    }
+    const directory = new URL('../reports/ci/', import.meta.url);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+      new URL('operator-standalone-failure.json', directory),
+      JSON.stringify(diagnostic, null, 2) + '\n',
+      { mode: 0o600 },
+    );
     // Avoid assertion diffs, credentials, cookies and child output in hosted logs.
     throw new Error(`Isolated standalone transport failed during ${phase}`);
   } finally {
