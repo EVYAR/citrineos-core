@@ -92,6 +92,6 @@ export class MessagesModule {
     await this._consumer.shutdown();
     await this._deadLetterConsumer.shutdown();
     await this._ocppDeadLetterConsumer.shutdown();
-    this._webhookDispatcher.shutdown();
+    await this._webhookDispatcher.shutdown();
   }
 }
