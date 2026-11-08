@@ -8,6 +8,8 @@ ARG NPM_REGISTRY=https://npm.ev-yar.ir/
 FROM ${NODE_IMAGE} AS build
 WORKDIR /usr/local/apps/citrineos
 
+RUN apk add --no-cache python3 py3-setuptools make g++ cmake
+
 # Use the internal Verdaccio mirror directly because Corepack's metadata lookup
 # against the public npm registry is not reliably reachable from the Iran host.
 ARG NPM_REGISTRY

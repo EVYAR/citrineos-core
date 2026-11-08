@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Install build-only setuptools for legacy node-gyp dependencies on Alpine Python versions without standard-library distutils."
+}

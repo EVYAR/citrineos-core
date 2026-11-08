@@ -299,7 +299,7 @@ describe('request', () => {
 
     expect(err).toBeInstanceOf(MissingRequiredParamException);
     expect(err.field).toBe('token');
-    expect(err.message).toContain('TenantPartner missing server token');
+    expect(err.message).toContain('TenantPartner outbound token is missing');
     expect(rest.get).not.toHaveBeenCalled();
   });
 
