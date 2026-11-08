@@ -8,8 +8,12 @@ import { ocpiCacheFromEnv } from '@ocpi/config/redis-cache-config.js';
 import { createOcpiCache } from '@ocpi/util/create-ocpi-cache.js';
 
 vi.mock('@citrineos/base', () => ({
-  MemoryCache: vi.fn(class MemoryCache {}),
-  RedisCache: vi.fn(class RedisCache {}),
+  MemoryCache: vi.fn(function MemoryCache() {
+    return {};
+  }),
+  RedisCache: vi.fn(function RedisCache() {
+    return {};
+  }),
 }));
 
 beforeEach(() => vi.clearAllMocks());
