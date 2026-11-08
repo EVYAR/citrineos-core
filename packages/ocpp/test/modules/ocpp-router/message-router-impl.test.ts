@@ -17,7 +17,6 @@ import {
 import type { IChargingStationRepository } from '@citrineos/dal';
 import {
   type CallAction,
-  CallEventOutcome,
   ErrorCode,
   EventGroup,
   MessageOrigin,
@@ -1994,7 +1993,7 @@ describe('MessageRouterImpl', () => {
 
       expect(notifier.notify).toHaveBeenCalledWith(TENANT_ID, CORRELATION_ID, STATION_ID, {
         success: false,
-        outcome: CallEventOutcome.CALL_ERROR,
+        outcome: 'CALL_ERROR',
         action,
         correlationId: CORRELATION_ID,
         error: {
