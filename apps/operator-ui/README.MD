@@ -416,10 +416,60 @@ first page load after restarting the stack returns you to the login page.
 
 ## Hasura Authentication
 
-There are two ways to authenticate to Hasura:
+Generic authentication uses an authenticated same-origin `POST /api/graphql` server proxy. It requires a
+valid NextAuth session with the `admin` role. The browser receives no Hasura admin credential. The legacy
+`getHasuraAdminSecretAction` always refuses, including for administrators. There is no anonymous or direct
+Hasura fallback when configuration, authentication or upstream requests fail.
 
-1. If you have \*_uncommented_ the Docker environment variable `HASURA_GRAPHQL_ADMIN_SECRET` in `citrineos-core`: 2. Ensure your `.env.local` has the `HASURA_ADMIN_SECRET` uncommented out 3. Please note that it is not recommended to use a Hasura Admin Secret in production.
-2. If you have commented the Docker environment variable `HASURA_GRAPHQL_ADMIN_SECRET` in `citrineos-core`: 5. Ensure your `.env.local` has the `HASURA_ADMIN_SECRET` commented out, as the auth will be handled by your auth provider automatically.
+Configure these **runtime server-only** inputs:
+
+| Variable                  | Required value                                                                                 |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `OPERATOR_HASURA_URL`     | Exact trusted HTTP(S) endpoint ending in `/v1/graphql`, without credentials, query or fragment |
+| `HASURA_ADMIN_SECRET`     | Existing Hasura server credential; never a `NEXT_PUBLIC_*` variable                            |
+| `OPERATOR_HASURA_ROLE`    | Explicitly `user`; the proxy cannot run as Hasura `admin`                                      |
+| `OPERATOR_CORE_TENANT_ID` | Fixed positive numeric Core tenant matching baked `NEXT_PUBLIC_TENANT_ID`                      |
+| `NEXTAUTH_URL`            | Public Operator origin                                                                         |
+| `OPERATOR_REQUEST_ORIGIN` | Optional exact internal request origin for reverse proxy deployments                           |
+
+The proxy shares the existing Core proxy configuration and session/origin/tenant guards. Retain
+`OPERATOR_CORE_URL` and bake `NEXT_PUBLIC_CORE_TRANSPORT=server`, `NEXT_PUBLIC_AUTH_PROVIDER=generic`, and
+`NEXT_PUBLIC_TENANT_ID` into the image. Core machine credentials remain separate. The Hasura URL and secret
+must be supplied at runtime. Generic GraphQL does not consume `NEXT_PUBLIC_API_URL` or `NEXT_PUBLIC_WS_URL`;
+those remain inputs for independently configured Keycloak deployments.
+
+**Hasura permissions are the tenant boundary.** Apply and review the deployed `user` role metadata before
+enabling this transport: select/delete filters, insert checks, and update filters **and post-update checks**
+must enforce `tenantId = X-Hasura-Tenant-Id`, including relationships, functions and actions accessible to that
+role. The server always supplies this header from its fixed numeric tenant configuration. GraphQL variables
+and literals are data, never authority: they cannot change these server session headers. This patch does not
+change Hasura metadata or database schemas. Do not enable a permissive `user` role to make a denied operation
+work. A generic admin login authorizes only this configured tenant, not arbitrary Hasura administration.
+
+Generic mode disables raw Hasura WebSockets and Refine live subscriptions. Active queries refetch every five
+seconds while the page is visible; background refetching and automatic retries are disabled. This adds query
+load and up to roughly five seconds of display latency instead of subscription updates. Existing mutations
+still use Refine's normal cache invalidation. Keycloak retains direct HTTP and WebSocket user-token auth,
+including its selected role; missing tokens fail closed and the admin secret is never used as a fallback.
+
+The proxy accepts only JSON query/mutation envelopes at `/api/graphql`, rejects browser `x-hasura-*` headers,
+uses only the configured upstream endpoint, refuses redirects, and applies a ten-second deadline, 256 KiB
+request limit and 1 MiB response limit. Upstream errors are replaced with a generic failure; upstream headers
+and extensions are never returned. GraphQL error detail is consequently unavailable in the browser.
+
+Platform coordination request (separate repository, not edited here): add `OPERATOR_HASURA_URL` and
+`OPERATOR_HASURA_ROLE=user` to the Operator runtime template, retain the server-only secret, and document the
+permission review and polling load. Rebuild the Operator image with the generic/server build inputs above.
+No new JWT issuer or persistent service is required.
+
+Parent acceptance, after granting the memory/runtime window: run workspace build/tests/lint and changed-file
+Prettier checks; on the isolated dev restore, use the Operator session API to verify unauthenticated and
+non-admin rejection, tenant-scoped Location reads, a permitted create/update/delete, and attempted reads,
+inserts, tenant reassignment and deletes for a second tenant. Confirm foreign rows cannot be read or modified
+and record the database outcome, not just HTTP status. Check browser requests/bundles for credential
+non-disclosure, absent generic WebSocket connections, foreground polling and background pause; also exercise
+the independently configured Keycloak profile. Reject browser header overrides, cross-origin calls and
+expired sessions. Parent owns server access, backups and heavier acceptance; no live station or SMS testing.
 
 ## Related Documentation
 

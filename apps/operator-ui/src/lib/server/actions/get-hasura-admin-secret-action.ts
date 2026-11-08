@@ -3,11 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 'use server';
 
-import { authedAction, type ActionResult } from '@lib/utils/action-guard';
-import config from '@lib/utils/config';
+import type { ActionResult } from '@lib/utils/action-guard';
 
 export async function getHasuraAdminSecretAction(): Promise<ActionResult<string>> {
-  return authedAction<string>(async (_session) => {
-    return config.hasuraAdminSecret || '';
-  });
+  return { success: false, code: 'FORBIDDEN', error: 'Browser Hasura credentials are disabled' };
 }

@@ -106,13 +106,11 @@ function bodyTenantsMatch(value: unknown, tenantId: number, depth = 0): boolean 
   );
 }
 
-export async function proxyOperatorCore(
+export function operatorRequestGuard(
   request: Request,
-  path: string[],
   session: OperatorProxySession | null,
   config: OperatorProxyConfig,
-  transport: OperatorCoreTransport,
-): Promise<Response> {
+): Response | undefined {
   if (!session || session.error) return denied(401, 'Operator session required');
   if (!session.user?.roles?.some((role) => role === 'admin' || role === 'operator')) {
     return denied(403, 'Operator role required');
@@ -129,6 +127,18 @@ export async function proxyOperatorCore(
   ) {
     return denied(403, 'Same-origin request required');
   }
+}
+
+export async function proxyOperatorCore(
+  request: Request,
+  path: string[],
+  session: OperatorProxySession | null,
+  config: OperatorProxyConfig,
+  transport: OperatorCoreTransport,
+): Promise<Response> {
+  const rejection = operatorRequestGuard(request, session, config);
+  if (rejection) return rejection;
+  const incoming = new URL(request.url);
   const pathname = path.join('/');
   if (
     !routes.has(`${request.method} ${pathname}`) ||

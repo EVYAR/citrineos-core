@@ -12,6 +12,7 @@ import liveProvider from '@lib/providers/live-provider';
 import { createNotificationProvider } from '@lib/providers/notification-provider';
 import ReduxProvider from '@lib/providers/redux-provider';
 import { setUserLocale } from '@lib/server/hooks/get-user-locale';
+import config from '@lib/utils/config';
 import { resources } from '@lib/utils/resources';
 import type { I18nProvider } from '@refinedev/core';
 import { Refine } from '@refinedev/core';
@@ -38,7 +39,10 @@ export function Providers({
     return new QueryClient({
       defaultOptions: {
         queries: {
-          staleTime: Infinity,
+          staleTime: config.authProvider === 'generic' ? 5000 : Infinity,
+          ...(config.authProvider === 'generic'
+            ? { refetchInterval: 5000, refetchIntervalInBackground: false, retry: false }
+            : {}),
           refetchOnWindowFocus: false,
         },
       },
@@ -88,7 +92,7 @@ export function Providers({
               options={{
                 warnWhenUnsavedChanges: true,
                 projectId: '6ZV3T4-Lyy7B3-Dr5Uhd',
-                liveMode: 'auto',
+                liveMode: config.authProvider === 'generic' ? 'off' : 'auto',
                 reactQuery: {
                   clientConfig: queryClient,
                 },

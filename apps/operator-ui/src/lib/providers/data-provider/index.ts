@@ -4,51 +4,27 @@
 'use client';
 
 import { authProvider } from '@lib/providers/auth-provider';
-import { ResourceType } from '@lib/utils/access-types';
 import config from '@lib/utils/config';
 import { HasuraHeader } from '@lib/utils/hasura-types';
 import dataProviderHasura, {
   GraphQLClient,
   type HasuraDataProviderOptions,
 } from '@refinedev/hasura';
-import { getHasuraAdminSecretAction } from '@lib/server/actions/get-hasura-admin-secret-action';
-
-const requestMiddleware = async (request: any) => {
-  const requestHeaders = {
-    ...request.headers,
-  };
-
-  const hasuraAdminSecret = await getHasuraAdminSecretAction().then((result) =>
-    result.success ? result.data : '',
-  );
-
-  if (hasuraAdminSecret) {
-    console.debug('Authorizing to Hasura via Hasura Admin Secret');
-    requestHeaders[HasuraHeader.X_HASURA_ADMIN_SECRET] = hasuraAdminSecret;
-  } else if (authProvider) {
-    console.debug('Authorizing to Hasura via configured Auth Provider');
-    const token = await authProvider.getToken();
-    if (token) {
-      requestHeaders['Authorization'] = 'Bearer ' + token;
-    }
-    const hasuraHeaders = await authProvider.getHasuraHeaders();
-    if (hasuraHeaders) {
-      const hasuraRole = hasuraHeaders.get(HasuraHeader.X_HASURA_ROLE);
-      if (hasuraRole) {
-        requestHeaders[HasuraHeader.X_HASURA_ROLE] = hasuraRole;
-      }
-    }
-  }
-  return {
-    ...request,
-    headers: requestHeaders,
-  };
-};
 
 const API_URL = config.apiUrl;
 
 const client = new GraphQLClient(API_URL, {
-  requestMiddleware,
+  credentials: 'same-origin',
+  requestMiddleware: async (request) => {
+    if (config.authProvider === 'generic') return request;
+    const token = await authProvider.getToken();
+    if (!token) throw new Error('Hasura user session required');
+    const headers = new Headers(request.headers);
+    headers.set('Authorization', `Bearer ${token}`);
+    const role = (await authProvider.getHasuraHeaders()).get(HasuraHeader.X_HASURA_ROLE);
+    if (role) headers.set(HasuraHeader.X_HASURA_ROLE, role);
+    return { ...request, headers };
+  },
 });
 
 const hasuraProviderOptions = {

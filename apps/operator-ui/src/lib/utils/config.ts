@@ -12,7 +12,6 @@ const getConfig: () => {
   googleMapsOverviewMapId?: string;
   defaultMapCenterLatitude: number;
   defaultMapCenterLongitude: number;
-  hasuraAdminSecret?: string; // Not recommended for use in production; use your authProvider instead.
   hasuraClaim?: string;
   tenantId: string;
   apiUrl: string;
@@ -61,10 +60,12 @@ const getConfig: () => {
     defaultMapCenterLongitude: process.env.NEXT_PUBLIC_DEFAULT_MAP_CENTER_LONGITUDE
       ? parseFloat(process.env.NEXT_PUBLIC_DEFAULT_MAP_CENTER_LONGITUDE)
       : -98.583333, // Approximate center of contiguous USA
-    hasuraAdminSecret: process.env.HASURA_ADMIN_SECRET,
     hasuraClaim: process.env.NEXT_PUBLIC_HASURA_CLAIM || 'https://hasura.io/jwt/claims',
     tenantId: process.env.NEXT_PUBLIC_TENANT_ID || '1',
-    apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090/v1/graphql',
+    apiUrl:
+      authProvider === 'generic'
+        ? '/api/graphql'
+        : process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090/v1/graphql',
     wsUrl: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8090/v1/graphql',
     citrineCoreUrl: process.env.NEXT_PUBLIC_CITRINE_CORE_URL,
     fileServer: process.env.NEXT_PUBLIC_FILE_SERVER_URL,
