@@ -95,6 +95,76 @@ class GuardFixtures(unittest.TestCase):
                 spawn.assert_not_called()
             self.assertIsNone(json.loads((reports / 'refused.json').read_text())['nativeExitCode'])
 
+    def test_docker_http_failure_is_classified_without_response_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'backend.sock'
+            class Backend(socketserver.StreamRequestHandler):
+                def handle(self):
+                    self.rfile.readline()
+                    while self.rfile.readline() != b'\r\n':
+                        pass
+                    body = b'private-daemon-message'
+                    self.wfile.write(b'HTTP/1.1 500 Internal Server Error\r\nContent-Length: ' +
+                                     str(len(body)).encode() + b'\r\nConnection: close\r\n\r\n' + body)
+            backend = socketserver.ThreadingUnixStreamServer(str(path), Backend)
+            threading.Thread(target=backend.serve_forever, daemon=True).start()
+            try:
+                with self.assertRaises(GUARD.GuardInvariantError) as caught:
+                    GUARD.Docker(path).request('GET', '/containers/json?all=1')
+                self.assertEqual(caught.exception.code, GUARD.InvariantCode.DOCKER_RESPONSE)
+                self.assertEqual(caught.exception.http_status, 500)
+                self.assertNotIn('private-daemon-message', str(caught.exception))
+            finally:
+                backend.shutdown()
+                backend.server_close()
+
+    def test_inspect_running_then_empty_stats_fails_closed_with_exact_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = root / 'reports/ci'
+            reports.mkdir(parents=True)
+            state = {'nonce': 'fixture', 'sourceSha': 'a' * 40, 'docker': True, 'baselineContainers': []}
+            (reports / 'job.json').write_text(json.dumps(state))
+            identity = 'b' * 64
+            seen = []
+            class Backend(socketserver.StreamRequestHandler):
+                def handle(self):
+                    method, target, _ = self.rfile.readline().decode().split()
+                    while self.rfile.readline() != b'\r\n':
+                        pass
+                    seen.append((method, target))
+                    if method == 'DELETE':
+                        value = None
+                    elif target == '/containers/json?all=1':
+                        value = [{'Id': identity, 'Labels': {GUARD.LABEL: 'fixture'}}]
+                    elif target.endswith('/json'):
+                        value = {'HostConfig': {'Memory': 512 * GUARD.MIB, 'MemorySwap': 512 * GUARD.MIB},
+                                 'State': {'Running': True, 'OOMKilled': False}}
+                    else:
+                        value = {'memory_stats': {}}
+                    body = json.dumps(value).encode()
+                    self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(body)).encode() +
+                                     b'\r\nConnection: close\r\n\r\n' + body)
+            backend = socketserver.ThreadingUnixStreamServer(str(root / 'real.sock'), Backend)
+            threading.Thread(target=backend.serve_forever, daemon=True).start()
+            docker = GUARD.Docker(root / 'real.sock')
+            try:
+                with patch.object(GUARD, 'hosted'), patch.object(GUARD, 'available_mib', return_value=10000), patch.object(GUARD, 'Docker', return_value=docker):
+                    code = GUARD.run(root, 'stats-race', 'runtime', [sys.executable, '-c', 'import time;time.sleep(30)'])
+                result = json.loads((reports / 'stats-race.json').read_text())
+                self.assertEqual(code, 1)
+                self.assertEqual(result['status'], 'guard-failed')
+                self.assertEqual(result['nativeExitCode'], -15)
+                self.assertEqual(result['invariantCode'], GUARD.InvariantCode.MEMORY_STATS.value)
+                self.assertEqual(result['guardPhase'], 'container-stats-memory')
+                self.assertEqual(result['guardContainerId'], identity)
+                self.assertEqual(result['reserveMiB'], 1536)
+                self.assertIn(('GET', '/containers/' + identity + '/stats?stream=false&one-shot=true'), seen)
+                self.assertIn(('DELETE', '/containers/' + identity + '?force=1&v=1'), seen)
+            finally:
+                backend.shutdown()
+                backend.server_close()
+
     def test_docker_create_transport_gets_enforced_limits(self):
         for chunked in [False, True]:
             with self.subTest(chunked=chunked), tempfile.TemporaryDirectory() as directory:
