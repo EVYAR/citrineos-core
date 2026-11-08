@@ -417,9 +417,8 @@ first page load after restarting the stack returns you to the login page.
 ## Hasura Authentication
 
 Generic authentication uses an authenticated same-origin `POST /api/graphql` server proxy. It requires a
-valid NextAuth session with the `admin` role. The browser receives no Hasura admin credential. The legacy
-`getHasuraAdminSecretAction` always refuses, including for administrators. There is no anonymous or direct
-Hasura fallback when configuration, authentication or upstream requests fail.
+valid NextAuth session with the `admin` role. The browser receives no Hasura admin credential. There is no
+anonymous or direct Hasura fallback when configuration, authentication or upstream requests fail.
 
 Configure these **runtime server-only** inputs:
 
@@ -446,9 +445,10 @@ and literals are data, never authority: they cannot change these server session 
 change Hasura metadata or database schemas. Do not enable a permissive `user` role to make a denied operation
 work. A generic admin login authorizes only this configured tenant, not arbitrary Hasura administration.
 
-Generic mode disables raw Hasura WebSockets and Refine live subscriptions. Active queries refetch every five
-seconds while the page is visible; background refetching and automatic retries are disabled. This adds query
-load and up to roughly five seconds of display latency instead of subscription updates. Existing mutations
+Generic mode disables raw Hasura WebSockets and Refine live subscriptions. Known Hasura resource list, detail,
+many and infinite read queries refetch every five seconds while the page is visible; background refetching
+and automatic retries are disabled for those reads. Custom calls and unrelated queries retain their
+defaults. This adds query load and up to roughly five seconds of display latency instead of subscription updates. Existing mutations
 still use Refine's normal cache invalidation. Keycloak retains direct HTTP and WebSocket user-token auth,
 including its selected role; missing tokens fail closed and the admin secret is never used as a fallback.
 

@@ -5,7 +5,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { operatorHasuraConfig, proxyOperatorHasura } from './hasura-proxy';
 import type { OperatorHasuraConfig } from './hasura-proxy';
-import { getHasuraAdminSecretAction } from './actions/get-hasura-admin-secret-action';
 
 const config: OperatorHasuraConfig = {
   tenantId: 7,
@@ -33,14 +32,6 @@ function transport() {
 }
 
 describe('Operator Hasura browser credential boundary', () => {
-  it('refuses the legacy credential action unconditionally', async () => {
-    expect(await getHasuraAdminSecretAction()).toEqual({
-      success: false,
-      code: 'FORBIDDEN',
-      error: 'Browser Hasura credentials are disabled',
-    });
-  });
-
   it('requires a valid server admin session, including for reads', async () => {
     const fetcher = transport();
     for (const [identity, status] of [

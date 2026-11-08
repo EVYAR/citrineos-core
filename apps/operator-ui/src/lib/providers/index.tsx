@@ -17,7 +17,8 @@ import { resources } from '@lib/utils/resources';
 import type { I18nProvider } from '@refinedev/core';
 import { Refine } from '@refinedev/core';
 import { routerProvider } from '@lib/providers/router-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createOperatorQueryClient } from './query-client';
 import { SessionProvider } from 'next-auth/react';
 import { useLocale, useTranslations } from 'next-intl';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -35,19 +36,7 @@ export function Providers({
     setMounted(true);
   }, []);
 
-  const queryClient: QueryClient = useMemo(() => {
-    return new QueryClient({
-      defaultOptions: {
-        queries: {
-          staleTime: config.authProvider === 'generic' ? 5000 : Infinity,
-          ...(config.authProvider === 'generic'
-            ? { refetchInterval: 5000, refetchIntervalInBackground: false, retry: false }
-            : {}),
-          refetchOnWindowFocus: false,
-        },
-      },
-    });
-  }, []);
+  const queryClient = useMemo(() => createOperatorQueryClient(config.authProvider), []);
 
   const accessControlProvider = useMemo(() => createAccessProvider(queryClient), [queryClient]);
 
