@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { OcpiConfigInput } from '@citrineos/ocpi';
+import { ocpiCacheFromEnv, type OcpiConfigInput } from '@citrineos/ocpi';
 import { ocpiGraphqlHeaders } from './graphql-headers.js';
 import { ocpiAdminAuth } from './admin-auth.js';
 import { ocpiCoreAuth } from './core-auth.js';
@@ -55,16 +55,7 @@ export function createDockerOcpiConfig(): OcpiConfigInput {
       password: process.env.DB_PASS || 'citrine',
     },
 
-    cache: {
-      ...(process.env.REDIS_HOST
-        ? {
-            redis: {
-              host: process.env.REDIS_HOST,
-              port: parseInt(process.env.REDIS_PORT || '6379'),
-            },
-          }
-        : { memory: true }),
-    },
+    cache: ocpiCacheFromEnv(process.env),
 
     graphql: {
       headers: ocpiGraphqlHeaders(process.env.OCPI_GRAPHQL_HEADERS),

@@ -1,20 +1,14 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
-import {
-  type ICache,
-  type IModule,
-  loggerDefaults,
-  MASKED_LOG_KEYS,
-  MemoryCache,
-  RedisCache,
-} from '@citrineos/base';
+import { type ICache, type IModule, loggerDefaults, MASKED_LOG_KEYS } from '@citrineos/base';
 import { EventGroup, eventGroupFromString } from '@citrineos/types';
 import type { AwilixContainer } from 'awilix';
 import {
   type OcpiConfig,
   type OcpiModuleToken,
   buildOcpiContainer,
+  createOcpiCache,
   DtoRouter,
   getDtoEventHandlerMetaData,
   getOcpiSystemConfig,
@@ -149,14 +143,7 @@ export class CitrineOSServer {
   }
 
   private initCache() {
-    this._cache = this.ocpiConfig!.cache.redis
-      ? new RedisCache({
-          socket: {
-            host: this.ocpiConfig!.cache.redis.host,
-            port: this.ocpiConfig!.cache.redis.port,
-          },
-        })
-      : new MemoryCache();
+    this._cache = createOcpiCache(this.ocpiConfig!.cache, this._logger);
   }
 
   private async startOcpiServer() {

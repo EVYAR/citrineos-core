@@ -4,6 +4,7 @@
 
 import { logRedactionSchema } from '@citrineos/types';
 import { z } from 'zod';
+import { redisCacheConfigSchema } from './redis-cache-config.js';
 
 /**
  * OCPI Configuration Schema
@@ -112,12 +113,7 @@ export const ocpiConfigInputSchema = z.object({
   cache: z
     .object({
       memory: z.boolean().optional(),
-      redis: z
-        .object({
-          host: z.string().default('localhost').optional(),
-          port: z.number().int().positive().default(6379).optional(),
-        })
-        .optional(),
+      redis: redisCacheConfigSchema.optional(),
     })
     .refine((obj) => obj.memory || obj.redis, {
       message: 'A cache implementation must be set',
@@ -279,12 +275,7 @@ export const ocpiConfigSchema = z.object({
 
   cache: z.object({
     memory: z.boolean().optional(),
-    redis: z
-      .object({
-        host: z.string(),
-        port: z.number().int().positive(),
-      })
-      .optional(),
+    redis: redisCacheConfigSchema.optional(),
   }),
 
   graphql: z.object({

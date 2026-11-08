@@ -38,8 +38,9 @@ export interface CentralSystemConfig {
 
 export interface CacheConfig {
   redis: {
-    host: string;
-    port: number;
+    url?: string;
+    host?: string;
+    port?: number;
   };
 }
 

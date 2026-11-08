@@ -313,3 +313,6 @@ export type {
   OcpiModuleDependencies,
 } from './src/server/dependencies.js';
 export { OcpiServer } from './src/server/ocpi-server.js';
+
+export { ocpiCacheFromEnv } from './src/config/redis-cache-config.js';
+export { createOcpiCache } from './src/util/create-ocpi-cache.js';

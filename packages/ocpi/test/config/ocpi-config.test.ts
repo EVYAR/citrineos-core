@@ -166,7 +166,7 @@ describe('ocpiConfigInputSchema', () => {
     expect(parsed.maxPageLimit).toBe(1000);
   });
 
-  it('fills swagger and redis defaults inside provided objects', () => {
+  it('fills swagger defaults and retains an empty Redis host profile', () => {
     const parsed = ocpiConfigInputSchema.parse({
       ...aFullConfig(),
       cache: { redis: {} },
@@ -179,7 +179,7 @@ describe('ocpiConfigInputSchema', () => {
       exposeData: true,
       exposeMessage: true,
     });
-    expect(parsed.cache.redis).toEqual({ host: 'localhost', port: 6379 });
+    expect(parsed.cache.redis).toEqual({});
   });
 
   it('rejects a cache with neither memory nor redis', () => {
@@ -388,5 +388,54 @@ describe('loadOcpiConfig', () => {
       'Failed to load OCPI configuration:',
       expect.any(ZodError),
     );
+  });
+});
+
+describe('authenticated Redis configuration', () => {
+  it('maps the prefixed Redis URL override without exposing credentials on validation failure', () => {
+    const key = `${OCPI_ENV_VAR_PREFIX}CACHE_REDIS_URL`;
+    setEnv(key, 'rediss://user:private-password@redis.internal:6380/0');
+    expect(defineOcpiConfig(aFullConfig()).cache.redis).toEqual({
+      url: 'rediss://user:private-password@redis.internal:6380/0',
+    });
+    setEnv(key, 'https://user:private-password@redis.internal');
+    expect(() => defineOcpiConfig(aFullConfig())).toThrow();
+    try {
+      defineOcpiConfig(aFullConfig());
+    } catch (error) {
+      expect(String(error)).not.toContain('private-password');
+    }
+  });
+
+  it.each([
+    'redis://user:password@redis.internal:6379/0',
+    'rediss://:password@redis.internal:6380/0',
+  ])('retains a Redis URL in both schemas', (url) => {
+    const config = { ...aFullConfig(), cache: { redis: { url } } };
+    expect(ocpiConfigInputSchema.parse(config).cache.redis).toEqual({ url });
+    expect(ocpiConfigSchema.parse(config).cache.redis).toEqual({ url });
+  });
+
+  it.each([
+    '',
+    'https://redis.internal',
+    'redis://',
+    'redis://host/not-a-database',
+    'redis://user:%zz@host',
+  ])('rejects invalid URLs without exposing credentials', (url) => {
+    for (const schema of [ocpiConfigInputSchema, ocpiConfigSchema]) {
+      const result = schema.safeParse({ ...aFullConfig(), cache: { redis: { url } } });
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.message).not.toContain('user:%zz');
+    }
+  });
+
+  it('rejects URL and host configuration together', () => {
+    expect(
+      ocpiConfigSchema.safeParse({
+        ...aFullConfig(),
+        cache: { redis: { url: 'redis://redis.internal', host: 'other' } },
+      }).success,
+    ).toBe(false);
   });
 });

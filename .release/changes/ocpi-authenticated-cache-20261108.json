@@ -1,0 +1,5 @@
+{
+  "type": "patch",
+  "summary": "Support authenticated redis:// and TLS rediss:// URLs in OCPI cache configuration and reject invalid or conflicting explicit Redis settings without falling back to memory.",
+  "migration": "No database or wire schema changes. Configure OCPI REDIS_URL as a secret pointing to the shared Redis used by all OCPI workers, removing REDIS_HOST and REDIS_PORT when using a URL. The optional host/port profile remains supported; absent Redis settings retain single-process memory mode. Empty host-profile defaults are applied by the cache factory."
+}
