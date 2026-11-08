@@ -219,6 +219,22 @@ If you are coming from a checkout that used `src/config/envs/local.ts` and `dock
 [Migrating from the Old Configuration](../../README.md#migrating-from-the-old-configuration) in the root README for a
 field-by-field mapping.
 
+### Dokploy Core Compose environment
+
+`docker-compose.dokploy-core.yml` requires `CORE_ENV_FILE` to point to a complete, reviewed Core environment
+file. Start from `.env.dokploy.core.example`, resolve its deployment references, and add the schema-backed settings
+for your existing listeners, TLS assets, authorization, roles and charging callouts before use. The Compose file
+passes this file through instead of translating legacy `BOOTSTRAP_CITRINEOS_*` or `CITRINEOS_UTIL_*` variables.
+Relative paths resolve from the Compose file's directory. Keep credential-bearing files outside the checkout.
+
+For example, set `CORE_ENV_FILE=/secure/core.env` in the Compose deployment environment. This is a Docker Compose
+environment file, so quote literal values according to Compose env-file syntax; Dokploy `${{environment.*}}`
+references in the example must be resolved before supplying the file. Inject application configuration through
+that file, since host environment variables are not automatically forwarded to the service.
+
+This deployment always sets `DB_STRATEGY=none`. Run the reviewed offline migration and partition-provisioning
+steps first. The health check uses `CITRINEOS_PORT` from the container environment (8080 when absent).
+
 ### Naming
 
 Take `CITRINEOS_` and append the path to the field, uppercased, with one underscore per level:
