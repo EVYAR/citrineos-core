@@ -158,7 +158,8 @@ describe('Operator Hasura browser credential boundary', () => {
   });
 
   it('requires explicit generic server configuration and the non-admin user role', () => {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
       NEXT_PUBLIC_CORE_TRANSPORT: 'server',
       NEXT_PUBLIC_AUTH_PROVIDER: 'generic',
       NEXT_PUBLIC_TENANT_ID: '7',
