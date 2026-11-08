@@ -118,7 +118,7 @@ class GuardFixtures(unittest.TestCase):
                 backend.shutdown()
                 backend.server_close()
 
-    def test_inspect_running_then_empty_stats_fails_closed_with_exact_phase(self):
+    def _stats_transition(self, transition, native_exit=0):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             reports = root / 'reports/ci'
@@ -127,43 +127,169 @@ class GuardFixtures(unittest.TestCase):
             (reports / 'job.json').write_text(json.dumps(state))
             identity = 'b' * 64
             seen = []
+            inspections = 0
+            finished = '2026-01-01T00:00:00.123456789Z'
             class Backend(socketserver.StreamRequestHandler):
                 def handle(self):
+                    nonlocal inspections
                     method, target, _ = self.rfile.readline().decode().split()
-                    while self.rfile.readline() != b'\r\n':
-                        pass
+                    while True:
+                        line = self.rfile.readline()
+                        if not line or line == b'\r\n':
+                            break
                     seen.append((method, target))
+                    status = '200 OK'
                     if method == 'DELETE':
                         value = None
                     elif target == '/containers/json?all=1':
-                        value = [{'Id': identity, 'Labels': {GUARD.LABEL: 'fixture'}}]
+                        owner = 'other' if inspections > 1 and transition == 'ownership' else 'fixture'
+                        value = [] if inspections > 1 and transition == 'deleted' else [{'Id': identity, 'Labels': {GUARD.LABEL: owner}}]
                     elif target.endswith('/json'):
-                        value = {'HostConfig': {'Memory': 512 * GUARD.MIB, 'MemorySwap': 512 * GUARD.MIB},
-                                 'State': {'Running': True, 'OOMKilled': False}}
+                        inspections += 1
+                        stopped = inspections > 1 and transition not in ('running', 'stats404-running')
+                        value = {'Id': identity, 'Config': {'Labels': {GUARD.LABEL: 'fixture'}, 'Env': ['PRIVATE_VALUE=daemon-private-value']},
+                                 'HostConfig': {'Memory': 512 * GUARD.MIB, 'MemorySwap': 512 * GUARD.MIB},
+                                 'State': {'Running': not stopped, 'Status': 'exited' if stopped else 'running',
+                                           'FinishedAt': finished if stopped else '0001-01-01T00:00:00Z',
+                                           'Restarting': False, 'Paused': False, 'Dead': False,
+                                           'OOMKilled': False, 'ExitCode': 0, 'Error': 'daemon-private-error'}}
+                        if inspections > 1:
+                            if transition == 'deleted':
+                                status, value = '404 Not Found', None
+                            elif transition == 'ownership':
+                                value['Config']['Labels'][GUARD.LABEL] = 'other'
+                            elif transition == 'identity':
+                                value['Id'] = 'c' * 64
+                            elif transition == 'limits':
+                                value['HostConfig']['MemorySwap'] = -1
+                            elif transition == 'lower-limits':
+                                value['HostConfig']['Memory'] = 256 * GUARD.MIB
+                                value['HostConfig']['MemorySwap'] = 256 * GUARD.MIB
+                            elif transition == 'unfinished':
+                                value['State']['FinishedAt'] = '0001-01-01T00:00:00Z'
+                            elif transition == 'restarting':
+                                value['State']['Restarting'] = True
+                            elif transition == 'oom':
+                                value['State']['OOMKilled'] = True
                     else:
                         value = {'memory_stats': {}}
+                        if transition.startswith('stats404'):
+                            status, value = '404 Not Found', None
                     body = json.dumps(value).encode()
-                    self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: ' + str(len(body)).encode() +
+                    self.wfile.write(('HTTP/1.1 ' + status + '\r\nContent-Length: ').encode() + str(len(body)).encode() +
                                      b'\r\nConnection: close\r\n\r\n' + body)
             backend = socketserver.ThreadingUnixStreamServer(str(root / 'real.sock'), Backend)
+            backend.daemon_threads = True
             threading.Thread(target=backend.serve_forever, daemon=True).start()
             docker = GUARD.Docker(root / 'real.sock')
             try:
+                command = [sys.executable, '-c', f'import time,sys;time.sleep(0.6);sys.exit({native_exit})']
                 with patch.object(GUARD, 'hosted'), patch.object(GUARD, 'available_mib', return_value=10000), patch.object(GUARD, 'Docker', return_value=docker):
-                    code = GUARD.run(root, 'stats-race', 'runtime', [sys.executable, '-c', 'import time;time.sleep(30)'])
-                result = json.loads((reports / 'stats-race.json').read_text())
-                self.assertEqual(code, 1)
-                self.assertEqual(result['status'], 'guard-failed')
-                self.assertEqual(result['nativeExitCode'], -15)
-                self.assertEqual(result['invariantCode'], GUARD.InvariantCode.MEMORY_STATS.value)
-                self.assertEqual(result['guardPhase'], 'container-stats-memory')
-                self.assertEqual(result['guardContainerId'], identity)
+                    code = GUARD.run(root, 'stats-transition', 'runtime', command)
+                result = json.loads((reports / 'stats-transition.json').read_text())
+                private = reports / 'stats-transition-container-stats.private.jsonl'
+                self.assertEqual(private.stat().st_mode & 0o777, 0o600)
+                private_text = private.read_text()
+                self.assertNotIn('daemon-private-value', private_text)
+                self.assertNotIn('daemon-private-error', private_text)
+                snapshots = [json.loads(line) for line in private_text.splitlines()]
+                self.assertEqual(len(snapshots), 1)
+                self.assertEqual(snapshots[0]['requestedId'], identity)
+                self.assertNotIn('FinishedAt', json.dumps(result))
+                self.assertNotIn('ownershipLabel', json.dumps(result))
+                decisions = result['containerStatsDecisions']
+                self.assertTrue(set(decisions) <= {item.value for item in GUARD.StatsDecision})
+                self.assertEqual(sum(decisions.values()), 1)
+                self.assertNotIn(identity, json.dumps(decisions))
+                self.assertNotIn(finished, json.dumps(decisions))
+                self.assertNotIn('fixture', json.dumps(decisions))
                 self.assertEqual(result['reserveMiB'], 1536)
                 self.assertIn(('GET', '/containers/' + identity + '/stats?stream=false&one-shot=true'), seen)
-                self.assertIn(('DELETE', '/containers/' + identity + '?force=1&v=1'), seen)
+                self.assertGreaterEqual(inspections, 2)
+                return code, result, snapshots[0], seen
             finally:
                 backend.shutdown()
                 backend.server_close()
+
+    def test_stop_between_inspect_and_stats_requires_fresh_stopped_proof(self):
+        code, result, snapshot, _ = self._stats_transition('stopped')
+        self.assertEqual(code, 0)
+        self.assertEqual(result['nativeExitCode'], 0)
+        self.assertEqual(result['containerStatsRechecks'], 1)
+        self.assertEqual(result['verifiedStoppedRechecks'], 1)
+        self.assertEqual(result['containerStatsDecisions'], {'verified-exited': 1})
+        self.assertEqual(snapshot['ownershipLabel'], 'fixture')
+        self.assertEqual(snapshot['state']['Status'], 'exited')
+        self.assertFalse(snapshot['state']['Running'])
+        self.assertNotEqual(snapshot['state']['FinishedAt'], '0001-01-01T00:00:00Z')
+
+    def test_still_running_empty_stats_fails_closed_with_private_fresh_snapshot(self):
+        code, result, snapshot, seen = self._stats_transition('running')
+        self.assertEqual(code, 1)
+        self.assertEqual(result['status'], 'guard-failed')
+        self.assertEqual(result['nativeExitCode'], -15)
+        self.assertEqual(result['invariantCode'], GUARD.InvariantCode.MEMORY_STATS.value)
+        self.assertEqual(result['guardPhase'], 'container-stats-fresh-verification')
+        self.assertEqual(result['verifiedStoppedRechecks'], 0)
+        self.assertEqual(result['containerStatsDecisions'], {'still-running': 1})
+        self.assertTrue(snapshot['state']['Running'])
+        self.assertIn(('DELETE', '/containers/' + snapshot['requestedId'] + '?force=1&v=1'), seen)
+
+    def test_stats_404_still_requires_fresh_stopped_proof(self):
+        for transition, expected in [('stats404-stopped', 0), ('stats404-running', 1)]:
+            with self.subTest(transition=transition):
+                code, result, _, _ = self._stats_transition(transition)
+                self.assertEqual(code, expected)
+                self.assertEqual(result['verifiedStoppedRechecks'], int(expected == 0))
+
+    def test_deleted_fresh_inspect_is_not_stopped_proof(self):
+        code, result, snapshot, _ = self._stats_transition('deleted')
+        self.assertEqual(code, 1)
+        self.assertFalse(snapshot['inspectPresent'])
+        self.assertEqual(result['containerStatsDecisions'], {'missing-inspect': 1})
+        self.assertEqual(result['invariantCode'], GUARD.InvariantCode.MEMORY_STATS.value)
+        self.assertEqual(result['verifiedStoppedRechecks'], 0)
+
+    def test_changed_fresh_identity_or_label_is_not_adopted(self):
+        for transition in ['identity', 'ownership']:
+            with self.subTest(transition=transition):
+                code, result, _, seen = self._stats_transition(transition)
+                self.assertEqual(code, 1)
+                self.assertEqual(result['invariantCode'], GUARD.InvariantCode.OWNERSHIP.value)
+                self.assertEqual(result['verifiedStoppedRechecks'], 0)
+                self.assertNotIn(('DELETE', '/containers/' + 'c' * 64 + '?force=1&v=1'), seen)
+                if transition == 'ownership':
+                    self.assertFalse(any(method == 'DELETE' for method, _ in seen))
+
+    def test_fresh_limit_change_fails_even_for_stopped_container(self):
+        for transition in ['limits', 'lower-limits']:
+            with self.subTest(transition=transition):
+                code, result, _, _ = self._stats_transition(transition)
+                self.assertEqual(code, 1)
+                self.assertEqual(result['invariantCode'], GUARD.InvariantCode.LIVE_LIMITS.value)
+                self.assertEqual(result['verifiedStoppedRechecks'], 0)
+                self.assertEqual(result['containerStatsDecisions'], {'limits-changed': 1})
+
+    def test_unfinished_or_restarting_container_is_not_stopped_proof(self):
+        for transition in ['unfinished', 'restarting']:
+            with self.subTest(transition=transition):
+                code, result, _, _ = self._stats_transition(transition)
+                self.assertEqual(code, 1)
+                self.assertEqual(result['invariantCode'], GUARD.InvariantCode.MEMORY_STATS.value)
+                self.assertEqual(result['verifiedStoppedRechecks'], 0)
+                self.assertEqual(result['containerStatsDecisions'], {'incomplete-stop': 1})
+
+    def test_verified_stopped_does_not_mask_native_process_failure(self):
+        code, result, _, _ = self._stats_transition('stopped', native_exit=7)
+        self.assertEqual(code, 7)
+        self.assertEqual(result['nativeExitCode'], 7)
+        self.assertEqual(result['verifiedStoppedRechecks'], 1)
+
+    def test_verified_stopped_does_not_mask_oom_failure(self):
+        code, result, _, _ = self._stats_transition('oom')
+        self.assertEqual(code, 75)
+        self.assertEqual(result['terminationReason'], 'owned-container-oom')
+        self.assertEqual(result['nativeExitCode'], -15)
 
     def test_docker_create_transport_gets_enforced_limits(self):
         for chunked in [False, True]:
