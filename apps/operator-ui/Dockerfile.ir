@@ -9,6 +9,8 @@ ARG NPM_REGISTRY=https://npm.ev-yar.ir/
 
 FROM ${NODE_IMAGE} AS builder
 
+RUN apk add --no-cache python3 make g++ cmake
+
 ARG NPM_REGISTRY
 RUN npm config set registry "$NPM_REGISTRY" \
     && npm config set replace-registry-host always \
