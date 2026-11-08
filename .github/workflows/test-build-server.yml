@@ -17,6 +17,14 @@ on:
       - '.nvmrc'
       - '.github/workflows/test-build-server.yml'
   workflow_dispatch:
+    inputs:
+      runtime_project:
+        description: 'Manual diagnostic scope; automatic runs always cover all backend projects'
+        type: choice
+        options:
+          - all
+          - dal
+        default: all
 permissions:
   contents: read
 concurrency:
@@ -26,6 +34,8 @@ jobs:
   backend:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    env:
+      REQUESTED_PROJECT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_project || 'all' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -54,7 +64,13 @@ jobs:
         run: |
           set -uo pipefail
           status=0
-          for project in base dal ocpp ocpi; do
+          projects=(base dal ocpp ocpi)
+          case "$REQUESTED_PROJECT" in
+            all) ;;
+            dal) projects=(dal) ;;
+            *) exit 2 ;;
+          esac
+          for project in "${projects[@]}"; do
             python3 scripts/ci/bounded.py run --stage "runtime-$project" --profile runtime -- pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project "$project" --maxWorkers=1 --minWorkers=1 --fileParallelism=false --reporter=default --reporter=json --outputFile="reports/runtime-$project.json" || status=$?
           done
           exit "$status"
@@ -63,10 +79,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for project in base dal ocpp ocpi; do
+          projects=(base dal ocpp ocpi)
+          case "$REQUESTED_PROJECT" in
+            all) ;;
+            dal) projects=(dal) ;;
+            *) exit 2 ;;
+          esac
+          for project in "${projects[@]}"; do
             python3 scripts/ci/bounded.py run --stage "typecheck-$project" --profile typecheck -- pnpm exec tsc -p "packages/$project/tsconfig.json" --listFiles
           done
-      - name: Source-bound runtime versus TypeScript evidence
+      - name: Source-bound full runtime versus TypeScript evidence
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.runtime_project != 'dal' }}
         run: python3 scripts/ci/backend-report.py
       - name: Clean only this job's newly created labelled containers
         if: always()
