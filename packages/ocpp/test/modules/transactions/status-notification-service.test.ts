@@ -583,11 +583,10 @@ describe('StatusNotificationService', () => {
         }),
       );
 
-      // The 1.6 connectorId is deliberately not passed: auto-commissioning no longer
-      // derives the EVSE (or its EvseType) from it.
       expect(locationRepository.autoCommissionEvseForOcpp16Connector).toHaveBeenCalledWith(
         DEFAULT_TENANT_ID,
         MOCK_STATION_ID,
+        7,
       );
       expect(locationRepository.addOcpp16ConnectorStatusNotification).toHaveBeenCalledWith(
         DEFAULT_TENANT_ID,
@@ -651,9 +650,7 @@ describe('StatusNotificationService', () => {
       expect(statusNotification.evseId).toBe(MOCK_EVSE_ID);
     });
 
-    it('should not set evseId on StatusNotification record when no matching evse is found, then auto-commission for the Connector record', async () => {
-      // The StatusNotification record itself is saved without evseId (audit trail),
-      // and the Connector record gets FKs from a freshly-commissioned evse.
+    it('records the commissioned OCPP EVSE identity separately from the Connector database FK', async () => {
       locationRepository.readChargingStationByOcppConnectionName.mockResolvedValue(
         aChargingStation((cs) => {
           cs.evses = [aEvse()];
@@ -673,10 +670,11 @@ describe('StatusNotificationService', () => {
 
       const [, , , statusNotification] =
         locationRepository.addOcpp16ConnectorStatusNotification.mock.calls[0];
-      expect(statusNotification.evseId).toBeUndefined();
+      expect(statusNotification.evseId).toBe(404);
       expect(locationRepository.autoCommissionEvseForOcpp16Connector).toHaveBeenCalledWith(
         DEFAULT_TENANT_ID,
         MOCK_STATION_ID,
+        404,
       );
       expect(locationRepository.addOcpp16ConnectorStatusNotification).toHaveBeenCalledWith(
         DEFAULT_TENANT_ID,

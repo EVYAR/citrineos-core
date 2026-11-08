@@ -207,10 +207,10 @@ describe('TransactionService', () => {
     });
     authorizationRepository.readAllByQuerystring.mockResolvedValue([authorization]);
     const own = aTransaction((transaction) => {
-      transaction.id = 1;
+      transaction.id = '00000000-0000-4000-8000-000000000001';
     });
     const other = aTransaction((transaction) => {
-      transaction.id = 2;
+      transaction.id = '00000000-0000-4000-8000-000000000002';
     });
     transactionRepositoryMock.readAllActiveTransactionsByAuthorizationId.mockResolvedValue([
       own,

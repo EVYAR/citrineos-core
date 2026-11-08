@@ -17,6 +17,7 @@ import {
 import type { IChargingStationRepository } from '@citrineos/dal';
 import {
   type CallAction,
+  CallEventOutcome,
   ErrorCode,
   EventGroup,
   MessageOrigin,
@@ -1605,7 +1606,7 @@ describe('MessageRouterImpl', () => {
       vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
     });
 
-    async function bootPending(protocol: OCPPVersionType) {
+    async function bootPending(protocol: OCPPVersion) {
       const bootService = getTestInstance(container, BootNotificationService, {
         bootRepository: {},
         cache: memoryCache,
@@ -1625,7 +1626,7 @@ describe('MessageRouterImpl', () => {
         );
       }
       await memoryCache.set(
-        CacheNamespace.Connections,
+        IDENTIFIER,
         JSON.stringify({
           id: 'fixture-server',
           allowUnknownChargingStations: false,
@@ -1633,13 +1634,26 @@ describe('MessageRouterImpl', () => {
           protocol,
           statusIngressConnection: 'fixture-socket',
         } satisfies IWebsocketConnection),
-        IDENTIFIER,
+        CacheNamespace.Connections,
       );
-      await router.registerConnection(TENANT_ID, STATION_ID, protocol, undefined, 'fixture-socket');
+      const connection = await memoryCache.get<string>(IDENTIFIER, CacheNamespace.Connections);
+      expect(JSON.parse(connection ?? 'null')?.statusIngressConnection).toBe('fixture-socket');
+      expect(
+        await router.registerConnection(
+          TENANT_ID,
+          STATION_ID,
+          protocol,
+          undefined,
+          'fixture-socket',
+        ),
+      ).toBe(true);
       await memoryCache.set(
         CacheNamespace.BootStatus,
         OCPP2_0_1.RegistrationStatusEnumType.Pending,
         IDENTIFIER,
+      );
+      expect(await memoryCache.get(CacheNamespace.BootStatus, IDENTIFIER)).toBe(
+        OCPP2_0_1.RegistrationStatusEnumType.Pending,
       );
     }
 
@@ -1649,7 +1663,7 @@ describe('MessageRouterImpl', () => {
         .filter((frame) => frame[0] === MessageTypeId.CallError);
     }
 
-    const triggers: [string, OCPPVersionType, CallAction, object, CallAction][] = [
+    const triggers: [string, OCPPVersion, CallAction, object, CallAction][] = [
       [
         'TriggerMessage(StatusNotification)',
         OCPPVersion.OCPP2_0_1,
@@ -1978,11 +1992,17 @@ describe('MessageRouterImpl', () => {
 
       await (router as any)._routeCallError(IDENTIFIER, message, action, timestamp, PROTOCOL);
 
-      expect(notifier.notify).toHaveBeenCalledWith(
-        CORRELATION_ID,
-        STATION_ID,
-        expect.any(OcppError),
-      );
+      expect(notifier.notify).toHaveBeenCalledWith(TENANT_ID, CORRELATION_ID, STATION_ID, {
+        success: false,
+        outcome: CallEventOutcome.CALL_ERROR,
+        action,
+        correlationId: CORRELATION_ID,
+        error: {
+          code: ErrorCode.InternalError,
+          description: 'test error',
+          details: { detail: 'some detail' },
+        },
+      });
     });
   });
 
