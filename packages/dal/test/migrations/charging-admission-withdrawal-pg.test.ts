@@ -15,9 +15,10 @@ import type {
   ChargingAdmissionWithdrawalRequest,
   SystemConfig,
 } from '@citrineos/types';
-import { OCPP2_0_1 } from '@citrineos/types';
+import { ChargingStationSequenceTypeEnum, OCPP2_0_1 } from '@citrineos/types';
 import { DefaultSequelizeInstance } from '../../src/db/sequelize/util.js';
 import { SequelizeTransactionEventRepository } from '../../src/repositories/sequelize/transaction-event.js';
+import { SequelizeChargingStationSequenceRepository } from '../../src/repositories/sequelize/charging-station-sequence.js';
 import { DrizzleTransactionRepository } from '../../src/repositories/drizzle/transaction.js';
 import { ChargingAdmissionWithdrawalService } from '../../../../packages/ocpp/src/services/authorizer/charging-admission-withdrawal-service.js';
 
@@ -25,6 +26,20 @@ import { ChargingAdmissionWithdrawalService } from '../../../../packages/ocpp/sr
 // container auto-provisioning or truncation. The owner supplies a NEW official-
 // migrated, explicitly marked disposable fixture and destroys it after this suite.
 const optedIn = process.env.CHARGING_ADMISSION_PG_OPT_IN === 'isolated-official-migrations-v1';
+
+function postgresGuardCause(error: unknown): { code: string; message: string; where: string } {
+  let current = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof current !== 'object' || current === null) break;
+    const candidate = current as Record<string, unknown>;
+    if (typeof candidate.code === 'string' && typeof candidate.message === 'string' &&
+        typeof candidate.where === 'string') {
+      return { code: candidate.code, message: candidate.message, where: candidate.where };
+    }
+    current = candidate.cause ?? candidate.original;
+  }
+  throw new Error('Expected a bounded PostgreSQL driver cause with SQLSTATE and official guard context');
+}
 
 describe.runIf(optedIn)('charging admission withdrawal: official migrated PostgreSQL', () => {
   let pool: Pool;
@@ -285,6 +300,52 @@ describe.runIf(optedIn)('charging admission withdrawal: official migrated Postgr
     }
   });
 
+  it('allocates noTEMP sequences with absent/existing concurrency, exact counters and rollback', async () => {
+    const s = await scenario();
+    const before = await originals(s);
+    const sequence = new SequelizeChargingStationSequenceRepository({ config, logger, sequelizeInstance: sequelize });
+    const type = ChargingStationSequenceTypeEnum.transactionId;
+    const allocate = () => sequence.getNextSequenceValue(s.tenantId, s.connection, type);
+    const readCounter = async () => (await pool.query(
+      'SELECT id,value::text AS value FROM "ChargingStationSequences" WHERE "tenantId"=$1 AND "stationId"=$2 AND type=$3',
+      [s.tenantId, s.stationId, type],
+    )).rows;
+    const first = await Promise.all(Array.from({ length: 8 }, allocate));
+    expect(first.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    const initial = await readCounter();
+    expect(initial).toHaveLength(1);
+    expect(initial[0].value).toBe('8');
+    const next = await Promise.all(Array.from({ length: 8 }, allocate));
+    expect(next.sort((a, b) => a - b)).toEqual([9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(await readCounter()).toEqual([{ id: initial[0].id, value: '16' }]);
+    const rollback = new Error('sequence caller transaction rollback');
+    await expect(sequelize.transaction(async (transaction) => {
+      expect(await sequence.getNextSequenceValue(s.tenantId, s.connection, type, transaction)).toBe(17);
+      expect(await sequence.getNextSequenceValue(s.tenantId, s.connection, type, transaction)).toBe(18);
+      throw rollback;
+    })).rejects.toBe(rollback);
+    expect(await readCounter()).toEqual([{ id: initial[0].id, value: '16' }]);
+    expect(await allocate()).toBe(17);
+    for (const [invalidType, invalidValue] of [
+      [ChargingStationSequenceTypeEnum.getChargingProfiles, '-1'],
+      [ChargingStationSequenceTypeEnum.getLog, String(Number.MAX_SAFE_INTEGER)],
+    ] as const) {
+      await pool.query(`INSERT INTO "ChargingStationSequences"
+        ("tenantId","stationId",type,value,"createdAt","updatedAt") VALUES ($1,$2,$3,$4,now(),now())`,
+      [s.tenantId, s.stationId, invalidType, invalidValue]);
+      await expect(sequence.getNextSequenceValue(s.tenantId, s.connection, invalidType)).rejects.toThrow(
+        'Cannot allocate a valid positive charging-station sequence value',
+      );
+      const unchanged = (await pool.query(
+        'SELECT value::text AS value FROM "ChargingStationSequences" WHERE "tenantId"=$1 AND "stationId"=$2 AND type=$3',
+        [s.tenantId, s.stationId, invalidType],
+      )).rows;
+      expect(unchanged).toEqual([{ value: invalidValue }]);
+    }
+    expect(await readCounter()).toEqual([{ id: initial[0].id, value: '17' }]);
+    expect(await originals(s)).toEqual(before);
+  });
+
   for (const engine of ['sequelize', 'drizzle'] as const) {
     for (const protocol of ['1.6', '2.x'] as const) {
       it(`allows a genuinely fresh ${protocol} intent through the real ${engine} DAL and rejects duplicate provenance`, async () => {
@@ -295,11 +356,26 @@ describe.runIf(optedIn)('charging admission withdrawal: official migrated Postgr
           ? new SequelizeTransactionEventRepository({ config, logger, sequelizeInstance: sequelize })
           : new DrizzleTransactionRepository({ config, logger, drizzleInstance: drizzle(pool) });
         if (protocol === '2.x') {
-          await expect(repo.createOrUpdateTransactionByTransactionEventAndStationId(s.tenantId, {
-            eventType: OCPP2_0_1.TransactionEventEnumType.Started, timestamp: new Date().toISOString(),
-            triggerReason: OCPP2_0_1.TriggerReasonEnumType.Authorized, seqNo: 0,
-            transactionInfo: { transactionId: randomUUID() },
-          }, s.connection)).rejects.toThrow(/requires fresh same-transaction consumption/);
+          const rejectedTransactionId = randomUUID();
+          let rejection: unknown;
+          try {
+            await repo.createOrUpdateTransactionByTransactionEventAndStationId(s.tenantId, {
+              eventType: OCPP2_0_1.TransactionEventEnumType.Started, timestamp: new Date().toISOString(),
+              triggerReason: OCPP2_0_1.TriggerReasonEnumType.Authorized, seqNo: 0,
+              transactionInfo: { transactionId: rejectedTransactionId },
+            }, s.connection);
+          } catch (error) { rejection = error; }
+          const cause = postgresGuardCause(rejection);
+          expect(cause.code).toBe('23514');
+          expect(cause.message).toBe('Protected connector Start requires fresh same-transaction consumption');
+          expect(cause.where).toMatch(/(?:^|\n)PL\/pgSQL function (?:public\.)?charging_admission_start_fence\(\) line [0-9]+ at RAISE(?:\n|$)/);
+          const rejectedRows = (await pool.query(`
+            SELECT
+              (SELECT count(*)::integer FROM "Transactions" WHERE "tenantId"=$1 AND "stationId"=$2 AND "transactionId"=$3) AS native,
+              (SELECT count(*)::integer FROM "TransactionKeys" WHERE "tenantId"=$1 AND "stationId"=$2 AND "transactionId"=$3) AS keys,
+              (SELECT count(*)::integer FROM "ChargingAdmissionConsumptions" WHERE "tenantId"=$1 AND "stationId"=$2) AS consumptions`,
+          [s.tenantId, s.stationId, rejectedTransactionId])).rows[0];
+          expect(rejectedRows).toEqual({ native: 0, keys: 0, consumptions: 0 });
         }
         const start = () => protocol === '1.6'
           ? repo.createTransactionByStartTransaction(s.tenantId, { connectorId: 2, idTag: s.token, meterStart: 1000, timestamp: new Date().toISOString() }, s.connection, p)
