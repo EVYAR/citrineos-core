@@ -1,241 +1,148 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
-import { beforeEach, describe, expect, it, type Mock, type Mocked, vi } from 'vitest';
-import type { SystemConfig } from '@citrineos/types';
-import { ChargingStationSequenceTypeEnum } from '@citrineos/types';
-import { Sequelize } from 'sequelize-typescript';
-import { type ILogObj, Logger } from 'tslog';
-import { ChargingStationSequence } from '@dal/models/charging-station-sequence/charging-station-sequence.js';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import type { Transaction } from 'sequelize';
+import type { Sequelize } from 'sequelize-typescript';
+import { Logger, type ILogObj } from 'tslog';
+import { ChargingStationSequenceTypeEnum, type SystemConfig } from '@citrineos/types';
 import { SequelizeChargingStationSequenceRepository } from '@dal/repositories/sequelize/charging-station-sequence.js';
 import { resolveStationIdOrThrow } from '@dal/repositories/sequelize/resolve-station-id.js';
-import { createTestContainer, getTestInstance } from '../../test-container.js';
 
-// Mock the util module to avoid circular dependency issues during test loading
-vi.mock('@dal/db/sequelize/util', () => ({
-  DefaultSequelizeInstance: {
-    getInstance: vi.fn(),
-  },
+vi.mock('@dal/db/sequelize/util.js', () => ({
+  DefaultSequelizeInstance: { getInstance: vi.fn() },
 }));
-
 vi.mock('@dal/repositories/sequelize/resolve-station-id.js', () => ({
-  resolveStationId: vi.fn(),
   resolveStationIdOrThrow: vi.fn(),
 }));
 
-describe('SequelizeChargingStationSequenceRepository', () => {
-  const { container } = createTestContainer();
-  let repository: SequelizeChargingStationSequenceRepository;
-  let mockSequelize: Mocked<Sequelize>;
-  let mockTransaction: Mock;
-  let mockLogger: Mocked<Logger<ILogObj>>;
-  let mockConfig: SystemConfig;
+interface QueryOptions {
+  bind: { tenantId: number; stationId: number; type: string };
+  transaction: Transaction;
+}
 
+describe('SequelizeChargingStationSequenceRepository allocation contract', () => {
   const tenantId = 1;
-  const ocppConnectionName = 'CP_TEST_001';
+  const connection = 'CP_TEST_001';
   const stationId = 42;
-  const sequenceType = ChargingStationSequenceTypeEnum.getChargingProfiles;
+  const type = ChargingStationSequenceTypeEnum.getChargingProfiles;
+  const logger = new Logger<ILogObj>({ type: 'hidden' });
+  let repository: SequelizeChargingStationSequenceRepository;
+  let query: Mock<(sql: string, options: QueryOptions) => Promise<Array<{ value: unknown }>>>;
+  let transaction: Mock<(work: (tx: Transaction) => Promise<number>) => Promise<number>>;
+  let standaloneTransaction: Transaction;
+  let transactionOutcomes: string[];
 
   beforeEach(() => {
-    mockTransaction = vi.fn();
-    mockSequelize = {
-      transaction: vi.fn((callback: (transaction: any) => Promise<any>) =>
-        callback(mockTransaction),
-      ),
-    } as unknown as Mocked<Sequelize>;
-
-    mockLogger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      getSubLogger: vi.fn().mockReturnThis(),
-    } as unknown as Mocked<Logger<ILogObj>>;
-
-    mockConfig = {} as SystemConfig;
-
-    repository = getTestInstance(container, SequelizeChargingStationSequenceRepository, {
-      config: mockConfig,
-      logger: mockLogger,
-      sequelizeInstance: mockSequelize,
+    vi.clearAllMocks();
+    standaloneTransaction = {} as Transaction;
+    transactionOutcomes = [];
+    query = vi.fn<(sql: string, options: QueryOptions) => Promise<Array<{ value: unknown }>>>()
+      .mockResolvedValue([{ value: '1' }]);
+    transaction = vi.fn(async (work: (tx: Transaction) => Promise<number>) => {
+      transactionOutcomes.push('begin');
+      try {
+        const value = await work(standaloneTransaction);
+        transactionOutcomes.push('commit');
+        return value;
+      } catch (error) {
+        transactionOutcomes.push('rollback');
+        throw error;
+      }
     });
-
+    repository = new SequelizeChargingStationSequenceRepository({
+      config: {} as SystemConfig,
+      logger,
+      sequelizeInstance: { query, transaction } as unknown as Sequelize,
+    });
     vi.mocked(resolveStationIdOrThrow).mockResolvedValue(stationId);
   });
 
-  describe('getNextSequenceValue', () => {
-    it('should return SEQUENCE_START when sequence is created (new sequence)', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue('1' as any),
-      } as any as ChargingStationSequence;
+  it.each([
+    ['first allocation', '1', 1],
+    ['existing counter', '5', 5],
+    ['BIGINT text', '42', 42],
+    ['numeric driver value', 100, 100],
+    ['largest exactly representable allocation', String(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
+  ])('returns the database allocation for %s without substituting a counter', async (_name, value, expected) => {
+    query.mockResolvedValue([{ value }]);
+    expect(await repository.getNextSequenceValue(tenantId, connection, type)).toBe(expected);
+    expect(transactionOutcomes).toEqual(['begin', 'commit']);
+  });
 
-      // Mock readOrCreateByQuery to return new sequence
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, true]);
+  it.each([
+    null, undefined, 'invalid', '42trailing', '0', '-1', '01',
+    '9007199254740992', Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, 1.5,
+  ])('rejects malformed or unrepresentable allocation %j instead of resetting to 1', async (value) => {
+    query.mockResolvedValue([{ value }]);
+    await expect(repository.getNextSequenceValue(tenantId, connection, type)).rejects.toThrow(
+      'Cannot allocate a valid positive charging-station sequence value',
+    );
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(transactionOutcomes).toEqual(['begin', 'rollback']);
+  });
 
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
+  it('rejects an exhausted or scope-conflicting counter without retrying/resetting it', async () => {
+    query.mockResolvedValue([]);
+    await expect(repository.getNextSequenceValue(tenantId, connection, type)).rejects.toThrow(
+      'Cannot allocate a valid positive charging-station sequence value',
+    );
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(transactionOutcomes).toEqual(['begin', 'rollback']);
+  });
 
-      expect(result).toBe(1);
-      expect(mockSequelize.transaction).toHaveBeenCalled();
+  it('rejects an ambiguous database result instead of picking an allocation', async () => {
+    query.mockResolvedValue([{ value: '1' }, { value: '2' }]);
+    await expect(repository.getNextSequenceValue(tenantId, connection, type)).rejects.toThrow(
+      'Cannot allocate a valid positive charging-station sequence value',
+    );
+    expect(transactionOutcomes).toEqual(['begin', 'rollback']);
+  });
+
+  it('keeps same-name stations and sequence namespaces scoped to the requested tenant', async () => {
+    vi.mocked(resolveStationIdOrThrow).mockImplementation(async (tenant) => tenant === tenantId ? stationId : 84);
+    query.mockImplementation(async (_sql, { bind }) => {
+      if (bind.tenantId === 1 && bind.stationId === 42 && bind.type === type) return [{ value: '7' }];
+      if (bind.tenantId === 2 && bind.stationId === 84 && bind.type === type) return [{ value: '23' }];
+      throw new Error('Counter scope diverged');
     });
+    expect(await repository.getNextSequenceValue(1, connection, type)).toBe(7);
+    expect(await repository.getNextSequenceValue(2, connection, type)).toBe(23);
+  });
 
-    it('should increment and return number when sequence exists (string bigint)', async () => {
-      const mockIncrement = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
-      const mockReload = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue('5' as any),
-        increment: mockIncrement,
-        reload: mockReload,
-      } as any as ChargingStationSequence;
+  it('refuses a station outside the tenant before any counter write', async () => {
+    const missing = new Error(`No charging station ${connection} exists in tenant ${tenantId}`);
+    vi.mocked(resolveStationIdOrThrow).mockRejectedValue(missing);
+    await expect(repository.getNextSequenceValue(tenantId, connection, type)).rejects.toBe(missing);
+    expect(query).not.toHaveBeenCalled();
+    expect(transactionOutcomes).toEqual(['begin', 'rollback']);
+  });
 
-      // Mock readOrCreateByQuery to return existing sequence
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, false]);
-
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
-
-      expect(mockIncrement).toHaveBeenCalledWith('value', { transaction: mockTransaction });
-      expect(mockReload).toHaveBeenCalledWith({ transaction: mockTransaction });
-      expect(result).toBe(5);
-      expect(typeof result).toBe('number');
+  it('participates in the caller transaction without creating or committing another transaction', async () => {
+    const callerTransaction = {} as Transaction;
+    query.mockImplementation(async (_sql, options) => {
+      if (options.transaction !== callerTransaction) throw new Error('Caller transaction lost');
+      return [{ value: '17' }];
     });
+    expect(await repository.getNextSequenceValue(tenantId, connection, type, callerTransaction)).toBe(17);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(transactionOutcomes).toEqual([]);
+  });
 
-    it('should convert string bigint to number correctly', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue('42' as any),
-        increment: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-        reload: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-      } as any as ChargingStationSequence;
+  it('propagates the original database error and aborts standalone allocation', async () => {
+    const failure = new Error('Database refused allocation');
+    query.mockRejectedValue(failure);
+    await expect(repository.getNextSequenceValue(tenantId, connection, type)).rejects.toBe(failure);
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(transactionOutcomes).toEqual(['begin', 'rollback']);
+  });
 
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, false]);
-
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
-
-      expect(result).toBe(42);
-      expect(typeof result).toBe('number');
-    });
-
-    it('should handle number value correctly (already a number)', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue(100 as any),
-        increment: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-        reload: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-      } as any as ChargingStationSequence;
-
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, false]);
-
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
-
-      expect(result).toBe(100);
-      expect(typeof result).toBe('number');
-    });
-
-    it('should handle null value and return SEQUENCE_START', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue(null as any),
-        increment: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-        reload: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-      } as any as ChargingStationSequence;
-
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, false]);
-
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
-
-      expect(result).toBe(1); // SEQUENCE_START
-    });
-
-    it('should handle undefined value and return SEQUENCE_START', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue(undefined),
-        increment: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-        reload: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-      } as any as ChargingStationSequence;
-
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, false]);
-
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
-
-      expect(result).toBe(1); // SEQUENCE_START
-    });
-
-    it('should handle invalid string and return SEQUENCE_START', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue('invalid' as any),
-        increment: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-        reload: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-      } as any as ChargingStationSequence;
-
-      vi.spyOn(repository as any, 'readOrCreateByQuery').mockResolvedValue([mockSequence, false]);
-
-      const result = await repository.getNextSequenceValue(
-        tenantId,
-        ocppConnectionName,
-        sequenceType,
-      );
-
-      expect(result).toBe(1); // SEQUENCE_START (fallback for NaN)
-    });
-
-    it('should call readOrCreateByQuery with correct parameters', async () => {
-      const mockSequence = {
-        get: vi.fn<() => any>().mockReturnValue('1' as any),
-      } as any as ChargingStationSequence;
-
-      const readOrCreateSpy = vi
-        .spyOn(repository as any, 'readOrCreateByQuery')
-        .mockResolvedValue([mockSequence, true]);
-
-      await repository.getNextSequenceValue(tenantId, ocppConnectionName, sequenceType);
-
-      expect(readOrCreateSpy).toHaveBeenCalledWith(tenantId, {
-        where: {
-          tenantId: tenantId,
-          stationId,
-          type: sequenceType,
-        },
-        defaults: {
-          value: 1,
-        },
-        transaction: mockTransaction,
-      });
-    });
-
-    it('should throw when no station in the tenant carries the connection name', async () => {
-      vi.mocked(resolveStationIdOrThrow).mockRejectedValue(
-        new Error(
-          `Cannot allocate a ${sequenceType} sequence value: no charging station named ` +
-            `'${ocppConnectionName}' exists in tenant ${tenantId}.`,
-        ),
-      );
-      const readOrCreateSpy = vi.spyOn(repository as any, 'readOrCreateByQuery');
-
-      await expect(
-        repository.getNextSequenceValue(tenantId, ocppConnectionName, sequenceType),
-      ).rejects.toThrow(ocppConnectionName);
-
-      expect(readOrCreateSpy).not.toHaveBeenCalled();
-    });
+  it('leaves rollback authority with the caller when an allocation fails in its transaction', async () => {
+    const callerTransaction = {} as Transaction;
+    const failure = new Error('Caller transaction allocation failed');
+    query.mockRejectedValue(failure);
+    await expect(repository.getNextSequenceValue(tenantId, connection, type, callerTransaction)).rejects.toBe(failure);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(transactionOutcomes).toEqual([]);
   });
 });

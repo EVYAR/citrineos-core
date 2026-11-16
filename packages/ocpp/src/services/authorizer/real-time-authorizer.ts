@@ -91,6 +91,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
     evse?: EvseDto,
     connector?: ConnectorDto,
   ): Promise<AuthorizationStatusEnumType> {
+    delete context.chargingAdmissionProvenance;
     if (!authorization.realTimeAuthUrl) {
       this._logger.debug(`No Realtime Auth URL from authorization ${authorization.id}`);
       return authorization.status;
@@ -338,6 +339,14 @@ export class RealTimeAuthorizer implements IAuthorizer {
 
     if (this._calloutStore && chargingCalloutRef) {
       result = await this.commitCalloutDecision(chargingCalloutRef, result);
+      if (result === AuthorizationStatusEnum.Accepted && context.nativeAdmissionRequest) {
+        context.chargingAdmissionProvenance = {
+          schemaVersion: '1.0.0',
+          chargingCalloutRef,
+          nativeRequestId: context.nativeAdmissionRequest.id,
+          nativeRequestHash: context.nativeAdmissionRequest.hash,
+        };
+      }
     }
 
     authorization.realTimeAuthLastAttempt = {

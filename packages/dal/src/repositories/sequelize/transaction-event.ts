@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { CrudRepository, MeterValueUtils } from '@citrineos/base';
 import {
+  type ChargingAdmissionProvenance,
   type MeterValueDto,
   type StopTransactionDto,
   type TransactionCreate,
@@ -34,6 +35,7 @@ import { TransactionEvent } from '../../models/transaction-event/transaction-eve
 import { SequelizeRepository, type SequelizeRepositoryDependencies } from './base.js';
 import { SequelizeChargingStationSequenceRepository } from './charging-station-sequence.js';
 import { elapsedSecondsSinceStart, transactionInfoForRow } from '../utils.js';
+import { consumeChargingAdmission } from './charging-admission-consumption.js';
 
 export class SequelizeTransactionEventRepository
   extends SequelizeRepository<TransactionEvent>
@@ -113,6 +115,7 @@ export class SequelizeTransactionEventRepository
     tenantId: number,
     value: OCPP2_request_types.TransactionEventRequest,
     ocppConnectionName: string,
+    provenance?: ChargingAdmissionProvenance,
   ): Promise<TransactionDto> {
     // In OCPP 2.1, transactionEventRequest contains tariffId
     const { tariffId: infoTariffId, ...transactionInfo } =
@@ -123,6 +126,9 @@ export class SequelizeTransactionEventRepository
       'record a transaction event',
     );
     return await this.s.transaction(async (sequelizeTransaction) => {
+      if (provenance && value.eventType !== OCPP2_0_1.TransactionEventEnumType.Started) {
+        throw new Error('Charging admission provenance is only valid for Started events.');
+      }
       let finalTransaction: Transaction;
       let created = false;
       const existingTransaction = await this.transaction.readOnlyOneByQuery(tenantId, {
@@ -309,6 +315,13 @@ export class SequelizeTransactionEventRepository
       // models' @BeforeCreate fallback reads outside this sequelize transaction and so
       // cannot see a Transaction created moments ago in it.
       const transactionCreatedAt = finalTransaction.createdAt;
+      if (value.eventType === OCPP2_0_1.TransactionEventEnumType.Started) {
+        await consumeChargingAdmission(
+          this.s, sequelizeTransaction, tenantId, stationId,
+          finalTransaction.connectorId, finalTransaction.authorizationId,
+          transactionDatabaseId, transactionCreatedAt, provenance,
+        );
+      }
 
       let event = TransactionEvent.build({
         tenantId,
@@ -610,6 +623,7 @@ export class SequelizeTransactionEventRepository
     tenantId: number,
     request: OCPP1_6.StartTransactionRequest,
     ocppConnectionName: string,
+    provenance?: ChargingAdmissionProvenance,
   ): Promise<TransactionDto> {
     const stationId = await resolveStationIdOrThrow(
       tenantId,
@@ -687,6 +701,11 @@ export class SequelizeTransactionEventRepository
       }
 
       newTransaction = await newTransaction.save({ transaction: sequelizeTransaction });
+      await consumeChargingAdmission(
+        this.s, sequelizeTransaction, tenantId, stationId,
+        newTransaction.connectorId, newTransaction.authorizationId,
+        newTransaction.id, newTransaction.createdAt, provenance,
+      );
 
       // Store StartTransaction in db
       event.transactionDatabaseId = newTransaction.id;

@@ -67,6 +67,7 @@ import { VariableMonitoringStatus } from '../../models/variable-monitoring/varia
 
 import { StatusIngressReceipt } from '../../models/status-ingress-receipt.js';
 import { ChargingAdmissionCallout } from '../../models/ChargingAdmissionCallout.js';
+import { ChargingAdmissionConsumption, ChargingAdmissionWithdrawal } from '../../models/charging-admission-withdrawal.js';
 
 export class DefaultSequelizeInstance {
   /**
@@ -159,6 +160,8 @@ export class DefaultSequelizeInstance {
       password: this.config.database.password,
       models: [
         ChargingAdmissionCallout,
+        ChargingAdmissionWithdrawal,
+        ChargingAdmissionConsumption,
         StatusIngressReceipt,
         AsyncJobStatus,
         Authorization,

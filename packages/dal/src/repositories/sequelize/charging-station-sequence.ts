@@ -2,11 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 import type { Transaction as SequelizeTransaction } from 'sequelize';
+import { QueryTypes } from 'sequelize';
 import type { ChargingStationSequenceTypeEnumType } from '@citrineos/types';
 import type { IChargingStationSequenceRepository } from '../repositories.js';
 import { ChargingStationSequence } from '../../models/charging-station-sequence/charging-station-sequence.js';
 import { SequelizeRepository, type SequelizeRepositoryDependencies } from './base.js';
 import { resolveStationIdOrThrow } from './resolve-station-id.js';
+
+const POSITIVE_SEQUENCE_TEXT = /^[1-9][0-9]*$/;
 
 export class SequelizeChargingStationSequenceRepository
   extends SequelizeRepository<ChargingStationSequence>
@@ -27,17 +30,12 @@ export class SequelizeChargingStationSequenceRepository
    * @returns A JavaScript number
    */
   private _ensureNumber(value: string | number | null | undefined): number {
-    if (value === null || value === undefined) {
-      return SequelizeChargingStationSequenceRepository.SEQUENCE_START;
+    const parsed =
+      typeof value === 'string' && POSITIVE_SEQUENCE_TEXT.test(value) ? Number(value) : value;
+    if (typeof parsed !== 'number' || !Number.isSafeInteger(parsed) || parsed < 1) {
+      throw new Error('Cannot allocate a valid positive charging-station sequence value');
     }
-    if (typeof value === 'string') {
-      const parsed = parseInt(value, 10);
-      if (isNaN(parsed)) {
-        return SequelizeChargingStationSequenceRepository.SEQUENCE_START;
-      }
-      return parsed;
-    }
-    return Number(value);
+    return parsed;
   }
 
   async getNextSequenceValue(
@@ -53,24 +51,34 @@ export class SequelizeChargingStationSequenceRepository
         `allocate a ${type} sequence value`,
         transaction,
       );
-      const [storedSequence, sequenceCreated] = await this.readOrCreateByQuery(tenantId, {
-        where: {
-          tenantId: tenantId,
-          stationId,
-          type: type,
+      // Match Drizzle's one-statement allocation without findOrCreate's temporary function.
+      const rows = await this.s.query<{ value: string }>(
+        `INSERT INTO "ChargingStationSequences"
+          ("tenantId", "stationId", "type", "value", "createdAt", "updatedAt")
+        VALUES ($tenantId, $stationId, $type, $start, $now, $now)
+        ON CONFLICT ("stationId", "type") DO UPDATE
+          SET "value" = "ChargingStationSequences"."value" + 1,
+              "updatedAt" = EXCLUDED."updatedAt"
+          WHERE "ChargingStationSequences"."tenantId" = EXCLUDED."tenantId"
+            AND "ChargingStationSequences"."value" BETWEEN 0 AND $maxCurrentValue
+        RETURNING "value"::text AS "value"`,
+        {
+          bind: {
+            tenantId,
+            stationId,
+            type,
+            start: SequelizeChargingStationSequenceRepository.SEQUENCE_START,
+            now: new Date(),
+            maxCurrentValue: Number.MAX_SAFE_INTEGER - 1,
+          },
+          type: QueryTypes.SELECT,
+          transaction,
         },
-        defaults: {
-          value: SequelizeChargingStationSequenceRepository.SEQUENCE_START,
-        },
-        transaction,
-      });
-
-      if (!sequenceCreated) {
-        await storedSequence.increment('value', { transaction });
-        await storedSequence.reload({ transaction });
+      );
+      if (rows.length !== 1) {
+        throw new Error('Cannot allocate a valid positive charging-station sequence value');
       }
-
-      return this._ensureNumber(storedSequence.get('value'));
+      return this._ensureNumber(rows[0].value);
     };
     return existingTransaction ? next(existingTransaction) : this.s.transaction(next);
   }

@@ -41,7 +41,10 @@ import {
 import type { CostCalculator } from '@modules/transactions/cost-calculator.js';
 import { deriveTimeSpentChargingSeconds } from '@modules/transactions/time-spent-charging.js';
 import type { CostNotifier } from '@modules/transactions/cost-notifier.js';
-import type { TransactionService } from '@modules/transactions/transaction-service.js';
+import {
+  hashNativeAdmissionRequest,
+  type TransactionService,
+} from '@modules/transactions/transaction-service.js';
 import { isForeignKeyConstraintError } from '@util/errors.js';
 import { requireTransactionDatabaseId } from '@util/transaction.js';
 
@@ -108,6 +111,14 @@ export class TransactionEventRequestOcpp2Handler extends AbstractHandler {
     message: IMessage<OCPP2_request_types.TransactionEventRequest>,
     props?: HandlerProperties,
   ): Promise<void> {
+    delete message.context.chargingAdmissionProvenance;
+    delete message.context.nativeAdmissionRequest;
+    if (message.payload.eventType === TransactionEventEnum.Started) {
+      message.context.nativeAdmissionRequest = {
+        id: message.context.correlationId,
+        hash: hashNativeAdmissionRequest(message.payload),
+      };
+    }
     //TODO: Need additional handling for OCPP 2.1 as we need to extend the transaction service for ocpp 2.1
 
     this._logger.debug(
@@ -146,6 +157,9 @@ export class TransactionEventRequestOcpp2Handler extends AbstractHandler {
         action: 'TransactionEvent',
       });
     }
+    if (authorizationResponse?.idTokenInfo?.status !== AuthorizationStatusEnum.Accepted) {
+      delete message.context.chargingAdmissionProvenance;
+    }
     if (transactionEvent.eventType !== TransactionEventEnum.Started) {
       const existingTransaction =
         await this._transactionRepository.readTransactionByStationIdAndTransactionId(
@@ -168,6 +182,7 @@ export class TransactionEventRequestOcpp2Handler extends AbstractHandler {
           tenantId,
           message.payload,
           ocppConnectionName,
+          message.context.chargingAdmissionProvenance,
         );
     } catch (error) {
       if (isForeignKeyConstraintError(error)) {

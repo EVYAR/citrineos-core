@@ -95,6 +95,7 @@ import { CommandsApi } from '@/apis/commands-api.js';
 import { OcppMessageApi } from '@/apis/ocpp-message-api.js';
 import { WebPaymentApi } from '@/apis/web-payment-api.js';
 import { buildPermissionCatalog, registerApiServices } from '@/apis/register.js';
+import { ChargingAdmissionWithdrawalService } from '@/services/authorizer/charging-admission-withdrawal-service.js';
 import {
   CaliforniaPricingModule,
   registerCaliforniaPricingServices,
@@ -472,6 +473,7 @@ function registerServices(container: AwilixContainer): void {
     smartChargingService: asClass(InternalSmartCharging).singleton(),
     statusIngressRepository: asClass(SequelizeStatusIngressRepository).singleton(),
     chargingCalloutStore: asClass(SequelizeChargingCalloutStore).singleton(),
+    chargingAdmissionWithdrawalService: asClass(ChargingAdmissionWithdrawalService).singleton(),
     realTimeAuthorizer: asClass(RealTimeAuthorizer).singleton(),
     authorizers: asValue([]),
     permissionCatalog: asValue(buildPermissionCatalog()),

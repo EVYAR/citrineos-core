@@ -33,6 +33,10 @@ import { GetLocalListVersionEndpoint } from './commands/get-local-list-version-e
 import { GetStationNetworkProfilesEndpoint } from './commands/get-station-network-profiles-endpoint.js';
 import { GetTransactionEndpoint } from './commands/get-transaction-endpoint.js';
 import {
+  GetChargingAdmissionWithdrawalEndpoint,
+  PostChargingAdmissionWithdrawalEndpoint,
+} from './commands/charging-admission-withdrawal-endpoints.js';
+import {
   DeleteStationVariablesEndpoint,
   GetStationVariablesEndpoint,
 } from './commands/station-variable-endpoints.js';
@@ -78,6 +82,8 @@ export const COMMAND_ENDPOINTS = [
   GetStationVariablesEndpoint,
   GetTariffsEndpoint,
   GetTransactionEndpoint,
+  GetChargingAdmissionWithdrawalEndpoint,
+  PostChargingAdmissionWithdrawalEndpoint,
   InstallRootCertificateEndpoint,
   ProvisionStationVariablesEndpoint,
   PutBootConfigEndpoint,

@@ -14,6 +14,8 @@
       "ocpp.configuration.dataTransfer",
       "ocpp.configuration.getConfiguration",
       "ocpp.configuration.getDisplayMessages",
+      "commands.chargingAdmissionWithdrawal.get",
+      "commands.chargingAdmissionWithdrawal.post",
       "ocpp.configuration.publishFirmware",
       "ocpp.configuration.reset",
       "ocpp.configuration.setDisplayMessage",

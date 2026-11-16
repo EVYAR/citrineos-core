@@ -56,3 +56,4 @@ export { WebsocketEvent } from './websocket-event.js';
 // etc.
 
 export * from './ChargingAdmissionCallout.js';
+export * from './charging-admission-withdrawal.js';
