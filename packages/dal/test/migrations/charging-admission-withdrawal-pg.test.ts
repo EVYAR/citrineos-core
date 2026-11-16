@@ -9,7 +9,7 @@ import type { Sequelize } from 'sequelize-typescript';
 import { setTimeout as delay } from 'node:timers/promises';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Logger } from 'tslog';
+import { Logger, type ILogObj } from 'tslog';
 import type {
   ChargingAdmissionProvenance,
   ChargingAdmissionWithdrawalRequest,
@@ -31,7 +31,7 @@ describe.runIf(optedIn)('charging admission withdrawal: official migrated Postgr
   let sequelize: Sequelize;
   let service: ChargingAdmissionWithdrawalService;
   let config: SystemConfig;
-  const logger = new Logger({ minLevel: 6 });
+  const logger = new Logger<ILogObj>({ minLevel: 6 });
 
   beforeAll(async () => {
     const url = new URL(process.env.CHARGING_ADMISSION_PG_FIXTURE_URL ?? '');

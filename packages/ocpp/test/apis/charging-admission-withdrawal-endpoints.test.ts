@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import jwt from 'jsonwebtoken';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Logger } from 'tslog';
+import { Logger, type ILogObj } from 'tslog';
 import { CommandsApi } from '@/apis/commands-api.js';
 import { PostChargingAdmissionWithdrawalEndpoint, GetChargingAdmissionWithdrawalEndpoint } from '@/apis/commands/charging-admission-withdrawal-endpoints.js';
 import { apiAuthPluginFp } from '@/apis/authorization/api-auth-plugin.js';
@@ -23,7 +23,7 @@ const ref = '00000000-0000-4000-8000-000000000001';
 const body: ChargingAdmissionWithdrawalRequest = { schemaVersion: '1.0.0', chargingCalloutRef: ref, idempotencyKey: 'adapter-withdrawal:original:callout', expectedCommercialTarget: { ocppConnectionName: 'station', protocol: 'ocpp1.6', ocppEvseId: 1, ocppConnectorId: 1 } };
 const keys = generateKeyPairSync('ec', { namedCurve: 'P-256' });
 const seed = RoleDefinitionsSchema.parse(JSON.parse(readFileSync(new URL('../../../../apps/ocpp-server/src/assets/roles-seed.json', import.meta.url), 'utf8')));
-const logger = new Logger({ type: 'hidden' });
+const logger = new Logger<ILogObj>({ type: 'hidden' });
 let app: FastifyInstance | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
 function token(claims: Record<string, unknown> = {}) {
