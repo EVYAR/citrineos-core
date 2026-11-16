@@ -9,6 +9,7 @@ import {
   AuthorizationWhitelistEnum,
   type ConnectorDto,
   type EvseDto,
+  OCPPVersion,
   type SystemConfig,
 } from '@citrineos/types';
 import { RealTimeAuthorizer } from '@services/authorizer/real-time-authorizer.js';
@@ -50,8 +51,8 @@ function buildContext(): IMessageContext {
   } as IMessageContext;
 }
 
-const evse = { id: 10 } as EvseDto;
-const connector = { id: 100 } as ConnectorDto;
+const evse = { id: 10, evseTypeId: 3 } as EvseDto;
+const connector = { id: 100, connectorId: 2, evseTypeConnectorId: 1 } as ConnectorDto;
 
 const REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS = 5;
 const testConfig = {
@@ -67,7 +68,7 @@ describe('RealTimeAuthorizer', () => {
   let authorizationRepository: Mocked<IAuthorizationRepository>;
 
   function buildAuthorizer(
-    chargingStation: unknown = { locationId: null, evses: [] },
+    chargingStation: unknown = { protocol: OCPPVersion.OCPP2_0_1, locationId: null, evses: [] },
   ): RealTimeAuthorizer {
     chargingStationRepository = buildMockLocationRepository(chargingStation);
     authorizationRepository = buildMockAuthorizationRepository();
@@ -90,7 +91,7 @@ describe('RealTimeAuthorizer', () => {
   });
 
   it('does not throw when ChargingStation has no Location (locationId is null)', async () => {
-    const chargingStation = { locationId: null, evses: [] };
+    const chargingStation = { protocol: OCPPVersion.OCPP2_0_1, locationId: null, evses: [] };
     const repo = buildMockLocationRepository(chargingStation);
     const authorizer = getTestInstance(container, RealTimeAuthorizer, {
       chargingStationRepository: repo,
