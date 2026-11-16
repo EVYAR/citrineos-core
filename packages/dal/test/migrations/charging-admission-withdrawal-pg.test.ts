@@ -114,7 +114,10 @@ describe.runIf(optedIn)('charging admission withdrawal: official migrated Postgr
     await pool.query('UPDATE "Transactions" SET "authorizationId"=NULL WHERE id=$1 AND "createdAt"=$2', [s.legacy.id, s.legacy.createdAt]);
     await startRow(s, s.legacy);
     await pool.query(`INSERT INTO "StopTransactions" ("tenantId","ocppConnectionName","transactionDatabaseId","transactionCreatedAt","meterStop",timestamp,"createdAt","updatedAt") VALUES ($1,$2,$3,$4,1000,clock_timestamp(),clock_timestamp(),clock_timestamp())`, [tenantId, connection, s.legacy.id, s.legacy.createdAt]);
-    await pool.query('UPDATE "Transactions" SET "isActive"=false,"endTime"=clock_timestamp() WHERE id=$1 AND "createdAt"=$2', [s.legacy.id, s.legacy.createdAt]);
+    await pool.query(`UPDATE "Transactions" t SET "isActive"=false,"endTime"=s.timestamp
+      FROM "StopTransactions" s WHERE t.id=$1 AND t."createdAt"=$2
+        AND s."transactionDatabaseId"=t.id AND s."transactionCreatedAt"=t."createdAt"`,
+    [s.legacy.id, s.legacy.createdAt]);
     s.callout = await callout(s);
     s.body = { schemaVersion: '1.0.0', chargingCalloutRef: s.callout, idempotencyKey: randomUUID(),
       expectedCommercialTarget: { ocppConnectionName: connection, protocol: 'ocpp1.6', ocppEvseId: 1, ocppConnectorId: 1 } };
