@@ -27,7 +27,7 @@ const logger = new Logger({ type: 'hidden' });
 let app: FastifyInstance | undefined;
 afterEach(async () => { await app?.close(); app = undefined; });
 function token(claims: Record<string, unknown> = {}) {
-  return jwt.sign({ sub: 'normal-adapter', iss: 'https://issuer.invalid', aud: 'core', core_tenant_id: 1, core_roles: ['evyar-adapter'], ...claims }, keys.privateKey, { algorithm: 'ES256', expiresIn: 60 });
+  return jwt.sign({ sub: 'normal-adapter', iss: 'https://issuer.invalid', aud: 'core', core_tenant_id: 1, core_roles: ['evyar-adapter'], ...claims }, keys.privateKey, { algorithm: 'ES256', keyid: 'isolated-owner-fixture', expiresIn: 60 });
 }
 async function mount() {
   const policy = new PolicyStore({ config: aSystemConfig({ roles: { common: [] } }), roleProvider: { listRoles: async () => seed }, permissionCatalog: buildPermissionCatalog() });
