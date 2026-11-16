@@ -209,7 +209,7 @@ CREATE TRIGGER charging_admission_consumption_insert BEFORE INSERT ON "ChargingA
   FOR EACH ROW EXECUTE FUNCTION charging_admission_consumption_insert();
 
 CREATE FUNCTION charging_admission_consume(
-  tenant integer, station integer, connector integer, authorization integer,
+  tenant integer, station integer, connector integer, p_authorization integer,
   "transactionDatabaseId" integer, "transactionCreatedAt" timestamptz, provenance jsonb
 ) RETURNS void LANGUAGE plpgsql SET search_path = public, pg_temp AS $fn$
 BEGIN
@@ -229,7 +229,7 @@ BEGIN
   INSERT INTO "ChargingAdmissionConsumptions" (
     "tenantId", "stationId", "connectorId", "authorizationId", "chargingCalloutRef",
     "nativeRequestId", "nativeRequestHash", "transactionDatabaseId", "transactionCreatedAt", "snapshot"
-  ) VALUES (tenant, station, connector, authorization, (provenance->>'chargingCalloutRef')::uuid,
+  ) VALUES (tenant, station, connector, p_authorization, (provenance->>'chargingCalloutRef')::uuid,
     provenance->>'nativeRequestId', provenance->>'nativeRequestHash', "transactionDatabaseId", "transactionCreatedAt", provenance);
 END $fn$;
 
