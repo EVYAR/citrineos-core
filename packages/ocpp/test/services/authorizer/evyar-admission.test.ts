@@ -9,6 +9,7 @@ import {
   type AuthorizationDto,
   type ConnectorDto,
   type EvseDto,
+  OCPPVersion,
   type SystemConfigInput,
 } from '@citrineos/types';
 import { RealTimeAuthorizer } from '@services/authorizer/real-time-authorizer.js';
@@ -52,6 +53,7 @@ function build(
     id: 7,
     ocppConnectionName: 'same-station',
     isOnline: true,
+    protocol: OCPPVersion.OCPP2_0_1,
     locationId: 9,
     evses: [evse],
   });
@@ -104,6 +106,76 @@ describe('EVYAR mandatory admission boundary', () => {
       }),
     ).toThrow('store construction failed');
   });
+  it.each([
+    [OCPPVersion.OCPP1_6, true, 2, 2],
+    [OCPPVersion.OCPP1_6, false, 2, 2],
+    [OCPPVersion.OCPP2_0_1, true, 7, 1],
+    [OCPPVersion.OCPP2_0_1, false, 7, 1],
+    [OCPPVersion.OCPP2_1, true, 7, 1],
+    [OCPPVersion.OCPP2_1, false, 7, 1],
+  ] as const)(
+    'projects %s wire identifiers with connector argument=%s',
+    async (protocol, withConnector, ocppEvseId, ocppConnectorId) => {
+      const mock = fetchResponse();
+      const { authorizer, read, store } = build();
+      read.mockResolvedValueOnce({ protocol });
+      const targetConnector = { ...connector, connectorId: 2, evseTypeConnectorId: 1 };
+      const targetEvse = {
+        ...evse,
+        evseTypeId: protocol === OCPPVersion.OCPP1_6 ? 2 : 7,
+        connectors: [targetConnector],
+      };
+      expect(
+        await authorizer.authorize(
+          auth(),
+          context(),
+          targetEvse,
+          withConnector ? targetConnector : undefined,
+        ),
+      ).toBe(Status.Accepted);
+      expect(mock).toHaveBeenCalledOnce();
+      const body = JSON.parse(String(mock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({
+        targetSource: 'EXPLICIT',
+        evseId: 10,
+        connectorId: 100,
+        ocppEvseId,
+        ocppConnectorId,
+      });
+      expect(await store.get(body.chargingCalloutRef)).toMatchObject({ state: 'AUTHORIZED' });
+    },
+  );
+  it.each([
+    ['missing protocol', undefined, 7, 2, 1],
+    ['null protocol', null, 7, 2, 1],
+    ['unsupported protocol', 'OCPP_1_6', 7, 2, 1],
+    ['missing 1.6 station connector', OCPPVersion.OCPP1_6, 7, undefined, 1],
+    ['zero 1.6 station connector', OCPPVersion.OCPP1_6, 7, 0, 1],
+    ['missing 2.0.1 EVSE', OCPPVersion.OCPP2_0_1, undefined, 2, 1],
+    ['missing 2.0.1 local connector', OCPPVersion.OCPP2_0_1, 7, 2, undefined],
+    ['zero 2.0.1 local connector', OCPPVersion.OCPP2_0_1, 7, 2, 0],
+    ['fractional 2.0.1 EVSE', OCPPVersion.OCPP2_0_1, 1.5, 2, 1],
+  ] as const)(
+    'fails closed for %s without borrowing database or other protocol identifiers',
+    async (_name, protocol, evseTypeId, connectorId, evseTypeConnectorId) => {
+      const mock = fetchResponse();
+      const { authorizer, read, store, update } = build();
+      read.mockResolvedValueOnce({ protocol });
+      const targetConnector = { ...connector, connectorId, evseTypeConnectorId };
+      const targetEvse = { ...evse, evseTypeId, connectors: [targetConnector] };
+      expect(
+        await authorizer.authorize(
+          auth({ realTimeAuth: Whitelist.AllowedOffline }),
+          context(),
+          targetEvse,
+          targetConnector,
+        ),
+      ).toBe(Status.Invalid);
+      expect(mock).not.toHaveBeenCalled();
+      expect(store.rows.size).toBe(0);
+      expect(update).toHaveBeenCalledOnce();
+    },
+  );
   it('pins an explicit target and keeps OCPP identifiers separate from database IDs', async () => {
     const mock = fetchResponse();
     const { authorizer, store, read, update } = build();

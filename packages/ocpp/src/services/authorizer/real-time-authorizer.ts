@@ -11,6 +11,7 @@ import {
   AuthorizationWhitelistEnum,
   type ConnectorDto,
   type EvseDto,
+  OCPPVersion,
   type RealTimeAuthorizationRequestBody,
   type RealTimeAuthorizationResponse,
   type SystemConfig,
@@ -110,6 +111,7 @@ export class RealTimeAuthorizer implements IAuthorizer {
     let connectorId = undefined;
     let targetSource: RealTimeAuthorizationRequestBody['targetSource'] = 'NONE';
     let ocppEvseId: number | undefined = undefined;
+    let explicitConnector: ConnectorDto | undefined;
     let ocppConnectorId: number | undefined = undefined;
     let result: AuthorizationStatusEnumType = AuthorizationStatusEnum.Invalid;
     let chargingCalloutRef: string | undefined;
@@ -129,16 +131,13 @@ export class RealTimeAuthorizer implements IAuthorizer {
       if (evse && connector) {
         evseId = evse.id!;
         connectorId = connector.id!;
+        explicitConnector = connector;
         targetSource = 'EXPLICIT';
-        ocppConnectorId = connector.evseTypeConnectorId ?? connector.connectorId ?? undefined;
-        ocppEvseId = evse.evseTypeId ?? connector.connectorId ?? undefined;
       } else if (evse && !connector && evse.connectors?.length === 1) {
         evseId = evse.id!;
         connectorId = evse.connectors[0].id!;
+        explicitConnector = evse.connectors[0];
         targetSource = 'EXPLICIT';
-        ocppConnectorId =
-          evse.connectors[0].evseTypeConnectorId ?? evse.connectors[0].connectorId ?? undefined;
-        ocppEvseId = evse.evseTypeId ?? evse.connectors[0].connectorId ?? undefined;
       } else if (
         chargingStation &&
         chargingStation.evses &&
@@ -148,6 +147,31 @@ export class RealTimeAuthorizer implements IAuthorizer {
         evseId = chargingStation.evses[0].id!;
         connectorId = chargingStation.evses[0].connectors![0].id!;
         targetSource = 'INFERRED_SINGLE_CONNECTOR';
+      }
+      if (explicitConnector) {
+        // OCPP 1.6 addresses connectors station-wide; 2.x addresses them within an EVSE.
+        // Neither database IDs nor the other protocol's identifiers are wire fallbacks.
+        switch (chargingStation?.protocol) {
+          case OCPPVersion.OCPP1_6:
+            ocppEvseId = explicitConnector.connectorId;
+            ocppConnectorId = explicitConnector.connectorId;
+            break;
+          case OCPPVersion.OCPP2_0_1:
+          case OCPPVersion.OCPP2_1:
+            ocppEvseId = evse?.evseTypeId;
+            ocppConnectorId = explicitConnector.evseTypeConnectorId;
+            break;
+          default:
+            throw new Error('Explicit charging target has no supported station protocol');
+        }
+        if (
+          !Number.isInteger(ocppEvseId) ||
+          ocppEvseId! <= 0 ||
+          !Number.isInteger(ocppConnectorId) ||
+          ocppConnectorId! <= 0
+        ) {
+          throw new Error('Explicit charging target has no valid protocol identifiers');
+        }
       }
 
       // A connector start must claim/check its durable fence and current package authority.
