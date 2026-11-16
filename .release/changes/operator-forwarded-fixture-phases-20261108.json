@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Distinguish standalone readiness from forwarded authentication assertions, retain safe numeric and boolean failure diagnostics, and separate synthetic public and internal origins so mismatched protocol probes are meaningful."
+}

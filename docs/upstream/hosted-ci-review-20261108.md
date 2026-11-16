@@ -79,3 +79,22 @@ upstream identity rather than claiming an observed fork-side bot action.
 No release, migration/schema, catalog, license, lint or test job is disabled or regated by
 this adaptation. These jobs have no checkout and their existing scripts use GitHub metadata
 APIs; the gate precedes every write-capable step. No bot action was executed during review.
+
+## First hosted PR batch
+
+The task-owned manual dispatches 42466491740 (Operator) and 42466493990 (backend) were
+explicitly cancelled after PR runs on the identical head f55895dc32b138e30291371c60def3bddfc3139c
+started; cancelled runs do not establish acceptance. PR runs 42466625761/42466625734 were
+subsequently superseded by a newer PR head before runtime acceptance completed.
+
+PR REUSE 42466625744 returned native 1 (not guard refusal): initial available 15028 MiB,
+max owned RSS 247.89 MiB, minimum available 14959 MiB. Lint 42466625805 also returned native 1:
+initial available 14637 MiB, max owned RSS 1802.76 MiB, minimum available 13223 MiB.
+The fixed 1536 MiB reserve was preserved. These first workflow versions did not upload the
+child logs for lint/REUSE, and REUSE cleanup deleted its raw diagnostic file. The evidence
+retention follow-up uploads guard logs/measurements with always(), preserves REUSE diagnostics
+before cleanup and uploads Operator evidence on failure. It does not suppress either failure
+or claim their underlying source diagnostics have already been recovered.
+
+Component policy 42466625782 independently failed with: “Version changes belong in a reviewed
+release PR, not a feature PR”. That policy and its review decision remain unchanged.

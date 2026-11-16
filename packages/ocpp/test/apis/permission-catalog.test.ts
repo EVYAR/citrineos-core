@@ -106,12 +106,12 @@ describe('role seed', () => {
     expect(common.filter((name: string) => !catalog.has(name))).toEqual([]);
   });
 
-  it('leaves the common baseline out of individual roles', () => {
+  it('grants permission introspection explicitly only to the operator machine role', () => {
     const duplicated = Object.entries(seed)
       .filter(([, definition]) => definition.permissions.includes('permissions.user.get'))
       .map(([role]) => role);
 
-    expect(duplicated).toEqual([]);
+    expect(duplicated).toEqual(['evyar-operator']);
   });
 });
 

@@ -2,7 +2,7 @@
 
 The automatic backend lane is `.github/workflows/test-build-server.yml`. It installs the
 frozen pnpm workspace, builds the OCPP and OCPI dependency closures sequentially, runs
-Vitest projects base/dal/ocpp/ocpi with one worker and no file parallelism, then runs the
+Vitest projects base/dal/ocpp/ocpi in separate sequential processes with one worker and no file parallelism, then runs the
 four native TypeScript test checks. `backend-report.py` reads actual Vitest JSON assertions;
 TypeScript `--listFiles` results are labelled input discovery, never executed test cases.
 The runtime report requires all twelve Boot archive integration assertions to pass.
@@ -29,7 +29,7 @@ stats (anonymous RSS, RSS, or conservative usage fallback). Missing statistics f
 | --------- | ------------: | --------------: | --------------------: | --------------: |
 | install   |          1536 |            2304 |                     0 |             900 |
 | build     |          1536 |            2304 |                     0 |            1200 |
-| runtime   |          1536 |            2304 |                  1024 |            1800 |
+| runtime   |          1536 |            3072 |                  1024 |            1800 |
 | typecheck |          1536 |            2304 |                     0 |             900 |
 | lint      |          1536 |            2304 |                     0 |            1200 |
 | stdlib    |           128 |             640 |                     0 |             300 |
@@ -70,3 +70,57 @@ Hosted execution after source review must establish compatibility of the real Do
 images and application tests. Small guard fixtures cover real Unix proxy create requests
 (content-length and chunked), budgets/ownership, native exit propagation and environment
 sanitization without Docker or application services.
+
+The first hosted combined runtime process hit RSS 2326.20 MiB against 2304 MiB, with host
+minimum available 12901 MiB. Parent approved runtime RSS 3072 MiB only; the Node heap 1536,
+Docker RSS 1024 and fixed reserve 1536 remain unchanged. The derived runtime config explicitly
+disables typechecking on inline projects: Vitest 3.2.7 does not propagate that CLI override.
+It preserves the normal monorepo aliases, test selection and timeouts. Each project now has
+its own guard receipt and actual runtime JSON; the combined report sums only those actual
+assertions. Native TSC still runs separately after successful builds even if runtime tests
+fail, and a runtime failure remains a failing workflow.
+
+Manual backend dispatch may set `ocpp_fixture_focus=true` to run the nine reviewed OCPP
+fixture files only. PR/default dispatch remains the complete four-project runtime lane.
+The focused receipt is labelled OCPP_NINE_FIXTURE_FILES_NOT_FULL_BACKEND_ACCEPTANCE and keeps
+native TypeScript checks separate. Its in-memory receipt fixture models serialized ownership,
+identity and rollback only; projection application fails without an explicit database fixture.
+It does not replace or claim PostgreSQL atomicity/integration acceptance.
+
+The DAL diagnostic-only integration records safe invariant codes, current guard phase,
+container identity and HTTP status when an invariant fails. It does not retain raw daemon
+response bodies or change thresholds, ownership, failure behavior or cleanup. The historical
+unclassified guard failure's cause remains unknown. A classified empty-stats socket fixture
+shows one possible lifecycle race; it does not prove that historical cause. The separate
+hosted DAL diagnostic run 42469015168 completed 1085 runtime assertions including all twelve
+Boot archive cases, with zero typed-discovery entries; this is DAL-only evidence, not full
+backend acceptance.
+
+## Fresh container evidence after unavailable statistics
+
+A running inspect snapshot followed by unavailable stats now triggers exactly one fresh inspect
+of that same already-owned container ID. Zero RSS is accepted only when the fresh inspect
+still proves the exact ID and job ownership label, requires Memory and MemorySwap to equal
+the original inspected values exactly (a smaller valid cap also fails), and reports Running=false,
+Status=exited, no paused/restarting/dead state, and a valid nonzero timezone-aware FinishedAt.
+A missing/deleted inspect, changed owner/ID/limits, still-running state, or incomplete stop
+state fails closed. There is no last-known RSS substitution, grace timer or stats retry.
+An OOM flag still fails the stage, and an independent native process failure retains its exit.
+All profiles, reserve, aggregate accounting and owned cleanup rules are unchanged.
+
+Each recheck writes a bounded allowlist of ID, ownership label and State fields to a mode-0600
+`*-container-stats.private.jsonl` file. Environment variables, arbitrary labels, daemon error
+bodies and health logs are never copied. The Core repository is public, so these snapshots
+remain runner-private and are excluded from the normal uploaded backend artifact. Public
+receipts retain recheck/verified-stopped counts and fixed decision-enum counts: `missing-inspect`,
+`inspect-unavailable`, `identity-or-ownership-mismatch`, `limits-changed`, `still-running`,
+`incomplete-stop` and `verified-exited`. This summary contains no IDs, ownership nonces,
+timestamps, environment values or raw errors. Runner-private snapshots are ephemeral
+unless root separately arranges private collection. This change does not provide a private
+external artifact sink or claim that a previous missing-stats failure was a stopped-container race.
+
+Standard-library fixtures use real temporary Unix HTTP sockets and tiny owned child processes,
+not Docker or application services. They distinguish stop-between-inspect/stats from still-running
+empty stats, missing fresh inspect, changed ID/ownership/limits, incomplete/restarting state,
+OOM and nonzero native exits. They do not establish DAL/OCPP acceptance. A new full hosted run
+requires root's review of this follow-up diff.

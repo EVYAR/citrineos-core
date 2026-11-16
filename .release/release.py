@@ -91,7 +91,7 @@ def source_at(ref, path):
 
 
 def is_nonruntime(path):
-    return (path.startswith(('.release/', '.github/', 'docs/')) or
+    return (path.startswith(('.release/', '.github/', 'docs/', 'scripts/ci/')) or
             path.endswith(('.md', '.mdx')) or
             bool(re.search(r'(^|/)(__tests__|tests|test)/|\.(test|spec)\.[^/]+$', path)))
 

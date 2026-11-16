@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Separate hosted Vitest runtime projects from native TypeScript checking, preserve sequential per-project evidence, and apply the reviewed 3072 MiB runtime process RSS budget with unchanged heap, Docker and reserve budgets."
+}

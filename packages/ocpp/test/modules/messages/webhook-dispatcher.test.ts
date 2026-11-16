@@ -47,8 +47,8 @@ describe('WebhookDispatcher', () => {
     webhookDispatcher = getTestInstance(container, WebhookDispatcher, { subscriptionRepository });
   });
 
-  afterEach(() => {
-    webhookDispatcher.shutdown();
+  afterEach(async () => {
+    await webhookDispatcher.shutdown();
     fetch.mockClear();
     subscriptionRepository.readAllByStationId.mockReset();
     vi.clearAllTimers();

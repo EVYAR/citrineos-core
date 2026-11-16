@@ -5,6 +5,7 @@ name: Linter
 
 on:
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   # Rerun check when the PR is updated, https://stackoverflow.com/a/72408109
@@ -47,3 +48,12 @@ jobs:
       - name: Cleanup owned resources
         if: always()
         run: python3 scripts/ci/bounded.py cleanup
+
+      - name: Retain native guard logs and measurements
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lint-evidence-${{ github.sha }}
+          path: reports/ci/
+          if-no-files-found: warn
+          retention-days: 7

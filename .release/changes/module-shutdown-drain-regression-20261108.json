@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Await webhook dispatcher cleanup in its tests and add a typed, deferred module-shutdown regression proving the module stays pending until dispatcher drain completes; runtime implementation remains owned by the separate graceful-drain fix."
+}

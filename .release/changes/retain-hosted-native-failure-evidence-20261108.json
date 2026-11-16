@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Retain bounded lint, license and Operator native failure logs and measurements as hosted evidence, including REUSE diagnostics before temporary-file cleanup."
+}

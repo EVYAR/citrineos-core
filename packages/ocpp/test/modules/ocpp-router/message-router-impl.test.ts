@@ -10,6 +10,7 @@ import {
   type ICache,
   type IMessageHandler,
   type IMessageSender,
+  type IWebsocketConnection,
   OcppError,
   RequestBuilder,
 } from '@citrineos/base';
@@ -28,7 +29,6 @@ import {
   type OcppRequest,
   type OcppResponse,
   OCPPVersion,
-  type OCPPVersionType,
   type RawCall,
   type RawCallError,
   type RawCallResult,
@@ -41,6 +41,7 @@ import { MemoryCache } from '@citrineos/base';
 import type { CallbackUrlNotifier } from '@modules/ocpp-router/callback-url-notifier.js';
 import type { MessagesExchangeSink } from '@/transport/index.js';
 import { createTestContainer, getTestInstance } from '@test/test-container.js';
+import { makeStatusIngressRepository } from '@test/providers/status-ingress-repository.js';
 import { ConnectionNotFoundError } from '@/transport/index.js';
 import {
   aMockDeadLetterPublisher,
@@ -172,6 +173,7 @@ describe('MessageRouterImpl', () => {
       networkHook,
       ocppValidator: undefined,
       chargingStationRepository,
+      statusIngressRepository: makeStatusIngressRepository(),
       reemitter,
       deadLetterPublisher,
     });
@@ -1154,6 +1156,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
@@ -1594,13 +1597,14 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
       vi.spyOn(router as any, '_validateCall').mockReturnValue({ isValid: true });
     });
 
-    async function bootPending(protocol: OCPPVersionType) {
+    async function bootPending(protocol: OCPPVersion) {
       const bootService = getTestInstance(container, BootNotificationService, {
         bootRepository: {},
         cache: memoryCache,
@@ -1620,9 +1624,34 @@ describe('MessageRouterImpl', () => {
         );
       }
       await memoryCache.set(
+        IDENTIFIER,
+        JSON.stringify({
+          id: 'fixture-server',
+          allowUnknownChargingStations: false,
+          timeConnected: timestamp.toISOString(),
+          protocol,
+          statusIngressConnection: 'fixture-socket',
+        } satisfies IWebsocketConnection),
+        CacheNamespace.Connections,
+      );
+      const connection = await memoryCache.get<string>(IDENTIFIER, CacheNamespace.Connections);
+      expect(JSON.parse(connection ?? 'null')?.statusIngressConnection).toBe('fixture-socket');
+      expect(
+        await router.registerConnection(
+          TENANT_ID,
+          STATION_ID,
+          protocol,
+          undefined,
+          'fixture-socket',
+        ),
+      ).toBe(true);
+      await memoryCache.set(
         CacheNamespace.BootStatus,
         OCPP2_0_1.RegistrationStatusEnumType.Pending,
         IDENTIFIER,
+      );
+      expect(await memoryCache.get(CacheNamespace.BootStatus, IDENTIFIER)).toBe(
+        OCPP2_0_1.RegistrationStatusEnumType.Pending,
       );
     }
 
@@ -1632,7 +1661,7 @@ describe('MessageRouterImpl', () => {
         .filter((frame) => frame[0] === MessageTypeId.CallError);
     }
 
-    const triggers: [string, OCPPVersionType, CallAction, object, CallAction][] = [
+    const triggers: [string, OCPPVersion, CallAction, object, CallAction][] = [
       [
         'TriggerMessage(StatusNotification)',
         OCPPVersion.OCPP2_0_1,
@@ -1695,6 +1724,7 @@ describe('MessageRouterImpl', () => {
           JSON.stringify([MessageTypeId.Call, 'triggered-1', triggeredAction, {}]),
           timestamp,
           protocol,
+          'fixture-socket',
         );
 
         expect(callErrorsSent()).toEqual([]);
@@ -1779,6 +1809,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
@@ -1843,6 +1874,7 @@ describe('MessageRouterImpl', () => {
         networkHook,
         ocppValidator: undefined,
         chargingStationRepository,
+        statusIngressRepository: makeStatusIngressRepository(),
         reemitter,
         deadLetterPublisher,
       });
@@ -1958,11 +1990,17 @@ describe('MessageRouterImpl', () => {
 
       await (router as any)._routeCallError(IDENTIFIER, message, action, timestamp, PROTOCOL);
 
-      expect(notifier.notify).toHaveBeenCalledWith(
-        CORRELATION_ID,
-        STATION_ID,
-        expect.any(OcppError),
-      );
+      expect(notifier.notify).toHaveBeenCalledWith(TENANT_ID, CORRELATION_ID, STATION_ID, {
+        success: false,
+        outcome: 'CALL_ERROR',
+        action,
+        correlationId: CORRELATION_ID,
+        error: {
+          code: ErrorCode.InternalError,
+          description: 'test error',
+          details: { detail: 'some detail' },
+        },
+      });
     });
   });
 

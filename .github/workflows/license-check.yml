@@ -6,6 +6,7 @@ name: REUSE License Check
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,8 +38,18 @@ jobs:
       - name: Clean up temporary files
         if: always()
         run: |
+          if [ -f reuse_output.txt ]; then cp reuse_output.txt reports/ci/reuse-output.log; fi
           rm -f reuse_output.txt failing_files.txt unignored_failures.txt
 
       - name: Release owned guard resources
         if: always()
         run: python3 scripts/ci/bounded.py cleanup
+
+      - name: Retain native guard logs and measurements
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: license-check-evidence-${{ github.sha }}
+          path: reports/ci/
+          if-no-files-found: warn
+          retention-days: 7

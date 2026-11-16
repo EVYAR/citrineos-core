@@ -210,8 +210,8 @@ describe('OcppSender', () => {
       expect(call.context).not.toHaveProperty('staleAfterSeconds');
     });
 
-    it('caches the callback URL under the CALLBACK_URL_ prefix', async () => {
-      const { ocppSender, cache, subLogger } = anOcppSender({
+    it('registers the tenant-scoped callback before dispatch', async () => {
+      const { ocppSender, cache, sender } = anOcppSender({
         timeouts: { maxCachingSeconds: 99 },
       });
 
@@ -221,14 +221,12 @@ describe('OcppSender', () => {
       expect(cache.set).toHaveBeenCalledWith(
         'corr-1',
         'https://cb.example/hook',
-        'CALLBACK_URL_cp001',
+        'CALLBACK_URL_7:cp001',
         99,
       );
-      await vi.waitFor(() => {
-        expect(subLogger.debug).toHaveBeenCalledWith(
-          'Successfully set cache for correlationId: corr-1',
-        );
-      });
+      expect(cache.set.mock.invocationCallOrder[0]).toBeLessThan(
+        sender.sendRequest.mock.invocationCallOrder[0],
+      );
     });
 
     it('skips the callback cache when no callbackUrl is given', async () => {
@@ -237,22 +235,26 @@ describe('OcppSender', () => {
       expect(cache.set).not.toHaveBeenCalled();
     });
 
-    it('warns when the callback cache write returns false', async () => {
-      const { ocppSender, cache, subLogger } = anOcppSender();
+    it('refuses dispatch when the callback cache write returns false', async () => {
+      const { ocppSender, cache, sender } = anOcppSender();
       cache.set.mockResolvedValue(false);
 
-      await ocppSender.sendCall(aSendCallArgs({ callbackUrl: 'https://cb.example/hook' }));
-
-      await vi.waitFor(() => {
-        expect(subLogger.warn).toHaveBeenCalledTimes(1);
-        expect(subLogger.warn).toHaveBeenCalledWith(
-          'Failed to set cache for correlationId: corr-1',
-        );
+      expect(
+        await ocppSender.sendCall(aSendCallArgs({ callbackUrl: 'https://cb.example/hook' })),
+      ).toMatchObject({
+        success: false,
+        payload: {
+          outcome: 'CALLBACK_REGISTRATION_FAILED',
+          correlationId: 'corr-1',
+          error: { code: 'CALLBACK_CACHE_REJECTED' },
+        },
       });
+      expect(cache.get).not.toHaveBeenCalled();
+      expect(sender.sendRequest).not.toHaveBeenCalled();
     });
 
-    it('logs and keeps sending when the callback cache write rejects', async () => {
-      const { ocppSender, cache, subLogger } = anOcppSender();
+    it('refuses dispatch when the callback cache write rejects', async () => {
+      const { ocppSender, cache, sender } = anOcppSender();
       const boom = new Error('redis down');
       cache.set.mockRejectedValue(boom);
 
@@ -260,15 +262,16 @@ describe('OcppSender', () => {
         aSendCallArgs({ callbackUrl: 'https://cb.example/hook' }),
       );
 
-      expect(result).toBe(A_CONFIRMATION);
-      await vi.waitFor(() => {
-        expect(subLogger.error).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({
+        success: false,
+        payload: {
+          outcome: 'CALLBACK_REGISTRATION_FAILED',
+          correlationId: 'corr-1',
+          error: { code: 'CALLBACK_CACHE_ERROR' },
+        },
       });
-      // logged through serializeError, so the message survives JSON serialization
-      expect(subLogger.error).toHaveBeenCalledWith(
-        'Error setting cache: ',
-        expect.objectContaining({ name: 'Error', message: 'redis down' }),
-      );
+      expect(cache.get).not.toHaveBeenCalled();
+      expect(sender.sendRequest).not.toHaveBeenCalled();
     });
 
     it('looks up the connection under the Connections namespace', async () => {
@@ -280,17 +283,17 @@ describe('OcppSender', () => {
       expect(cache.get).toHaveBeenCalledWith('7:cp001', CacheNamespace.Connections);
     });
 
-    it('rejects when no connection exists for the identifier', async () => {
+    it('forwards missing connection evidence to the authoritative router', async () => {
       const { ocppSender, cache, sender } = anOcppSender();
       cache.get.mockResolvedValue(null);
 
       const result = await ocppSender.sendCall(aSendCallArgs());
 
-      expect(result).toEqual({
-        success: false,
-        payload: 'No connection found for identifier: 7:cp001',
+      expect(result).toBe(A_CONFIRMATION);
+      expect(sender.sendRequest).toHaveBeenCalledOnce();
+      expect(sender.sendRequest.mock.calls[0][0]).toMatchObject({
+        context: { tenantId: 7, ocppConnectionName: 'cp001', correlationId: 'corr-1' },
       });
-      expect(sender.sendRequest).not.toHaveBeenCalled();
     });
 
     it('rejects when the requested protocol differs from the negotiated subprotocol', async () => {
@@ -299,10 +302,17 @@ describe('OcppSender', () => {
 
       const result = await ocppSender.sendCall(aSendCallArgs({ protocol: OCPPVersion.OCPP2_0_1 }));
 
-      expect(result).toEqual({
+      expect(result).toMatchObject({
         success: false,
-        payload:
-          "Requested protocol: 'ocpp2.0.1', connection protocol: 'ocpp1.6' for identifier: '7:cp001'",
+        payload: {
+          outcome: 'DISPATCH_FAILED',
+          correlationId: 'corr-1',
+          error: {
+            code: 'PROTOCOL_MISMATCH',
+            description:
+              "Requested protocol: 'ocpp2.0.1', connection protocol: 'ocpp1.6' for identifier: '7:cp001'",
+          },
+        },
       });
       expect(sender.sendRequest).not.toHaveBeenCalled();
     });

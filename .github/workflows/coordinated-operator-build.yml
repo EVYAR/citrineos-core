@@ -41,17 +41,20 @@ jobs:
       - name: Operator unit regressions (runtime assertions, one worker)
         run: >-
           python3 scripts/ci/bounded.py run --stage operator-unit --profile build --
-          pnpm exec vitest run --project operator-ui --maxWorkers=1 --minWorkers=1
+          pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project operator-ui --maxWorkers=1 --minWorkers=1
           --fileParallelism=false --typecheck.enabled=false --reporter=default --reporter=json
           --outputFile=reports/ci/operator-unit-runtime.json
       - name: Native Operator TypeScript check
         run: python3 scripts/ci/bounded.py run --stage operator-typecheck --profile typecheck -- pnpm exec tsc -p apps/operator-ui/tsconfig.json --noEmit
       - name: Build once and exercise actual standalone HTTP/session/proxy headers
         run: python3 scripts/ci/bounded.py run --stage operator --profile operator -- node scripts/validate-operator-isolated.mjs 4096
+      - name: Separate actual runtime, native TypeScript and standalone evidence
+        run: python3 scripts/ci/operator-report.py
       - name: Cleanup owned resources
         if: always()
         run: python3 scripts/ci/bounded.py cleanup
       - name: Retain source-bound acceptance result
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: operator-build-validation-${{ github.sha }}

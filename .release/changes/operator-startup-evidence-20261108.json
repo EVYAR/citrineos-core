@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Retain bounded sanitized actual standalone startup diagnostics, report Operator runtime assertions separately from typed discovery and native TypeScript, and allow hosted lint/license diagnostic dispatch."
+}
