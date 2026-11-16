@@ -56,9 +56,7 @@ const connector = { id: 100, connectorId: 2, evseTypeConnectorId: 1 } as Connect
 
 const REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS = 5;
 const testConfig = {
-  timeouts: {
-    realTimeAuthRequestTimeoutSeconds: REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS,
-  },
+  realTimeAuthRequestTimeoutMs: REAL_TIME_AUTH_REQUEST_TIMEOUT_SECONDS * 1000,
 } as SystemConfig;
 
 describe('RealTimeAuthorizer', () => {
