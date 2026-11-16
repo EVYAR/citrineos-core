@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
 //
 // SPDX-License-Identifier: Apache-2.0
+import { createHash } from 'node:crypto';
 import {
   childLogger,
   type IAuthorizer,
@@ -33,6 +34,19 @@ import type {
 import { OCPP1_6_Mapper } from '@citrineos/dal';
 import { OCPP2_0_1_Mapper } from '@citrineos/dal';
 import type { ILogObj, Logger } from 'tslog';
+
+/** Hash the original JSON payload with recursive key ordering, preserving array order. */
+export function hashNativeAdmissionRequest(request: unknown): string {
+  const canonical = JSON.stringify(request, (_key, value) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.fromEntries(
+        Object.keys(value).sort().map((key) => [key, value[key]]),
+      );
+    }
+    return value;
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
 
 export class TransactionService {
   private _meterValueRepository: IMeterValueRepository;
@@ -113,6 +127,7 @@ export class TransactionService {
     transactionEvent: OCPP2_request_types.TransactionEventRequest,
     messageContext: IMessageContext,
   ): Promise<OCPP2_response_types.TransactionEventResponse> {
+    delete messageContext.chargingAdmissionProvenance;
     const idToken = transactionEvent.idToken!;
 
     // C02.FR.02: a transaction started with a button carries a NoAuthorization idToken with an
@@ -193,9 +208,10 @@ export class TransactionService {
           ));
       }
 
+      messageContext.requiresExplicitAuthorizationTarget = transactionEvent.evse != null;
       const result = await this._applyAuthorizers(
         authorization,
-        { ...messageContext, requiresExplicitAuthorizationTarget: transactionEvent.evse != null },
+        messageContext,
         evse,
         connector,
       );
@@ -210,6 +226,7 @@ export class TransactionService {
     transactionEvent: OCPP2_request_types.TransactionEventRequest,
     messageContext: IMessageContext,
   ): Promise<OCPP2_1.TransactionEventResponse> {
+    delete messageContext.chargingAdmissionProvenance;
     const idToken = transactionEvent.idToken!;
 
     // C02.FR.02: a transaction started with a button carries a NoAuthorization idToken with an
@@ -285,9 +302,10 @@ export class TransactionService {
           ));
       }
 
+      messageContext.requiresExplicitAuthorizationTarget = transactionEvent.evse != null;
       const result = await this._applyAuthorizers(
         authorization,
-        { ...messageContext, requiresExplicitAuthorizationTarget: transactionEvent.evse != null },
+        messageContext,
         evse,
         connector,
       );
@@ -316,6 +334,9 @@ export class TransactionService {
       }
     }
 
+    if (response.idTokenInfo.status !== AuthorizationStatusEnum.Accepted) {
+      delete messageContext.chargingAdmissionProvenance;
+    }
     this._logger.debug('idToken Authorization 2.1 final status:', response.idTokenInfo.status);
     return response;
   }
@@ -349,6 +370,7 @@ export class TransactionService {
     idToken: string,
     connectorId: number,
   ): Promise<OCPP1_6.StartTransactionResponse> {
+    delete context.chargingAdmissionProvenance;
     const response: OCPP1_6.StartTransactionResponse = {
       idTagInfo: {
         status: OCPP1_6.StartTransactionResponseStatus.Invalid,
@@ -410,11 +432,12 @@ export class TransactionService {
           context.ocppConnectionName,
           connectorId,
         );
+      context.requiresExplicitAuthorizationTarget = true;
       response.idTagInfo.status =
         OCPP1_6_Mapper.AuthorizationMapper.toStartTransactionResponseStatus(
           await this._applyAuthorizers(
             authorization,
-            { ...context, requiresExplicitAuthorizationTarget: true },
+            context,
             connector?.evse,
             connector,
           ),
@@ -437,6 +460,7 @@ export class TransactionService {
       }
       return response;
     } catch (e) {
+      delete context.chargingAdmissionProvenance;
       this._logger.error(`Authorization for idToken ${idToken} failed.`, e);
       response.idTagInfo.status = OCPP1_6.StartTransactionResponseStatus.Invalid;
       return response;
@@ -546,14 +570,19 @@ export class TransactionService {
     connector?: ConnectorDto,
   ): Promise<AuthorizationStatusEnumType> {
     let result = authorization.status;
-    for (const authorizer of this._authorizers) {
-      if (result !== AuthorizationStatusEnum.Accepted) {
-        break;
+    let completed = false;
+    try {
+      for (const authorizer of this._authorizers) {
+        if (result !== AuthorizationStatusEnum.Accepted) break;
+        result = await authorizer.authorize(authorization, messageContext, evse, connector);
       }
-
-      result = await authorizer.authorize(authorization, messageContext, evse, connector);
+      completed = true;
+      return result;
+    } finally {
+      if (!completed || result !== AuthorizationStatusEnum.Accepted) {
+        delete messageContext.chargingAdmissionProvenance;
+      }
     }
-    return result;
   }
 
   /**

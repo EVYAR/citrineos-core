@@ -153,7 +153,7 @@ describe('EVYAR dedicated Core signed JWT boundary', () => {
   it('installs exactly the reviewed adapter machine role, without UI resources', () => {
     expect(seed['evyar-adapter']).toEqual(expected['evyar-adapter']);
     expect(seed['evyar-adapter'].resources).toEqual({});
-    expect(seed['evyar-adapter'].permissions).toHaveLength(49);
+    expect(seed['evyar-adapter'].permissions).toHaveLength(51);
     expect(policy.permissionsFor(['evyar-adapter'])).toEqual({
       resources: {},
       permissions: [...expected['evyar-adapter'].permissions].sort(),

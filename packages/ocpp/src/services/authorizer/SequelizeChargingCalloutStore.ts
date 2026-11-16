@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { randomUUID } from 'node:crypto';
 import { type SystemConfig } from '@citrineos/types';
-import { Op, QueryTypes } from 'sequelize';
+import { Op, QueryTypes, Transaction } from 'sequelize';
 import type { Sequelize } from 'sequelize-typescript';
 import type { ILogObj, Logger } from 'tslog';
 import { ChargingAdmissionCallout } from '@citrineos/dal';
@@ -32,7 +32,7 @@ const toRow = (m: ChargingAdmissionCallout): ChargingCalloutRow => ({
   declineAbandoned: m.declineAbandoned,
 });
 
-/** Postgres-backed ledger. State changes are single conditional UPDATEs, so the database arbitrates every race. */
+/** Postgres-backed ledger. Decisions share the withdrawal connector/callout lock order. */
 export class SequelizeChargingCalloutStore implements ChargingCalloutStore {
   private readonly s: Sequelize;
 
@@ -95,19 +95,63 @@ export class SequelizeChargingCalloutStore implements ChargingCalloutStore {
   }
 
   async markAuthorized(ref: string, now: Date): Promise<boolean> {
-    const [count] = await ChargingAdmissionCallout.update(
-      { state: 'AUTHORIZED', decidedAt: now },
-      { where: { id: ref, state: 'PENDING' } },
-    );
-    return count === 1;
+    return this.withPendingCallout(ref, async (transaction) => {
+      const [count] = await ChargingAdmissionCallout.update(
+        { state: 'AUTHORIZED', decidedAt: now },
+        { where: { id: ref, state: 'PENDING' }, transaction },
+      );
+      return count === 1;
+    });
   }
 
   async markDeclined(ref: string, coreEvidenceRef: string, now: Date): Promise<boolean> {
-    const [count] = await ChargingAdmissionCallout.update(
-      { state: 'DECLINED_BEFORE_POWER', decidedAt: now, coreEvidenceRef, nextDeclineAt: now },
-      { where: { id: ref, state: 'PENDING' } },
+    return this.withPendingCallout(ref, async (transaction) => {
+      const [count] = await ChargingAdmissionCallout.update(
+        { state: 'DECLINED_BEFORE_POWER', decidedAt: now, coreEvidenceRef, nextDeclineAt: now },
+        { where: { id: ref, state: 'PENDING' }, transaction },
+      );
+      return count === 1;
+    });
+  }
+
+  private async withPendingCallout(
+    ref: string,
+    update: (transaction: Transaction) => Promise<boolean>,
+  ): Promise<boolean> {
+    return this.s.transaction(
+      { isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED },
+      async (transaction) => {
+        // Read identity without locking: taking the callout lock first would invert
+        // the withdrawal/consumption order and deadlock a concurrent Start.
+        const identity = await ChargingAdmissionCallout.findByPk(ref, { transaction });
+        if (!identity) return false;
+        const connectors = await this.s.query<{ id: number }>(
+          'SELECT "id" FROM "Connectors" WHERE "id" = :connectorId AND "tenantId" = :tenantId FOR UPDATE',
+          {
+            replacements: { connectorId: identity.connectorId, tenantId: identity.tenantId },
+            type: QueryTypes.SELECT,
+            transaction,
+          },
+        );
+        if (connectors.length !== 1) return false;
+        const callout = await ChargingAdmissionCallout.findByPk(ref, {
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (
+          !callout ||
+          callout.state !== 'PENDING' ||
+          callout.connectorId !== identity.connectorId ||
+          callout.tenantId !== identity.tenantId
+        ) return false;
+        const withdrawals = await this.s.query<{ chargingCalloutRef: string }>(
+          'SELECT "chargingCalloutRef" FROM "ChargingAdmissionWithdrawals" WHERE "chargingCalloutRef" = :ref',
+          { replacements: { ref }, type: QueryTypes.SELECT, transaction },
+        );
+        if (withdrawals.length !== 0) return false;
+        return update(transaction);
+      },
     );
-    return count === 1;
   }
 
   async get(ref: string) {

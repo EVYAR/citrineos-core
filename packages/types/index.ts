@@ -164,3 +164,4 @@ export * from './src/interfaces/dto/variable-monitoring-dto.js';
 export * from './src/interfaces/dto/variable-monitoring-status-dto.js';
 export * from './src/interfaces/dto/variable-status-dto.js';
 export * from './src/interfaces/dto/websocket-event-dto.js';
+export * from './src/interfaces/dto/charging-admission-withdrawal.js';

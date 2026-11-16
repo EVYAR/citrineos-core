@@ -10,7 +10,10 @@ import {
   recordAuthorizeResult,
 } from '@citrineos/base';
 import { type HandlerProperties, OCPP1_6, OCPP_CallAction, OCPPVersion } from '@citrineos/types';
-import type { TransactionService } from '@modules/transactions/transaction-service.js';
+import {
+  hashNativeAdmissionRequest,
+  type TransactionService,
+} from '@modules/transactions/transaction-service.js';
 import type { IConnectorRepository, ITransactionRepository } from '@citrineos/dal';
 
 @AsRequestHandler([OCPPVersion.OCPP1_6], OCPP_CallAction.StartTransaction)
@@ -44,6 +47,11 @@ export class StartTransactionRequestOcpp16Handler extends AbstractHandler {
     message: IMessage<OCPP1_6.StartTransactionRequest>,
     props?: HandlerProperties,
   ): Promise<void> {
+    delete message.context.chargingAdmissionProvenance;
+    message.context.nativeAdmissionRequest = {
+      id: message.context.correlationId,
+      hash: hashNativeAdmissionRequest(message.payload),
+    };
     this._logger.debug(
       this.createHandlerReceivedMessageLog(`StartTransactionRequest ${message.protocol}`),
       message,
@@ -67,6 +75,7 @@ export class StartTransactionRequestOcpp16Handler extends AbstractHandler {
 
     // Send response to charger
     if (response.idTagInfo.status !== OCPP1_6.StartTransactionResponseStatus.Accepted) {
+      delete message.context.chargingAdmissionProvenance;
       await this._ocppSender.sendCallResultWithMessage(message, response);
     } else {
       try {
@@ -76,9 +85,11 @@ export class StartTransactionRequestOcpp16Handler extends AbstractHandler {
             tenantId,
             request,
             ocppConnectionName,
+            message.context.chargingAdmissionProvenance,
           );
         response.transactionId = parseInt(newTransaction.transactionId);
       } catch (error) {
+        delete message.context.chargingAdmissionProvenance;
         const errorMessage = (error as Error).message || '';
         if (errorMessage.includes('Charging station') && errorMessage.includes('does not exist')) {
           this._logger.error(

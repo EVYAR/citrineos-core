@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Add authenticated normal-owner withdrawal and immutable readback for unused commercial authority after a distinct protocol-target mismatch. Preserve original AUTHORIZED decisions and native history; prove all retained authorized-native sessions independently without inventing legacy callout causality. Add official append-only withdrawal/consumption tables, sorted connector/callout locking, native RPC provenance through both DALs and database fences for late or unprovenance Starts on both protected connectors. Fresh valid intents and unrelated offline behavior remain possible. Real PostgreSQL trigger/race qualification is required before source publication."
+}

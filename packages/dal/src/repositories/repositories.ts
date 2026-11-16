@@ -18,6 +18,7 @@ import type {
   CertificateUseEnumType,
   ChangeConfigurationCreate,
   ChangeConfigurationDto,
+  ChargingAdmissionProvenance,
   ChargingLimitSourceEnumType,
   ChargingProfilePurposeEnumType,
   ChargingStationDto,
@@ -462,11 +463,13 @@ export interface ITransactionRepository {
     tenantId: number,
     value: OCPP2_request_types.TransactionEventRequest,
     ocppConnectionName: string,
+    provenance?: ChargingAdmissionProvenance,
   ): Promise<TransactionDto>;
   createTransactionByStartTransaction(
     tenantId: number,
     request: OCPP1_6.StartTransactionRequest,
     ocppConnectionName: string,
+    provenance?: ChargingAdmissionProvenance,
   ): Promise<TransactionDto>;
   updateTransactionByMeterValues(
     tenantId: number,

@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type {
+  ChargingAdmissionProvenance,
   MeterValueDto,
   OCPP1_6,
   OCPP2_request_types,
@@ -12,7 +13,7 @@ import type {
 } from '@citrineos/types';
 import { ChargingStationSequenceTypeEnum, OCPP2_0_1 } from '@citrineos/types';
 import { MeterValueUtils } from '@citrineos/base';
-import { and, desc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm';
 import {
   tenantTransactionTable,
   type TransactionEntity,
@@ -719,6 +720,7 @@ export class DrizzleTransactionRepository
     tenantId: number,
     value: OCPP2_request_types.TransactionEventRequest,
     ocppConnectionName: string,
+    provenance?: ChargingAdmissionProvenance,
   ): Promise<TransactionDto> {
     // In OCPP 2.1, transactionEventRequest contains tariffId
     const { tariffId: infoTariffId, ...transactionInfo } =
@@ -736,6 +738,9 @@ export class DrizzleTransactionRepository
     const events = this.getTransactionEventTable(tenantId);
 
     return await this.withAtomicWrite(async (ctx) => {
+      if (provenance && value.eventType !== OCPP2_0_1.TransactionEventEnumType.Started) {
+        throw new Error('Charging admission provenance is only valid for Started events.');
+      }
       const existingRows = (await ctx.db
         .select()
         .from(transactions)
@@ -903,6 +908,12 @@ export class DrizzleTransactionRepository
       // The MeterValues partition key. Taken from the row written moments ago in this
       // same pg transaction, which no fallback lookup outside it could see.
       const transactionCreatedAt = finalTransaction.createdAt;
+      if (provenance !== undefined && value.eventType === OCPP2_0_1.TransactionEventEnumType.Started) {
+        await ctx.db.execute(sql`SELECT charging_admission_consume(
+          ${tenantId}::int, ${stationId}::int, ${finalTransaction.connectorId}::int,
+          ${finalTransaction.authorizationId}::int, ${transactionDatabaseId}::int,
+          ${transactionCreatedAt.toISOString()}::timestamptz, ${JSON.stringify(provenance)}::jsonb)`);
+      }
 
       let idTokenValue: string | null = null;
       let idTokenType: string | null = null;
@@ -1018,6 +1029,7 @@ export class DrizzleTransactionRepository
     tenantId: number,
     request: OCPP1_6.StartTransactionRequest,
     ocppConnectionName: string,
+    provenance?: ChargingAdmissionProvenance,
   ): Promise<TransactionDto> {
     const stationId = await this.resolveStationId(tenantId, ocppConnectionName);
     if (stationId === undefined) {
@@ -1088,6 +1100,12 @@ export class DrizzleTransactionRepository
         })
         .returning()) as TransactionEntity[];
       const newTransaction = insertedRows[0];
+      if (provenance !== undefined) {
+        await ctx.db.execute(sql`SELECT charging_admission_consume(
+          ${tenantId}::int, ${stationId}::int, ${newTransaction.connectorId}::int,
+          ${newTransaction.authorizationId}::int, ${newTransaction.id}::int,
+          ${newTransaction.createdAt.toISOString()}::timestamptz, ${JSON.stringify(provenance)}::jsonb)`);
+      }
 
       const startRows = (await ctx.db
         .insert(startTransactions)
