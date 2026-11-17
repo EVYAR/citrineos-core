@@ -337,6 +337,13 @@ Swagger docs at [http://localhost:8080/docs](http://localhost:8080/docs).
 To run the server directly with pnpm for development, see the [Server README](./apps/ocpp-server/README.md). To develop
 the UI on its own, see the [Operator UI README](./apps/operator-ui/README.MD).
 
+### Production OCPP packaging
+
+`apps/ocpp-server/deploy.Dockerfile.ir` installs the frozen pnpm lockfile and builds the OCPP workspace closure.
+Workspace dependencies are injected, and `syncInjectedDepsAfterScripts: [build]` keeps their compiled output synchronized.
+The production bundle uses `pnpm --offline --filter "@citrineos/ocpp-server" deploy --prod /deploy`, reusing the populated store.
+Do not add `--legacy`: that mode re-resolves registry metadata instead of deriving the deployment lockfile from the frozen workspace lock.
+
 ## Information on Docker Setup
 
 You need to install
