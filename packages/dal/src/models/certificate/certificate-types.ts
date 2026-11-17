@@ -2,11 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-export const enum SignatureAlgorithmEnumType {
+// Public DAL values need runtime enums for declaration-only consumers using
+// verbatimModuleSyntax.
+export enum SignatureAlgorithmEnumType {
   RSA = 'SHA256withRSA',
   ECDSA = 'SHA256withECDSA',
 }
 
-export const enum CountryNameEnumType {
+export enum CountryNameEnumType {
   US = 'US',
 }
