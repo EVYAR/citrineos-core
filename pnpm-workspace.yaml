@@ -9,6 +9,10 @@ packages:
   - "apps/operator-ui"
   - "apps/mock-msp"
 
+injectWorkspacePackages: true
+syncInjectedDepsAfterScripts:
+  - build
+
 # Single source of truth for any dependency used by more than one workspace package.
 # Reference it as `"<name>": "catalog:"` in the package.json; bump it here once.
 catalog:
