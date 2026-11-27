@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Match integrated OCPI sequence upserts and group authorization lookups to the Core Hasura schema without changing the OCPI wire contract."
+}

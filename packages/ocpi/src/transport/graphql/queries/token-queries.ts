@@ -199,7 +199,7 @@ export const CREATE_AUTHORIZATION_MUTATION = gql`
 `;
 
 export const GET_GROUP_AUTHORIZATION = gql`
-  query GetGroupAuthorization($groupId: String!, $tenantPartnerId: Int!) {
+  query GetGroupAuthorization($groupId: citext!, $tenantPartnerId: Int!) {
     Authorizations(
       where: {
         idToken: { _eq: $groupId }
