@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { test, expect } from '../../fixtures';
-import { ChargingStationDetailPage } from '../../pages/charging-stations/detail.page';
+import { ChargingStationDetailPage } from '../../pages/charging-stations/detail-page';
 
 test.use({ storageState: 'playwright/.auth/admin.json' });
 
@@ -13,7 +13,7 @@ test.describe('charging-stations › OtherCommandsModal dispatcher', () => {
     seededStation,
   }) => {
     const detail = new ChargingStationDetailPage(page);
-    await detail.goto(seededStation.id);
+    await detail.goto(seededStation.ocppConnectionName);
 
     await detail.commandBar.otherCommandsButton.click();
 

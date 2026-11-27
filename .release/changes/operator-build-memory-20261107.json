@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Use supported Next build-worker and Webpack memory optimizations with the existing single-worker Operator UI build."
+}

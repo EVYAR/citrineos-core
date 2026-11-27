@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Exercise the built Operator standalone server with normal NextAuth sessions and bounded synthetic GraphQL/Core transport fixtures on isolated hosted CI without claiming real database or Core-server acceptance."
+}

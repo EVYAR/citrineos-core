@@ -1,0 +1,196 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import { DeadLetterReason, type DeadLetterSource } from '@/transport/metrics.js';
+import { AbstractMessageHandler, type IModule } from '@citrineos/base';
+import type { SystemConfig } from '@citrineos/types';
+import * as amqplib from 'amqplib';
+import type { ILogObj } from 'tslog';
+import { Logger } from 'tslog';
+import { RabbitMQChannelManager } from './channel-manager.js';
+import { RabbitMqDeadLetterPublisher } from './dead-letter-publisher.js';
+import { fromAmqpContent, type OCPPMessage } from './util.js';
+
+export interface RabbitMqReceiverDependencies {
+  config: SystemConfig;
+  channelManager: RabbitMQChannelManager;
+  deadLetterPublisher: RabbitMqDeadLetterPublisher;
+  logger?: Logger<ILogObj>;
+  module?: IModule;
+}
+
+/**
+ * Base {@link IMessageHandler} using RabbitMQ as the underlying transport: message parsing,
+ * settling deliveries, and the reconnect hook. How queues and consumers are laid out on the
+ * broker is left to the subclasses:
+ *
+ * - {@link RabbitMqModuleReceiver} — used by modules; competing consumers on shared queues.
+ * - {@link RabbitMqRouterReceiver} — used by the OCPP router; one queue per router instance.
+ *
+ * Every delivery is acked. A message that fails once is not retried, since it is unlikely to
+ * succeed the second time; it goes to the dead-letter exchange with the reason instead.
+ */
+export abstract class RabbitMqReceiver extends AbstractMessageHandler {
+  protected _channelManager: RabbitMQChannelManager;
+  protected _deadLetterPublisher: RabbitMqDeadLetterPublisher;
+  protected exchange: string;
+  protected _stopped = false;
+  private readonly _inFlightDeliveries = new Set<Promise<void>>();
+  private readonly _reconnectTasks = new Set<Promise<void>>();
+  private _deliveryFailed = false;
+  private _deliveryFailure: unknown;
+  protected abstract readonly _source: DeadLetterSource;
+
+  constructor({
+    config,
+    channelManager,
+    deadLetterPublisher,
+    logger,
+    module,
+  }: RabbitMqReceiverDependencies) {
+    super(logger, module);
+    this._channelManager = channelManager;
+    this._deadLetterPublisher = deadLetterPublisher;
+    const exchange = config.messageBroker.amqp?.exchange;
+    if (!exchange) {
+      throw new Error('RabbitMQ exchange is not configured');
+    }
+    this.exchange = exchange;
+
+    this._channelManager.getConnectionManager().on('connected', async () => {
+      if (this._stopped) return;
+      const task = this._onReconnect();
+      this._reconnectTasks.add(task);
+      try {
+        await task;
+      } catch (error) {
+        this._logger.error('Failed to reinitialize after reconnect', error);
+      } finally {
+        this._reconnectTasks.delete(task);
+      }
+    });
+  }
+
+  /**
+   * Re-establishes this receiver's queues, bindings, and consumers on a fresh channel.
+   */
+  protected abstract _onReconnect(): Promise<void>;
+
+  /**
+   * Starts a consumer on `queueName` that allows at most `prefetch` unacked deliveries.
+   *
+   * @return The consumer tag.
+   */
+  protected async _consume(
+    channel: amqplib.Channel,
+    queueName: string,
+    prefetch: number,
+  ): Promise<string> {
+    // basic.qos only applies to consumers started after it, so it is set ahead of each consume.
+    if (this._stopped) throw new Error('RabbitMQ receiver is stopped');
+    await channel.prefetch(prefetch);
+    const { consumerTag } = await channel.consume(queueName, (msg) =>
+      this._trackDelivery(msg, channel, queueName),
+    );
+    return consumerTag;
+  }
+
+  /**
+   * Underlying RabbitMQ message handler.
+   *
+   * @param message The AMQPMessage to process
+   * @param channel
+   * @param queueName The queue `message` was consumed from
+   */
+  protected async _stopReconnects(): Promise<void> {
+    this._stopped = true;
+    await Promise.allSettled([...this._reconnectTasks]);
+  }
+
+  protected async _drainDeliveries(): Promise<void> {
+    while (this._inFlightDeliveries.size) {
+      await Promise.allSettled([...this._inFlightDeliveries]);
+    }
+    if (this._deliveryFailed) throw this._deliveryFailure;
+  }
+
+  private _trackDelivery(
+    message: amqplib.ConsumeMessage | null,
+    channel: amqplib.Channel,
+    queueName: string,
+  ): Promise<void> {
+    const delivery = this._onMessage(message, channel, queueName);
+    this._inFlightDeliveries.add(delivery);
+    void delivery.then(
+      () => this._inFlightDeliveries.delete(delivery),
+      (error: unknown) => {
+        this._inFlightDeliveries.delete(delivery);
+        this._deliveryFailed = true;
+        this._deliveryFailure = error;
+        this._logger.error('Failed to settle RabbitMQ delivery', error);
+      },
+    );
+    return delivery;
+  }
+
+  protected async _onMessage(
+    message: amqplib.ConsumeMessage | null,
+    channel: amqplib.Channel,
+    queueName: string,
+  ): Promise<void> {
+    if (!message) {
+      return;
+    }
+    this._logger.debug(
+      '_onMessage:Message from broker:',
+      message.properties,
+      message.content.toString(),
+    );
+
+    let parsed: OCPPMessage;
+    try {
+      parsed = fromAmqpContent(message.content);
+    } catch (error) {
+      this._logger.error('Error while parsing message:', error, message);
+      await this._deadLetter(message, DeadLetterReason.Poison, queueName, error);
+      channel.ack(message);
+      return;
+    }
+
+    try {
+      await this._dispatch(parsed, message, channel, queueName);
+    } catch (error) {
+      this._logger.error('Error while processing message:', error, message);
+      await this._deadLetter(message, DeadLetterReason.HandlerError, queueName, error);
+    }
+    channel.ack(message);
+  }
+
+  /**
+   * Hands a parsed delivery to the module. The delivery is acked once this settles.
+   */
+  protected async _dispatch(
+    parsed: OCPPMessage,
+    message: amqplib.ConsumeMessage,
+    _channel: amqplib.Channel,
+    _queueName: string,
+  ): Promise<void> {
+    await this.handle(parsed, message.properties);
+  }
+
+  protected _deadLetter(
+    message: amqplib.ConsumeMessage,
+    reason: DeadLetterReason,
+    queueName: string,
+    error?: unknown,
+  ): Promise<void> {
+    return this._deadLetterPublisher.publishRaw(
+      message.content,
+      message.properties.headers ?? {},
+      reason,
+      this._source,
+      { queue: queueName, error },
+    );
+  }
+}

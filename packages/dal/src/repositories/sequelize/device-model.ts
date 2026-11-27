@@ -1,0 +1,744 @@
+// SPDX-FileCopyrightText: 2025 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import { CrudRepository } from '@citrineos/base';
+import {
+  type AttributeEnumType,
+  type ComponentDto,
+  OCPP2_0_1,
+  type OCPP2_common_types,
+  type VariableAttributeDto,
+} from '@citrineos/types';
+import { Op } from 'sequelize';
+import { type VariableAttributeQuerystring } from '../../interfaces/queries/variable-attribute.js';
+import { ComponentVariable } from '../../models/device-model/component-variable.js';
+import { Component } from '../../models/device-model/component.js';
+import { EvseType } from '../../models/device-model/evse-type.js';
+import { VariableAttribute } from '../../models/device-model/variable-attribute.js';
+import { VariableCharacteristics } from '../../models/device-model/variable-characteristics.js';
+import { VariableStatus } from '../../models/device-model/variable-status.js';
+import { Variable } from '../../models/device-model/variable.js';
+import {
+  type IComponentRepository,
+  type IVariableAttributeRepository,
+  type IVariableCharacteristicsRepository,
+} from '../repositories.js';
+import { SequelizeRepository, type SequelizeRepositoryDependencies } from './base.js';
+import { resolveStationIdOrThrow, stationIdFilter } from './resolve-station-id.js';
+
+// TODO: Document this
+
+export class SequelizeDeviceModelRepository
+  extends SequelizeRepository<VariableAttribute>
+  implements IVariableAttributeRepository, IVariableCharacteristicsRepository, IComponentRepository
+{
+  variable: CrudRepository<Variable>;
+  component: CrudRepository<Component>;
+  evse: CrudRepository<EvseType>;
+  variableCharacteristics: CrudRepository<VariableCharacteristics>;
+  componentVariable: CrudRepository<ComponentVariable>;
+  variableStatus: CrudRepository<VariableStatus>;
+
+  constructor({ config, logger, sequelizeInstance }: SequelizeRepositoryDependencies) {
+    super({ config, namespace: VariableAttribute.MODEL_NAME, logger, sequelizeInstance });
+    this.variable = new SequelizeRepository<Variable>({
+      config,
+      namespace: Variable.MODEL_NAME,
+      logger,
+      sequelizeInstance,
+    });
+    this.component = new SequelizeRepository<Component>({
+      config,
+      namespace: Component.MODEL_NAME,
+      logger,
+      sequelizeInstance,
+    });
+    this.evse = new SequelizeRepository<EvseType>({
+      config,
+      namespace: EvseType.MODEL_NAME,
+      logger,
+      sequelizeInstance,
+    });
+    this.componentVariable = new SequelizeRepository<ComponentVariable>({
+      config,
+      namespace: ComponentVariable.MODEL_NAME,
+      logger,
+      sequelizeInstance,
+    });
+    this.variableCharacteristics = new SequelizeRepository<VariableCharacteristics>({
+      config,
+      namespace: VariableCharacteristics.MODEL_NAME,
+      logger,
+      sequelizeInstance,
+    });
+    this.variableStatus = new SequelizeRepository<VariableStatus>({
+      config,
+      namespace: VariableStatus.MODEL_NAME,
+      logger,
+      sequelizeInstance,
+    });
+  }
+
+  async createOrUpdateDeviceModelByStationId(
+    tenantId: number,
+    value: OCPP2_0_1.ReportDataType,
+    ocppConnectionName: string,
+    isoTimestamp: string,
+  ): Promise<VariableAttributeDto[]> {
+    // Doing this here so that no records are created if the data is invalid
+    const variableAttributeTypes = value.variableAttribute.map(
+      (attr) => attr.type ?? OCPP2_0_1.AttributeEnumType.Actual,
+    );
+    if (variableAttributeTypes.length !== new Set(variableAttributeTypes).size) {
+      throw new Error('All variable attributes in ReportData must have different types.');
+    }
+
+    const stationId = await resolveStationIdOrThrow(
+      tenantId,
+      ocppConnectionName,
+      'record device model data',
+    );
+
+    const [component, variable] = await this.findOrCreateEvseAndComponentAndVariable(
+      tenantId,
+      value.component,
+      value.variable,
+      ocppConnectionName,
+    );
+
+    let dataType: OCPP2_0_1.DataEnumType | null = null;
+
+    if (value.variableCharacteristics) {
+      const variableCharacteristicsType = value.variableCharacteristics;
+      dataType = variableCharacteristicsType.dataType;
+      const vc = {
+        tenantId,
+        unit: variableCharacteristicsType.unit ?? null,
+        dataType,
+        minLimit: variableCharacteristicsType.minLimit ?? null,
+        maxLimit: variableCharacteristicsType.maxLimit ?? null,
+        valuesList: variableCharacteristicsType.valuesList ?? null,
+        supportsMonitoring: variableCharacteristicsType.supportsMonitoring,
+        variableId: variable.id,
+      };
+      await this.s.transaction(async (transaction) => {
+        const savedVariableCharacteristics = await this.s.models[
+          VariableCharacteristics.MODEL_NAME
+        ].findOne({
+          where: {
+            variableId: variable.id,
+          },
+          transaction,
+        });
+
+        if (!savedVariableCharacteristics) {
+          const createdVariableCharacteristics = await VariableCharacteristics.create(vc, {
+            transaction,
+          });
+          this.variableCharacteristics.emit('created', [createdVariableCharacteristics]);
+          return createdVariableCharacteristics;
+        } else {
+          return await this.variableCharacteristics.updateAllByQuery(tenantId, vc, {
+            where: {
+              variableId: variable.id,
+            },
+            transaction,
+          });
+        }
+      });
+    }
+
+    const savedVariableAttributes = await Promise.all(
+      value.variableAttribute.map(async (variableAttribute) => {
+        const [savedVariableAttribute, variableAttributeCreated] = await this.readOrCreateByQuery(
+          tenantId,
+          {
+            where: {
+              tenantId,
+              // the composite unique index of VariableAttribute
+              stationId,
+              variableId: variable.id,
+              componentId: component.id,
+              type: variableAttribute.type ?? OCPP2_0_1.AttributeEnumType.Actual,
+            },
+            defaults: {
+              evseDatabaseId: component.evseDatabaseId,
+              dataType,
+              value: variableAttribute.value,
+              generatedAt: isoTimestamp,
+              mutability: variableAttribute.mutability ?? OCPP2_0_1.MutabilityEnumType.ReadWrite,
+              persistent: variableAttribute.persistent ? variableAttribute.persistent : false,
+              constant: variableAttribute.constant ? variableAttribute.constant : false,
+            },
+          },
+        );
+        if (!variableAttributeCreated) {
+          const mutability = variableAttribute.mutability ?? savedVariableAttribute.mutability;
+          // B08.FR.03 The Charging Station sends the requested information,
+          // excluding the value of WriteOnly variables
+          // the existing value should not be overwritten in this case.
+          return (await this.updateByKey(
+            tenantId,
+            {
+              evseDatabaseId: component.evseDatabaseId,
+              dataType: dataType ?? savedVariableAttribute.dataType,
+              type: variableAttribute.type ?? savedVariableAttribute.type,
+              value:
+                mutability === OCPP2_0_1.MutabilityEnumType.WriteOnly
+                  ? savedVariableAttribute.value
+                  : (variableAttribute.value ?? null),
+              mutability,
+              persistent: variableAttribute.persistent ?? false,
+              constant: variableAttribute.constant ?? false,
+              generatedAt: isoTimestamp,
+            },
+            savedVariableAttribute.id,
+          )) as VariableAttribute;
+        }
+        return savedVariableAttribute;
+      }),
+    );
+    // Hydrate the resolved component and variable so callers get fully-populated DTOs
+    // without a follow-up reload (createOrUpdate does not eager-load these relations).
+    for (const savedVariableAttribute of savedVariableAttributes) {
+      savedVariableAttribute.setDataValue('component', component);
+      savedVariableAttribute.setDataValue('variable', variable);
+      savedVariableAttribute.component = component;
+      savedVariableAttribute.variable = variable;
+    }
+    return savedVariableAttributes;
+  }
+
+  async findOrCreateEvseAndComponentAndVariable(
+    tenantId: number,
+    componentType: OCPP2_0_1.ComponentType,
+    variableType: OCPP2_0_1.VariableType,
+    ocppConnectionName?: string,
+  ): Promise<[Component, Variable]> {
+    const component = await this.findOrCreateEvseAndComponent(
+      tenantId,
+      componentType,
+      ocppConnectionName,
+    );
+
+    const [variable] = await this.variable.readOrCreateByQuery(tenantId, {
+      where: {
+        tenantId,
+        name: variableType.name,
+        instance: variableType.instance ? variableType.instance : null,
+      },
+      defaults: {
+        ...variableType,
+      },
+    });
+
+    // This can happen asynchronously
+    await this.componentVariable.readOrCreateByQuery(tenantId, {
+      where: { tenantId, componentId: component.id, variableId: variable.id },
+    });
+
+    return [component, variable];
+  }
+
+  async findOrCreateEvseAndComponent(
+    tenantId: number,
+    componentType: OCPP2_0_1.ComponentType,
+    ocppConnectionName?: string,
+  ): Promise<Component> {
+    const evse = componentType.evse
+      ? (
+          await this.evse.readOrCreateByQuery(tenantId, {
+            where: {
+              tenantId,
+              id: componentType.evse.id,
+              connectorId: componentType.evse.connectorId ? componentType.evse.connectorId : null,
+            },
+          })
+        )[0]
+      : undefined;
+
+    const [component, componentCreated] = await this.component.readOrCreateByQuery(tenantId, {
+      where: {
+        tenantId,
+        name: componentType.name,
+        instance: componentType.instance ? componentType.instance : null,
+        evseDatabaseId: evse?.databaseId ?? null,
+      },
+    });
+
+    if (componentCreated && ocppConnectionName) {
+      const defaultComponentVariableNames = ['Present', 'Available', 'Enabled'];
+      for (const defaultComponentVariableName of defaultComponentVariableNames) {
+        const [defaultComponentVariable, _defaultComponentVariableCreated] =
+          await this.variable.readOrCreateByQuery(tenantId, {
+            where: {
+              tenantId,
+              name: defaultComponentVariableName,
+              instance: null,
+            },
+          });
+
+        await this.componentVariable.readOrCreateByQuery(tenantId, {
+          where: { tenantId, componentId: component.id, variableId: defaultComponentVariable.id },
+        });
+
+        await this.create(
+          tenantId,
+          VariableAttribute.build({
+            tenantId,
+            stationId: await resolveStationIdOrThrow(
+              tenantId,
+              ocppConnectionName,
+              'create variable attribute',
+            ),
+            variableId: defaultComponentVariable.id,
+            componentId: component.id,
+            evseDatabaseId: evse?.databaseId,
+            dataType: OCPP2_0_1.DataEnumType.boolean,
+            value: 'true',
+            mutability: OCPP2_0_1.MutabilityEnumType.ReadOnly,
+          }),
+        );
+      }
+    }
+
+    return component;
+  }
+
+  async createOrUpdateByGetVariablesResultAndStationId(
+    tenantId: number,
+    getVariablesResult: OCPP2_0_1.GetVariableResultType[],
+    ocppConnectionName: string,
+    isoTimestamp: string,
+  ): Promise<VariableAttributeDto[]> {
+    const savedVariableAttributes: VariableAttributeDto[] = [];
+    for (const result of getVariablesResult) {
+      if (result.attributeStatus === OCPP2_0_1.GetVariableStatusEnumType.Accepted) {
+        const savedVariableAttribute = (
+          await this.createOrUpdateDeviceModelByStationId(
+            tenantId,
+            {
+              component: { ...result.component },
+              variable: { ...result.variable },
+              variableAttribute: [{ type: result.attributeType, value: result.attributeValue }],
+            },
+            ocppConnectionName,
+            isoTimestamp,
+          )
+        )[0];
+        await this.variableStatus.create(
+          tenantId,
+          VariableStatus.build(
+            {
+              tenantId,
+              value: result.attributeValue,
+              status: result.attributeStatus,
+              statusInfo: result.attributeStatusInfo,
+              variableAttributeId: savedVariableAttribute.id,
+            },
+            { include: [VariableAttribute] },
+          ),
+        );
+        savedVariableAttributes.push(savedVariableAttribute);
+      } else {
+        const [component, variable] = await this.findOrCreateEvseAndComponentAndVariable(
+          tenantId,
+          result.component,
+          result.variable,
+          ocppConnectionName,
+        );
+        const [variableAttribute] = await this.readOrCreateByQuery(tenantId, {
+          where: {
+            tenantId,
+            stationId: await stationIdFilter(tenantId, ocppConnectionName),
+            variableId: variable.id,
+            componentId: component.id,
+            type: result.attributeType ?? OCPP2_0_1.AttributeEnumType.Actual,
+          },
+          defaults: {
+            evseDatabaseId: component.evseDatabaseId,
+            dataType: null,
+            value: null,
+            generatedAt: isoTimestamp,
+            mutability: OCPP2_0_1.MutabilityEnumType.ReadWrite,
+            persistent: false,
+            constant: false,
+          },
+        });
+        await this.variableStatus.create(
+          tenantId,
+          VariableStatus.build(
+            {
+              tenantId,
+              value: result.attributeValue,
+              status: result.attributeStatus,
+              statusInfo: result.attributeStatusInfo,
+              variableAttributeId: variableAttribute.get('id'),
+            },
+            { include: [VariableAttribute] },
+          ),
+        );
+      }
+    }
+    return savedVariableAttributes;
+  }
+
+  async createOrUpdateBySetVariablesDataAndStationId(
+    tenantId: number,
+    setVariablesData: OCPP2_0_1.SetVariableDataType[],
+    ocppConnectionName: string,
+    isoTimestamp: string,
+  ): Promise<VariableAttributeDto[]> {
+    const savedVariableAttributes: VariableAttributeDto[] = [];
+    for (const data of setVariablesData) {
+      const savedVariableAttribute = (
+        await this.createOrUpdateDeviceModelByStationId(
+          tenantId,
+          {
+            component: {
+              ...data.component,
+            },
+            variable: {
+              ...data.variable,
+            },
+            variableAttribute: [
+              {
+                type: data.attributeType,
+                value: data.attributeValue,
+              },
+            ],
+          },
+          ocppConnectionName,
+          isoTimestamp,
+        )
+      )[0];
+      savedVariableAttributes.push(savedVariableAttribute);
+    }
+    return savedVariableAttributes;
+  }
+
+  async updateResultByStationId(
+    tenantId: number,
+    result: OCPP2_0_1.SetVariableResultType,
+    ocppConnectionName: string,
+    isoTimestamp: string,
+    acceptedValue?: string,
+  ): Promise<VariableAttributeDto | undefined> {
+    const evse = result.component.evse
+      ? await this.evse.readOnlyOneByQuery(tenantId, {
+          where: {
+            id: result.component.evse.id,
+            connectorId: result.component.evse.connectorId ?? null,
+          },
+        })
+      : undefined;
+
+    const existingVariableAttribute = await super.readOnlyOneByQuery(tenantId, {
+      where: {
+        stationId: await stationIdFilter(tenantId, ocppConnectionName),
+        type: result.attributeType ?? OCPP2_0_1.AttributeEnumType.Actual,
+      },
+      include: [
+        {
+          model: Component,
+          where: {
+            name: result.component.name,
+            instance: result.component.instance ? result.component.instance : null,
+            ...(evse ? { evseDatabaseId: evse.databaseId } : {}),
+          },
+        },
+        {
+          model: Variable,
+          where: {
+            name: result.variable.name,
+            instance: result.variable.instance ? result.variable.instance : null,
+          },
+        },
+      ],
+    });
+    if (existingVariableAttribute) {
+      if (
+        result.attributeStatus === OCPP2_0_1.SetVariableStatusEnumType.Accepted &&
+        acceptedValue !== undefined
+      ) {
+        existingVariableAttribute.setDataValue('value', acceptedValue);
+      }
+      await this.variableStatus.create(
+        tenantId,
+        VariableStatus.build({
+          tenantId,
+          value: existingVariableAttribute.value,
+          status: result.attributeStatus,
+          statusInfo: result.attributeStatusInfo,
+          variableAttributeId: existingVariableAttribute.get('id'),
+        }),
+      );
+      if (result.attributeStatus !== OCPP2_0_1.SetVariableStatusEnumType.Accepted) {
+        const mostRecentAcceptedStatus = (
+          await this.variableStatus.readAllByQuery(tenantId, {
+            where: {
+              variableAttributeId: existingVariableAttribute.get('id'),
+              status: OCPP2_0_1.SetVariableStatusEnumType.Accepted,
+            },
+            limit: 1,
+            order: [['createdAt', 'DESC']],
+          })
+        )[0];
+        existingVariableAttribute.setDataValue('value', mostRecentAcceptedStatus?.value);
+      }
+      existingVariableAttribute.set('generatedAt', isoTimestamp);
+      await existingVariableAttribute.save();
+      // Reload in order to include the statuses
+      return await existingVariableAttribute.reload({
+        include: [VariableStatus],
+      });
+    } else {
+      throw new Error('Unable to update variable attribute status...');
+    }
+  }
+
+  async readAllSetVariableByStationId(
+    tenantId: number,
+    ocppConnectionName: string,
+  ): Promise<OCPP2_0_1.SetVariableDataType[]> {
+    const variableAttributeArray = await super.readAllByQuery(tenantId, {
+      where: {
+        stationId: await stationIdFilter(tenantId, ocppConnectionName),
+        bootConfigId: { [Op.ne]: null },
+      },
+      include: [{ model: Component, include: [EvseType] }, Variable],
+    });
+
+    return variableAttributeArray.map((variableAttribute) =>
+      this.createSetVariableDataType(variableAttribute),
+    );
+  }
+
+  async readAllByQuerystring(
+    tenantId: number,
+    query: VariableAttributeQuerystring,
+  ): Promise<VariableAttributeDto[]> {
+    const readQuery = await this.constructQuery(tenantId, query);
+    readQuery.include.push(VariableStatus);
+    return await super.readAllByQuery(tenantId, readQuery);
+  }
+
+  async deleteAllByQuerystring(
+    tenantId: number,
+    query: VariableAttributeQuerystring,
+  ): Promise<VariableAttributeDto[]> {
+    return await super.deleteAllByQuery(tenantId, await this.constructQuery(tenantId, query));
+  }
+
+  async findVariableAttributeByComponentAndVariable(
+    tenantId: number,
+    ocppConnectionName: string,
+    attributeType: AttributeEnumType,
+    componentType: OCPP2_common_types.ComponentType,
+    variableType: OCPP2_common_types.VariableType,
+  ): Promise<VariableAttributeDto | undefined> {
+    const variableAttribute = await super.readOnlyOneByQuery(tenantId, {
+      where: {
+        stationId: await stationIdFilter(tenantId, ocppConnectionName),
+        type: attributeType,
+      },
+      include: [
+        {
+          model: Component,
+          where: {
+            name: componentType.name,
+            instance: componentType.instance ?? null,
+          },
+        },
+        {
+          model: Variable,
+          where: {
+            name: variableType.name,
+            instance: variableType.instance ?? null,
+          },
+        },
+      ],
+    });
+    return variableAttribute ?? undefined;
+  }
+
+  async findConnectorComponentsForAvailabilityState(
+    tenantId: number,
+    evseId: number,
+    connectorId: number,
+  ): Promise<ComponentDto[]> {
+    const components = await this.component.readAllByQuery(tenantId, {
+      where: { tenantId, name: 'Connector' },
+      include: [
+        { model: EvseType, where: { id: evseId, connectorId } },
+        { model: Variable, where: { name: 'AvailabilityState' } },
+      ],
+    });
+    return components.filter((component) => (component.variables?.length ?? 0) > 0);
+  }
+
+  async findComponentAndVariable(
+    tenantId: number,
+    componentType: OCPP2_0_1.ComponentType,
+    variableType: OCPP2_0_1.VariableType,
+  ): Promise<[Component | undefined, Variable | undefined]> {
+    const evse = componentType.evse
+      ? await this.evse.readOnlyOneByQuery(tenantId, {
+          where: {
+            id: componentType.evse.id,
+            connectorId: componentType.evse.connectorId ?? null,
+          },
+        })
+      : undefined;
+
+    const component = await this.component.readOnlyOneByQuery(tenantId, {
+      where: {
+        name: componentType.name,
+        instance: componentType.instance ? componentType.instance : null,
+        ...(evse ? { evseDatabaseId: evse.databaseId } : {}),
+      },
+    });
+    const variable = await this.variable.readOnlyOneByQuery(tenantId, {
+      where: {
+        name: variableType.name,
+        instance: variableType.instance ? variableType.instance : null,
+      },
+    });
+    if (variable) {
+      const variableCharacteristics = await this.variableCharacteristics.readOnlyOneByQuery(
+        tenantId,
+        {
+          where: { variableId: variable.get('id') },
+        },
+      );
+      variable.variableCharacteristics = variableCharacteristics;
+    }
+
+    return [component, variable];
+  }
+
+  async findVariableCharacteristicsByVariableNameAndVariableInstance(
+    tenantId: number,
+    variableName: string,
+    variableInstance: string | null,
+  ): Promise<VariableCharacteristics | undefined> {
+    const variableCharacteristics = await this.variableCharacteristics.readAllByQuery(tenantId, {
+      include: [
+        {
+          model: Variable,
+          where: {
+            name: variableName,
+            instance: variableInstance,
+          },
+        },
+      ],
+    });
+    return variableCharacteristics.length > 0 ? variableCharacteristics[0] : undefined;
+  }
+
+  /**
+   * Private Methods
+   */
+
+  private createSetVariableDataType(input: VariableAttribute): OCPP2_0_1.SetVariableDataType {
+    if (!input.value) {
+      throw new Error(
+        'Value must be present to generate SetVariableDataType from VariableAttribute',
+      );
+    } else {
+      return {
+        attributeType: input.type,
+        attributeValue: input.value,
+        component: {
+          name: input.component.name,
+          ...(input.component.instance ? { instance: input.component.instance } : {}),
+          ...(input.component.evse
+            ? {
+                evse: {
+                  id: input.component.evse.id,
+                  ...(input.component.evse.connectorId
+                    ? { connectorId: input.component.evse.connectorId }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+        variable: {
+          name: input.variable.name,
+          ...(input.variable.instance ? { instance: input.variable.instance } : {}),
+        },
+      };
+    }
+  }
+
+  private async constructQuery(
+    tenantId: number,
+    queryParams: VariableAttributeQuerystring,
+  ): Promise<any> {
+    const evseInclude =
+      (queryParams.component_evse_id ?? queryParams.component_evse_connectorId)
+        ? {
+            model: EvseType,
+            where: {
+              ...(queryParams.component_evse_id ? { id: queryParams.component_evse_id } : {}),
+              ...(queryParams.component_evse_connectorId
+                ? { connectorId: queryParams.component_evse_connectorId }
+                : {}),
+            },
+          }
+        : EvseType;
+    const attributeType =
+      queryParams.type && queryParams.type.toUpperCase() === 'NULL' ? null : queryParams.type;
+
+    const query: any = {
+      where: {
+        ...(queryParams.ocppConnectionName
+          ? {
+              stationId: await stationIdFilter(
+                queryParams.tenantId,
+                queryParams.ocppConnectionName,
+              ),
+            }
+          : {}),
+        ...(queryParams.type === undefined ? {} : { type: attributeType }),
+        ...(queryParams.value ? { value: queryParams.value } : {}),
+      },
+      include: [
+        {
+          model: Component,
+          where: {
+            ...(queryParams.component_name ? { name: queryParams.component_name } : {}),
+            ...(queryParams.component_instance ? { instance: queryParams.component_instance } : {}),
+          },
+          include: [evseInclude],
+        },
+        {
+          model: Variable,
+          where: {
+            ...(queryParams.variable_name ? { name: queryParams.variable_name } : {}),
+            ...(queryParams.variable_instance ? { instance: queryParams.variable_instance } : {}),
+          },
+          include: [VariableCharacteristics],
+        },
+      ],
+    };
+
+    if (queryParams.status !== undefined) {
+      const statusRows = await this.variableStatus.readAllByQuery(tenantId, {
+        where: { status: queryParams.status },
+      });
+      const attributeIds = [
+        ...new Set(
+          statusRows
+            .map((statusRow) => statusRow.variableAttributeId)
+            .filter((id): id is number => id != null),
+        ),
+      ];
+      query.where.id = { [Op.in]: attributeIds };
+    }
+
+    return query;
+  }
+}
+
+export default SequelizeDeviceModelRepository;

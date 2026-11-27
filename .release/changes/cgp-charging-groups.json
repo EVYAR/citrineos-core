@@ -1,0 +1,4 @@
+{
+  "type": "minor",
+  "summary": "Support bound charging-group admission, credential fencing and confirmed stopping through canonical OCPP session state."
+}

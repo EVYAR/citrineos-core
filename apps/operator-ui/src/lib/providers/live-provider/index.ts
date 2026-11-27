@@ -5,7 +5,7 @@
 
 import { authProvider } from '@lib/providers/auth-provider';
 import config from '@lib/utils/config';
-import { HasuraHeader } from '@lib/utils/hasura.types';
+import { HasuraHeader } from '@lib/utils/hasura-types';
 import {
   graphqlWS,
   type HasuraLiveProviderOptions,
@@ -14,40 +14,31 @@ import {
 
 const WS_URL = config.wsUrl;
 
-const webSocketClient = graphqlWS.createClient({
-  url: WS_URL,
-  connectionParams: async () => {
-    const token = await authProvider.getToken();
-    if (token) {
+function createUserLiveProvider() {
+  const webSocketClient = graphqlWS.createClient({
+    url: WS_URL,
+    connectionParams: async () => {
+      const token = await authProvider.getToken();
+      if (!token) throw new Error('Hasura user session required');
       const hasuraHeaders = await authProvider.getHasuraHeaders();
-      if (hasuraHeaders) {
-        const hasuraRole = hasuraHeaders.get(HasuraHeader.X_HASURA_ROLE);
-        if (hasuraRole)
-          // If a role is set, include it in the connection params
-          return {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              [HasuraHeader.X_HASURA_ROLE]: hasuraRole,
-            },
-          };
-      }
+      const role = hasuraHeaders.get(HasuraHeader.X_HASURA_ROLE);
       return {
         headers: {
           Authorization: `Bearer ${token}`,
+          ...(role ? { [HasuraHeader.X_HASURA_ROLE]: role } : {}),
         },
       };
-    }
-  },
-});
+    },
+  });
 
-const hasuraProviderOptions = {
-  idType: 'Int',
-  namingConvention: 'hasura-default',
-};
+  const hasuraProviderOptions = {
+    idType: 'Int',
+    namingConvention: 'hasura-default',
+  };
 
-const liveProvider = liveProviderHasura(
-  webSocketClient,
-  hasuraProviderOptions as HasuraLiveProviderOptions,
-);
+  return liveProviderHasura(webSocketClient, hasuraProviderOptions as HasuraLiveProviderOptions);
+}
+
+const liveProvider = config.authProvider === 'keycloak' ? createUserLiveProvider() : undefined;
 
 export default liveProvider;

@@ -10,20 +10,22 @@ import {
   OCPP2_0_1,
   type TransactionDto,
   TransactionProps,
-} from '@citrineos/base';
-import { MenuSection } from '@lib/client/components/main-menu/main.menu';
+  ChargingStationProps,
+} from '@citrineos/types';
+import { MenuSection } from '@lib/client/components/main-menu/main-menu';
+import { chargingStationPath } from '@lib/utils/resource-paths';
 import GenericTag from '@lib/client/components/tag';
 import { TimestampDisplay } from '@lib/client/components/timestamp-display';
-import { CircleCheck, CircleX } from 'lucide-react';
+import { CircleCheck, CircleX, Eye } from 'lucide-react';
 import { buttonIconSize } from '@lib/client/styles/icon';
 import type { BaseRecord, CrudFilters } from '@refinedev/core';
 import { TableCellLink } from '@lib/client/components/table-cell-link';
 import type { CellContext } from '@tanstack/react-table';
-import type { ColumnConfiguration } from '@lib/utils/column.configuration';
-import { TransactionClass } from '@lib/cls/transaction.dto';
+import type { ColumnConfiguration } from '@lib/utils/column-configuration';
+import { TransactionClass } from '@lib/cls/transaction-dto';
 import { EMPTY_VALUE } from '@lib/utils/consts';
 
-export const transactionStationIdField = 'ocppConnectionName';
+export const transactionStationIdField = 'ChargingStation.ocppConnectionName';
 export const transactionChargingStationLocationNameField = 'ChargingStation.Location.name';
 export const transactionAuthorizationIdTokenField = 'authorization.idToken';
 
@@ -36,7 +38,10 @@ type TranslateFn = (key: string, options?: any) => string;
  *   back to their default English text so the columns can be referenced outside
  *   of a React render (e.g. shared filtering helpers in other resource pages).
  */
-export const getTransactionsColumns = (translate?: TranslateFn): ColumnConfiguration[] => {
+export const getTransactionsColumns = (
+  translate?: TranslateFn,
+  onPreview?: (station: { ocppConnectionName?: string | null }) => void,
+): ColumnConfiguration[] => {
   const t = (key: string, fallback: string) => (translate ? translate(key, fallback) : fallback);
 
   return [
@@ -68,12 +73,34 @@ export const getTransactionsColumns = (translate?: TranslateFn): ColumnConfigura
       header: t('Transactions.columns.stationId', 'Station ID'),
       visible: true,
       sortable: true,
-      cellRender: ({ row }: CellContext<TransactionClass, unknown>) => (
-        <TableCellLink
-          path={`/${MenuSection.CHARGING_STATIONS}/${row.original.chargingStation?.id}`}
-          value={row.original.chargingStation?.ocppConnectionName ?? EMPTY_VALUE}
-        />
-      ),
+      cellRender: ({ row }: CellContext<TransactionClass, unknown>) => {
+        const chargingStation = row.original.station;
+        return (
+          <div className="flex items-center gap-2">
+            {chargingStation?.ocppConnectionName ? (
+              <TableCellLink
+                path={chargingStationPath(chargingStation.ocppConnectionName)}
+                value={chargingStation.ocppConnectionName}
+              />
+            ) : (
+              <span>{EMPTY_VALUE}</span>
+            )}
+            {onPreview && chargingStation && (
+              <button
+                type="button"
+                title={t('Transactions.columns.previewStation', 'Preview station')}
+                className="text-muted-foreground hover:text-foreground"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPreview(chargingStation);
+                }}
+              >
+                <Eye className={buttonIconSize} />
+              </button>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: transactionChargingStationLocationNameField,
@@ -82,8 +109,8 @@ export const getTransactionsColumns = (translate?: TranslateFn): ColumnConfigura
       sortable: true,
       cellRender: ({ row }: CellContext<BaseRecord, unknown>) => (
         <TableCellLink
-          path={`/${MenuSection.LOCATIONS}/${row.original.chargingStation?.location?.id}`}
-          value={row.original.chargingStation?.location?.name ?? EMPTY_VALUE}
+          path={`/${MenuSection.LOCATIONS}/${row.original.station?.location?.id}`}
+          value={row.original.station?.location?.name ?? EMPTY_VALUE}
         />
       ),
     },
@@ -109,7 +136,7 @@ export const getTransactionsColumns = (translate?: TranslateFn): ColumnConfigura
       visible: true,
       sortable: true,
       cellRender: ({ row }: CellContext<TransactionClass, unknown>) =>
-        row.original.totalKwh ? (
+        row.original.totalKwh != null ? (
           <span>{row.original.totalKwh.toFixed(2)} kWh</span>
         ) : (
           <span>{EMPTY_VALUE}</span>
@@ -196,7 +223,7 @@ export const getTransactionsFilters = (value: string): CrudFilters => {
           value,
         },
         {
-          field: TransactionProps.ocppConnectionName,
+          field: `ChargingStation.${ChargingStationProps.ocppConnectionName}`,
           operator: 'contains',
           value,
         },

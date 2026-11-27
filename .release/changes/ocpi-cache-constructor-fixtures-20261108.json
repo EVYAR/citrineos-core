@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Use constructor-compatible mocks for authenticated OCPI cache configuration tests under the pinned Vitest version."
+}

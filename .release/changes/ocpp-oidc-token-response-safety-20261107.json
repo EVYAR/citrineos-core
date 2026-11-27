@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Bound outbound OCPP OIDC token response streaming to 64 KiB under the existing eight-second owner deadline, reject redirects and malformed token lifetimes, cancel abandoned bodies, and sanitize endpoint failures without requiring JWT-shaped access tokens."
+}

@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Replace shared-runner legacy PR stacks with isolated hosted bounded backend and reusable standalone Operator acceptance, retain manual synthetic browser/EVerest coverage, and distinguish runtime assertions from TypeScript discovery. Restrict vendor social and PR-closing maintenance automation to the official upstream repository."
+}

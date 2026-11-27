@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Load the server-only Core transport package through Node while retaining it in the Operator standalone artifact."
+}

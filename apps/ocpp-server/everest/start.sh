@@ -58,16 +58,6 @@ JSON
     ' "/ext/dist/share/everest/modules/OCPP201/component_config/standardized/InternalCtrlr.json" \
     > /tmp/config_citrine_dist.json && mv /tmp/config_citrine_dist.json "/ext/dist/share/everest/modules/OCPP201/component_config/standardized/InternalCtrlr.json"
     chmod -x /ext/dist/share/everest/modules/OCPP201/component_config/standardized/InternalCtrlr.json
-
-    # EVerest 2025.6.1 stores the OCPP 2.x identity in component JSON files.
-    # Do not use the legacy SQLite device-model path.
-    if [ "$CHARGE_POINT_ID" != "cp001" ]; then
-        INTERNAL_CTRLR_CONFIG="/ext/dist/share/everest/modules/OCPP201/component_config/standardized/InternalCtrlr.json"
-        SECURITY_CTRLR_CONFIG="/ext/dist/share/everest/modules/OCPP201/component_config/standardized/SecurityCtrlr.json"
-
-        [ -f "$INTERNAL_CTRLR_CONFIG" ] && sed -i "s#cp001#${CHARGE_POINT_ID}#g" "$INTERNAL_CTRLR_CONFIG"
-        [ -f "$SECURITY_CTRLR_CONFIG" ] && sed -i "s#cp001#${CHARGE_POINT_ID}#g" "$SECURITY_CTRLR_CONFIG"
-    fi
 fi
 
 /entrypoint.sh
@@ -76,67 +66,11 @@ http-server /tmp/everest_ocpp_logs -p 8888 &
 if [ "$_OCPP_VERSION" = "1.6" ]; then
     chmod +x /ext/build/run-scripts/run-sil-ocpp.sh
     sed -i "0,/127.0.0.1:8180\/steve\/websocket\/CentralSystemService\// s|127.0.0.1:8180/steve/websocket/CentralSystemService/|${EVEREST_TARGET_URL}|" /ext/dist/share/everest/modules/OCPP/config-docker.json
-    if [ -n "$EVEREST_TARGET_URL" ]; then
-        case "$EVEREST_TARGET_URL" in
-            wss://*)
-                sed -i 's/"SecurityProfile": [0-9]\+/"SecurityProfile": 2/' /ext/dist/share/everest/modules/OCPP/config-docker.json
-                ;;
-            ws://*)
-                sed -i 's/"SecurityProfile": [0-9]\+/"SecurityProfile": 1/' /ext/dist/share/everest/modules/OCPP/config-docker.json
-                ;;
-        esac
-    fi
-    if [ "$EVEREST_DISABLE_ISO15118" = "true" ]; then
-        awk '
-        BEGIN { skip_module = 0; skip_hlc = 0 }
-        {
-            if ($0 ~ /^  iso15118_charger:/) {
-                skip_module = 1
-                next
-            }
-
-            if (skip_module == 1) {
-                if ($0 ~ /^  [A-Za-z0-9_]+:/) {
-                    skip_module = 0
-                } else {
-                    next
-                }
-            }
-
-            if ($0 ~ /^      hlc:/) {
-                skip_hlc = 1
-                next
-            }
-
-            if (skip_hlc == 1) {
-                if ($0 ~ /^      [A-Za-z0-9_]+:/ || $0 ~ /^  [A-Za-z0-9_]+:/) {
-                    skip_hlc = 0
-                } else {
-                    next
-                }
-            }
-
-            print
-        }
-        ' /ext/source/config/config-sil-ocpp.yaml > /tmp/config-sil-ocpp-noiso15118.yaml
-
-        LD_LIBRARY_PATH=/ext/dist/lib:$LD_LIBRARY_PATH \
-        PATH=/ext/dist/bin:$PATH \
-        manager \
-            --prefix /ext/dist \
-            --conf /tmp/config-sil-ocpp-noiso15118.yaml
-    else
-        /ext/build/run-scripts/run-sil-ocpp.sh
-    fi
+    /ext/build/run-scripts/run-sil-ocpp.sh
 else
     #Works for all 2.x versions
     rm /ext/dist/share/everest/modules/OCPP201/component_config/custom/EVSE_2.json
     rm /ext/dist/share/everest/modules/OCPP201/component_config/custom/Connector_2_1.json
-    if [ "$EVEREST_ENABLE_PNC" = "true" ]; then
-        chmod +x /ext/build/run-scripts/run-sil-ocpp201-pnc.sh
-        /ext/build/run-scripts/run-sil-ocpp201-pnc.sh
-    else
-        chmod +x /ext/build/run-scripts/run-sil-ocpp201.sh
-        /ext/build/run-scripts/run-sil-ocpp201.sh
-    fi
+    chmod +x /ext/build/run-scripts/run-sil-ocpp201-pnc.sh
+    /ext/build/run-scripts/run-sil-ocpp201-pnc.sh
 fi

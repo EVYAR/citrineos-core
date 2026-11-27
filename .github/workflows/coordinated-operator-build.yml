@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+name: Coordinated Operator build
+
+# Reused by Operator PR acceptance; manual dispatch runs the same synthetic profile.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coordinated-operator-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+          cache: pnpm
+      - name: Establish hosted job guard
+        run: python3 scripts/ci/bounded.py init
+      - name: Install exact workspace dependencies
+        run: python3 scripts/ci/bounded.py run --stage install --profile install -- pnpm install --frozen-lockfile --network-concurrency=4
+      - name: Build required shared packages sequentially
+        run: python3 scripts/ci/bounded.py run --stage shared --profile build -- pnpm --workspace-concurrency=1 --filter '@citrineos/base...' run build
+      - name: Operator unit regressions (runtime assertions, one worker)
+        run: >-
+          python3 scripts/ci/bounded.py run --stage operator-unit --profile build --
+          pnpm exec vitest run --config scripts/ci/vitest-runtime.config.mjs --project operator-ui --maxWorkers=1 --minWorkers=1
+          --fileParallelism=false --typecheck.enabled=false --reporter=default --reporter=json
+          --outputFile=reports/ci/operator-unit-runtime.json
+      - name: Native Operator TypeScript check
+        run: python3 scripts/ci/bounded.py run --stage operator-typecheck --profile typecheck -- pnpm exec tsc -p apps/operator-ui/tsconfig.json --noEmit
+      - name: Build once and exercise actual standalone HTTP/session/proxy headers
+        run: python3 scripts/ci/bounded.py run --stage operator --profile operator -- node scripts/validate-operator-isolated.mjs 4096
+      - name: Separate actual runtime, native TypeScript and standalone evidence
+        run: python3 scripts/ci/operator-report.py
+      - name: Cleanup owned resources
+        if: always()
+        run: python3 scripts/ci/bounded.py cleanup
+      - name: Retain source-bound acceptance result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-build-validation-${{ github.sha }}
+          path: |
+            operator-build-validation.json
+            reports/ci/
+          if-no-files-found: error
+          retention-days: 7

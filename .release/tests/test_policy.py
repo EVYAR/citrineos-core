@@ -45,6 +45,26 @@ class PolicyTests(unittest.TestCase):
     def test_none_rejects_runtime(self):
         self.change('none')
         with self.assertRaisesRegex(ValueError, 'cannot declare'): policy.check(self.base)
+    def test_none_accepts_dedicated_ci_tooling(self):
+        Path('scripts/ci').mkdir(parents=True)
+        Path('scripts/ci/guard.py').write_text('raise SystemExit(0)\n')
+        policy.write_json('.release/changes/ci.json', {'type': 'none', 'summary': 'Improve CI guard'})
+        self.commit()
+        policy.check(self.base)
+    def test_none_rejects_similarly_named_runtime_script(self):
+        Path('scripts').mkdir()
+        Path('scripts/ci-runtime.py').write_text('runtime = True\n')
+        policy.write_json('.release/changes/ci.json', {'type': 'none', 'summary': 'Script change'})
+        self.commit()
+        with self.assertRaisesRegex(ValueError, 'cannot declare'): policy.check(self.base)
+    def test_ci_tooling_cannot_hide_application_runtime_change(self):
+        Path('scripts/ci').mkdir(parents=True)
+        Path('scripts/ci/guard.py').write_text('raise SystemExit(0)\n')
+        Path('apps/service/src').mkdir(parents=True)
+        Path('apps/service/src/runtime.ts').write_text('export const changed = true;\n')
+        policy.write_json('.release/changes/ci.json', {'type': 'none', 'summary': 'Mixed changes'})
+        self.commit()
+        with self.assertRaisesRegex(ValueError, 'cannot declare'): policy.check(self.base)
     def test_prepare_freezes_records_and_preserves_native_counters(self):
         self.change()
         policy.check(self.base)

@@ -2,9 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import type { LocationDto } from '@citrineos/base';
+import type { LocationDto } from '@citrineos/types';
 import { Button } from '@lib/client/components/ui/button';
-import { ResourceType } from '@lib/utils/access.types';
+import { ResourceType } from '@lib/utils/access-types';
 import { useNavigation, useTranslate } from '@refinedev/core';
 import React from 'react';
 

@@ -1,0 +1,141 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import { AbstractConnectionManager } from '@citrineos/base';
+import amqp from 'amqplib';
+import { type ILogObj, Logger } from 'tslog';
+
+export class RabbitMQConnectionManager extends AbstractConnectionManager<amqp.ChannelModel> {
+  private connection: amqp.ChannelModel | null = null;
+  private isConnecting = false;
+  private closing = false;
+  private reconnectAttempts = 0;
+  private reconnectDelay = 1000; // Start with 1 second
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
+  private maxReconnectDelay: number;
+  private url: string;
+
+  constructor({
+    maxReconnectDelay,
+    amqpUrl,
+    logger,
+  }: {
+    maxReconnectDelay: number;
+    amqpUrl: string;
+    logger?: Logger<ILogObj>;
+  }) {
+    super(logger);
+    this.maxReconnectDelay = maxReconnectDelay;
+    this.url = amqpUrl;
+  }
+
+  async connect(): Promise<amqp.ChannelModel> {
+    if (this.closing) throw new Error('RabbitMQ connection manager is closed');
+    if (this.connection) {
+      return this.connection;
+    }
+
+    if (this.isConnecting) {
+      // Wait for existing connection attempt
+      return new Promise((resolve, reject) => {
+        this.once('connected', resolve);
+        this.once('error', reject);
+      });
+    }
+
+    this.isConnecting = true;
+
+    try {
+      const connection = await amqp.connect(this.url);
+      if (this.closing) {
+        await connection.close();
+        throw new Error('RabbitMQ connection manager closed during connect');
+      }
+      this.connection = connection;
+      this.reconnectAttempts = 0;
+      this.reconnectDelay = 1000;
+      this.isConnecting = false;
+      this.state = 'connected';
+
+      this.connection.on('error', (err) => {
+        this._logger.error('RabbitMQ connection error:', err);
+        if (this.listenerCount('error') > 0) {
+          this.emit('error', err);
+        }
+      });
+
+      this.connection.on('close', () => {
+        this._logger.warn('RabbitMQ connection closed');
+        this.connection = null;
+        if (this.closing) return;
+        this.state = 'disconnected';
+        this.emit('disconnected');
+        this.handleReconnect().catch((err) => {
+          this._logger.error('Error during RabbitMQ reconnection:', err);
+        });
+      });
+
+      this.emit('connected', this.connection);
+      this._logger.info('Connected to RabbitMQ');
+      return this.connection;
+    } catch (error) {
+      this.isConnecting = false;
+      this._logger.error('Failed to connect to RabbitMQ:', error);
+      this.handleReconnect().catch((err) => {
+        this._logger.error('Error during RabbitMQ reconnection:', err);
+      });
+      throw error;
+    }
+  }
+
+  private async handleReconnect(): Promise<void> {
+    if (this.closing || this.state === 'closed') {
+      this._logger.info('Connection is closed, will not attempt to reconnect.');
+      return;
+    }
+    if (this.reconnectTimer) {
+      this._logger.info('Reconnect already scheduled, skipping.');
+      return;
+    }
+    this.reconnectAttempts++;
+
+    // Exponential backoff with full jitter
+    const maxDelay = Math.min(
+      this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1),
+      this.maxReconnectDelay,
+    );
+    const delay = Math.random() * maxDelay + 1000; // Add 1 second base delay, plus full jitter between 0 and maxDelay
+
+    this._logger.info(
+      `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${this.reconnectAttempts})`,
+    );
+
+    this.reconnectTimer = setTimeout(async () => {
+      try {
+        this.reconnectTimer = null;
+        await this.connect();
+      } catch (_error) {
+        // Error already logged in connect()
+      }
+    }, delay);
+  }
+
+  async close(): Promise<void> {
+    this.closing = true;
+    this.state = 'closed';
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.connection) {
+      await this.connection.close();
+      this.connection = null;
+    }
+  }
+
+  isConnected(): boolean {
+    return this.connection !== null;
+  }
+}

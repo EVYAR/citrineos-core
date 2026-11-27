@@ -11,12 +11,14 @@ import dataProvider from '@lib/providers/data-provider';
 import liveProvider from '@lib/providers/live-provider';
 import { createNotificationProvider } from '@lib/providers/notification-provider';
 import ReduxProvider from '@lib/providers/redux-provider';
-import { setUserLocale } from '@lib/server/hooks/getUserLocale';
+import { setUserLocale } from '@lib/server/hooks/get-user-locale';
+import config from '@lib/utils/config';
 import { resources } from '@lib/utils/resources';
 import type { I18nProvider } from '@refinedev/core';
 import { Refine } from '@refinedev/core';
-import routerProvider from '@refinedev/nextjs-router';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { routerProvider } from '@lib/providers/router-provider';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { createOperatorQueryClient } from './query-client';
 import { SessionProvider } from 'next-auth/react';
 import { useLocale, useTranslations } from 'next-intl';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -34,25 +36,9 @@ export function Providers({
     setMounted(true);
   }, []);
 
-  const accessControlProvider = useMemo(
-    () =>
-      createAccessProvider({
-        getPermissions: authProvider.getPermissions!,
-        getUserRole: authProvider.getUserRole!,
-      }),
-    [],
-  );
+  const queryClient = useMemo(() => createOperatorQueryClient(config.authProvider), []);
 
-  const queryClient: QueryClient = useMemo(() => {
-    return new QueryClient({
-      defaultOptions: {
-        queries: {
-          staleTime: Infinity,
-          refetchOnWindowFocus: false,
-        },
-      },
-    });
-  }, []);
+  const accessControlProvider = useMemo(() => createAccessProvider(queryClient), [queryClient]);
 
   const t = useTranslations();
 
@@ -95,7 +81,7 @@ export function Providers({
               options={{
                 warnWhenUnsavedChanges: true,
                 projectId: '6ZV3T4-Lyy7B3-Dr5Uhd',
-                liveMode: 'auto',
+                liveMode: config.authProvider === 'generic' ? 'off' : 'auto',
                 reactQuery: {
                   clientConfig: queryClient,
                 },

@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Install native dependency toolchains only in Alpine build stages so frozen monorepo installs can compile SQLite and CPU features when prebuilt binaries are unavailable."
+}

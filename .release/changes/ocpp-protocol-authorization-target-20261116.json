@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Project explicit real-time authorization targets using the persisted station protocol: OCPP 1.6 uses its station-wide connector number for both wire target fields; OCPP 2.x retains EVSE-local identifiers. Reject missing or invalid protocol target metadata without substituting database IDs or another protocol's fields. Preserve durable admission fencing and callback deadlines. This fixes a proven source contract gap; it does not establish the cause of any prior physical transaction failure."
+}

@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Require fresh owned stopped-container proof before accounting unavailable Docker stats as zero, retain private allowlisted lifecycle evidence and fail-closed negative fixtures, and preserve every resource threshold and native failure."
+}

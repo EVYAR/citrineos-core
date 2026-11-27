@@ -8,7 +8,7 @@ services:
   graphql-engine:
     image: hasura/graphql-engine:v2.40.3.cli-migrations-v3
     volumes:
-      - ./hasura-metadata:/hasura-metadata
+      - ./db/hasura-metadata:/hasura-metadata
     environment:
       HASURA_GRAPHQL_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-citrine}
       HASURA_GRAPHQL_ENABLE_CONSOLE: "false"

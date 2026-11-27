@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 ![CitrineOS Logo](../../logo_white.png#gh-dark-mode-only)
 ![CitrineOS Logo](../../logo_black.png#gh-light-mode-only)
 
-# CitrineOS OCPI Server (`@citrineos/ocpi-demo`)
+# CitrineOS OCPI Server (`@citrineos/ocpi-server`)
 
 The **CitrineOS OCPI Server** is the runnable application that exposes the
 [Open Charge Point Interface (OCPI)](https://evroaming.org/ocpi/) APIs for **CitrineOS**, an open-source, modular
@@ -105,7 +105,7 @@ The following service must be running before starting the OCPI Server:
 
 - **CitrineOS Core** (the OCPP server stack)
   Provides PostgreSQL, RabbitMQ, the OCPP Message APIs, and Hasura. See the
-  [Server README](../ocpp-server/README.md).
+  [Server README](../ocpp/README.md).
 
 ## Getting Started
 
@@ -120,7 +120,7 @@ pnpm run build
 ### Running with Docker (Recommended)
 
 The OCPI Server runs as part of the unified stack. From the repository root, the `--ocpi` flag brings up CitrineOS Core
-(`citrine`, PostgreSQL, RabbitMQ, MinIO, Hasura), the operator UI, and the OCPI Server together:
+(`citrine`, PostgreSQL, RabbitMQ, Hasura), the operator UI, and the OCPI Server together:
 
 ```bash
 pnpm citrine --ocpi
@@ -143,7 +143,7 @@ cd apps/ocpi-server
 pnpm run start
 ```
 
-This launches the OCPI Server via `nodemon` (see `nodemon.json`), which builds the workspace, runs database
+This launches the OCPI Server via `nodemon` (see `config/nodemon.json`), which builds the workspace, runs database
 migrations, and starts the process with the Node.js inspector listening on port `9229`. Hot reload is enabled for
 `src` and the workspace packages it depends on.
 
@@ -187,7 +187,7 @@ The following OCPI modules are mounted:
 
 ## Working with workspace packages
 
-The OCPI Server depends on `@citrineos/base`, `@citrineos/core`, and `@citrineos/ocpi-base` via `workspace:*`
+The OCPI Server depends on `@citrineos/base`, `@citrineos/ocpp`, and `@citrineos/ocpi` via `workspace:*`
 dependencies, so pnpm resolves them from the local `packages/` directory automatically — no `npm link` step is
 required. Just build the workspace packages so the compiled output is available:
 
@@ -209,10 +209,38 @@ root `docker-compose.yml`
 and the `process.env.*` fallbacks in the config files), including `DB_HOST`, `DB_PORT`, `AMQP_URL`, `AMQP_EXCHANGE`,
 `GRAPHQL_ENDPOINT`, and the OCPI server `PORT`.
 
+Administrative endpoints require explicit OIDC configuration. Set all of
+`OCPI_ADMIN_JWKS_URI`, `OCPI_ADMIN_ISSUER`, `OCPI_ADMIN_AUDIENCE`, and
+`OCPI_ADMIN_ALLOWED_SUBJECTS` (comma-separated exact issuer subject identifiers),
+or leave all four unset to disable administrative access with HTTP 503. Partial
+configuration fails startup. The issuer and JWKS endpoint must use HTTPS. Reserve
+these subjects at the trusted issuer so tenant self-service credentials cannot
+request them. There is no default subject, issuer, role, or reused Core JWT profile.
+Partner OCPI Token authentication remains separate.
+
+The private Core command callback uses a per-command capability query parameter,
+validated against its digest and exact owner/version/command/response URL/expiry
+context in the OCPI cache. Preserve that query parameter in private transport and
+exclude callback URLs from proxy access logs. It is not part of any standard OCPI
+or OCPP body. Drain pending commands before upgrading or changing cache topology;
+old UUID-only callbacks are rejected. All OCPI workers serving a command must
+share the cache; memory cache is limited to a single process.
+
+Terminal result selection uses the cache's atomic conditional set, retained for
+twice the configured command timeout. Resolution still precedes HTTP delivery.
+Partner result delivery has a five-second deadline, a 64-KiB response limit, no
+redirect following, and no retry after ambiguous delivery. Duplicate attempts
+within the retained claim do not send another result. Cache loss, process loss,
+and expiry can lose delivery; this is neither durable nor exactly-once delivery.
+Core callback notification retains its existing retry classifications and optional
+outbound OIDC, with at most three attempts bounded to five seconds each and fifteen
+seconds overall. Response bodies are canceled without being logged or read.
+
 ## Related Documentation
 
 - **CitrineOS Core / OCPP Server**
-  - [Server README](../ocpp-server/README.md)
+  - [Server README](../ocpp/README.md)
+  - [Dependency Injection](../../packages/ocpp/src/server/DEPENDENCY_INJECTION.md) - the Awilix model this server follows too
 - **CitrineOS Operator UI**
   - [Operator UI README](../operator-ui/README.MD)
 - **CitrineOS Project Docs**

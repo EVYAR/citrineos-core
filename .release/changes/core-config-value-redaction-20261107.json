@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Keep schema-based configuration diagnostics useful without exposing raw environment values or credentials."
+}

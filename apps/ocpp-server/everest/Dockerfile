@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+#
+# SPDX-License-Identifier: Apache-2.0
+
 ARG EVEREST_IMAGE_TAG="2025.6.1-dt-esdp"
 ARG EVEREST_IMAGE_REPOSITORY="ghcr.io/everest/everest-demo/manager"
 FROM ${EVEREST_IMAGE_REPOSITORY}:${EVEREST_IMAGE_TAG}

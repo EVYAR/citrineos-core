@@ -2,17 +2,22 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Re-export internal types and enums
-export * from './internal-types.js';
+export {
+  EventGroup,
+  eventGroupFromString,
+  MessageOrigin,
+  MessageState,
+  RetryMessageError,
+} from '@citrineos/types';
+export type { HandlerProperties } from '@citrineos/types';
 
-// Export interfaces - these can import from other modules but won't create circular deps
-export { AbstractConnectionManager } from './AbstractConnectionManager.js';
-export { AbstractMessageHandler } from './AbstractMessageHandler.js';
-export { AbstractMessageSender } from './AbstractMessageSender.js';
-export type { IConnectionManager } from './IConnectionManager.js';
-export { Message } from './Message.js';
-export type { IMessage } from './Message.js';
-export type { IMessageConfirmation } from './MessageConfirmation.js';
-export type { IMessageContext } from './MessageContext.js';
-export type { IMessageHandler } from './MessageHandler.js';
-export type { IMessageSender } from './MessageSender.js';
+export { AbstractConnectionManager } from './abstract-connection-manager.js';
+export { AbstractMessageHandler } from './abstract-message-handler.js';
+export { AbstractMessageSender } from './abstract-message-sender.js';
+export type { IConnectionManager } from './i-connection-manager.js';
+export { Message } from './message.js';
+export type { IMessage } from './message.js';
+export type { IMessageConfirmation } from './message-confirmation.js';
+export type { IMessageContext } from './message-context.js';
+export type { IMessageHandler } from './message-handler.js';
+export type { IMessageSender } from './message-sender.js';

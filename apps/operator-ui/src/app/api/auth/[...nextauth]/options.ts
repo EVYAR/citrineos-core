@@ -40,7 +40,6 @@ import KeycloakProvider from 'next-auth/providers/keycloak';
 import CredentialsProvider from 'next-auth/providers/credentials';
 import config from '@lib/utils/config';
 import { parseJwt } from '@lib/utils/jwt';
-import { genericAdminUser } from '@lib/providers/auth-provider/generic-auth-provider';
 
 const keycloakServerUrl = config.keycloakServerUrl || config.keycloakUrl;
 const authProvider = config.authProvider;
@@ -124,10 +123,17 @@ const getProvider = () => {
       async authorize(credentials, _req) {
         if (
           credentials &&
+          config.adminEmail &&
+          config.adminPassword &&
           credentials.username === config.adminEmail &&
           credentials.password === config.adminPassword
         ) {
-          return genericAdminUser;
+          return {
+            id: '1',
+            name: 'Admin User',
+            email: credentials.username,
+            roles: ['admin'],
+          };
         } else {
           return null;
         }
@@ -157,7 +163,11 @@ const authOptions: AuthOptions = {
       // Default to overview page for any other case
       return `${baseUrl}/overview`;
     },
-    async jwt({ token, account }) {
+    async jwt({ token, account, user }) {
+      if (authProvider === 'generic') {
+        if (user) token.roles = user.roles;
+        return token;
+      }
       // Initial sign in - store Keycloak tokens in JWT
       if (account) {
         token.accessToken = account.access_token;
@@ -196,13 +206,20 @@ const authOptions: AuthOptions = {
     async session({ session, token }) {
       // Pass JWT info to client session
       if (session.user) {
-        (session.user as any).roles = token.roles;
-        (session.user as any).tenantId = token.tenantId;
+        // The subject claim is the only stable per-user identifier available to the
+        // client. Without it every user collapses onto the same fallback id, which
+        // makes anything keyed on identity (per-user modals, preferences) behave as
+        // though it were deployment-wide.
+        session.user.sub = token.sub;
+        session.user.roles = Array.isArray(token.roles)
+          ? token.roles.filter((role): role is string => typeof role === 'string')
+          : [];
+        session.user.tenantId = typeof token.tenantId === 'string' ? token.tenantId : undefined;
       }
-      (session as any).accessToken = token.accessToken;
+      session.accessToken = typeof token.accessToken === 'string' ? token.accessToken : undefined;
       (session as any).idToken = token.idToken;
       (session as any).keycloakLogoutUrl = token.keycloakLogoutUrl;
-      (session as any).error = token.error;
+      session.error = typeof token.error === 'string' ? token.error : undefined;
       return session;
     },
   },

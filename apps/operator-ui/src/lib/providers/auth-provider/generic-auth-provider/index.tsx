@@ -14,12 +14,14 @@ import {
 } from '@lib/client/components/ui/card';
 import { Input } from '@lib/client/components/ui/input';
 import { Label } from '@lib/client/components/ui/label';
-import { type AuthenticationContextProvider, type User } from '@lib/utils/access.types';
+import { type AuthenticationContextProvider, type User } from '@lib/utils/access-types';
 import config from '@lib/utils/config';
-import { HasuraHeader, HasuraRole } from '@lib/utils/hasura.types';
+import { HasuraHeader, HasuraRole } from '@lib/utils/hasura-types';
 import { useLogin, useTranslate, type AuthProvider } from '@refinedev/core';
-import React, { useState } from 'react';
-import { signIn } from 'next-auth/react';
+import React, { useEffect, useState } from 'react';
+import { getSession, signIn, signOut } from 'next-auth/react';
+import { fetchDevRoles, fetchDevToken, isStaleDevSession } from '@lib/utils/dev-client';
+import { useQuery } from '@tanstack/react-query';
 
 /**
  * Configuration for the auth provider
@@ -48,7 +50,21 @@ export const genericAdminUser: User = {
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [role, setRole] = useState('');
+  const { data: devRoles = [] } = useQuery({
+    queryKey: ['dev', 'roles'],
+    queryFn: config.coreTransport === 'server' ? async () => [] : fetchDevRoles,
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  useEffect(() => {
+    if (!role && devRoles.length > 0) {
+      setRole(devRoles.includes('admin') ? 'admin' : devRoles[0]);
+    }
+  }, [devRoles, role]);
   const [error, setError] = useState<string | null>(null);
+
   const { mutate: login, isPending: isLoading } = useLogin();
   const translate = useTranslate();
 
@@ -57,7 +73,7 @@ const LoginPage: React.FC = () => {
     setError(null);
 
     login(
-      { email, password },
+      { email, password, roles: role ? [role] : undefined },
       {
         onError: () => {
           setError(translate('pages.login.invalidCredentials'));
@@ -113,6 +129,28 @@ const LoginPage: React.FC = () => {
               />
             </div>
 
+            {devRoles.length > 0 && (
+              <div className="space-y-2">
+                <Alert>
+                  <AlertDescription>{translate('pages.login.localDevNotice')}</AlertDescription>
+                </Alert>
+                <Label htmlFor="role">{translate('pages.login.fields.role')}</Label>
+                <select
+                  id="role"
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  disabled={isLoading}
+                >
+                  {devRoles.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <Button type="submit" className="w-full" disabled={isLoading}>
               {isLoading ? translate('pages.login.signingIn') : translate('pages.login.signin')}
             </Button>
@@ -127,10 +165,12 @@ const LoginPage: React.FC = () => {
  * Creates a default permissive auth provider that uses localStorage
  * for persistence and always grants permissions
  */
+let sessionChecked = false;
+
 export const createGenericAuthProvider = (
-  config: GenericAuthProviderConfig = {},
+  options: GenericAuthProviderConfig = {},
 ): AuthProvider & AuthenticationContextProvider => {
-  const { tokenKey = 'auth_token', userKey = 'auth_user' } = config;
+  const { tokenKey = 'auth_token', userKey = 'auth_user' } = options;
   /**
    * Save token to storage
    */
@@ -142,6 +182,7 @@ export const createGenericAuthProvider = (
    * Get token from storage
    */
   const getToken = async (): Promise<string | undefined> => {
+    if (config.coreTransport === 'server') return undefined;
     return localStorage.getItem(tokenKey) || undefined;
   };
 
@@ -169,6 +210,10 @@ export const createGenericAuthProvider = (
    * Get permissions
    */
   const getPermissions = async () => {
+    if (config.coreTransport === 'server') {
+      const session = await getSession();
+      return { roles: session?.user?.roles ?? [] };
+    }
     const user = getUser();
     return {
       roles: user?.roles || [],
@@ -206,10 +251,11 @@ export const createGenericAuthProvider = (
 
   // Return the auth provider implementation
   return {
-    login: async ({ email, password }) => {
+    login: async ({ email, password, roles }) => {
       const result = await signIn('generic', {
         username: email,
         password,
+        callbackUrl: '/overview',
         redirect: false,
       });
 
@@ -223,11 +269,28 @@ export const createGenericAuthProvider = (
         };
       }
 
-      const mockToken = 'mock_token_' + Math.random().toString(36).slice(2);
-      saveToken(mockToken);
-      saveUser({ ...genericAdminUser, email });
+      if (config.coreTransport === 'server') {
+        const session = await getSession();
+        if (!session?.user?.roles?.some((role) => role === 'admin' || role === 'operator')) {
+          return {
+            success: false,
+            error: { name: 'Authentication Error', message: 'Operator session required' },
+          };
+        }
+        localStorage.removeItem(tokenKey);
+        saveUser({ ...genericAdminUser, email, roles: session.user.roles });
+        window.location.href = result.url || '/overview';
+        return { success: true, redirectTo: '/overview' };
+      }
+      const chosenRoles: string[] = roles?.length ? roles : ['admin'];
+      // Only returns in localDevMode where the route is registered
+      const token = await fetchDevToken(chosenRoles);
+      if (token) {
+        saveToken(token);
+      }
+      saveUser({ ...genericAdminUser, email, roles: chosenRoles });
 
-      window.location.href = '/overview';
+      window.location.href = result.url || '/overview';
       return {
         success: true,
         redirectTo: '/overview',
@@ -235,6 +298,7 @@ export const createGenericAuthProvider = (
     },
 
     logout: async () => {
+      if (config.coreTransport === 'server') await signOut({ redirect: false });
       localStorage.removeItem(tokenKey);
       localStorage.removeItem(userKey);
 
@@ -245,11 +309,32 @@ export const createGenericAuthProvider = (
     },
 
     check: async () => {
+      if (config.coreTransport === 'server') {
+        const session = await getSession();
+        const authenticated =
+          !session?.error &&
+          session?.user?.roles?.some((role) => role === 'admin' || role === 'operator');
+        return authenticated
+          ? { authenticated: true }
+          : { authenticated: false, redirectTo: '/login', logout: true };
+      }
       const token = await getToken();
 
-      console.log('🔐 Auth check - token exists:', !!token);
+      if (token && !sessionChecked) {
+        sessionChecked = true;
+        if (await isStaleDevSession(token)) {
+          localStorage.removeItem(tokenKey);
+          localStorage.removeItem(userKey);
+          return {
+            authenticated: false,
+            redirectTo: '/login',
+            logout: true,
+            error: { message: 'Session expired', name: 'Authentication Error' },
+          };
+        }
+      }
 
-      if (token) {
+      if (token || getUser()) {
         return {
           authenticated: true,
         };
@@ -286,6 +371,16 @@ export const createGenericAuthProvider = (
     },
 
     getIdentity: async () => {
+      if (config.coreTransport === 'server') {
+        const session = await getSession();
+        if (!session?.user?.sub) return null;
+        return {
+          id: session.user.sub,
+          name: session.user.name ?? 'Admin User',
+          email: session.user.email ?? undefined,
+          roles: session.user.roles ?? [],
+        };
+      }
       const user = getUser();
       if (!user) return null;
       return user;

@@ -1,0 +1,89 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+# SPDX-License-Identifier: Apache-2.0
+set -euo pipefail
+# Run reuse lint and capture output
+if ! reuse lint > reuse_output.txt 2>&1; then
+  echo "REUSE lint found issues. Checking against ignore list..."
+
+  # Check if .reuse/ignore-files.txt exists
+  if [ -f ".reuse/ignore-files.txt" ]; then
+    echo "Found .reuse/ignore-files.txt file. Filtering results..."
+    # Extract failing files from the REUSE output
+    sed '/SUMMARY/q' reuse_output.txt | grep "^\* " | sed 's/^\* //' > failing_files.txt
+
+    [ -s failing_files.txt ] || { echo "REUSE failure had no recognized file diagnostics" >&2; exit 1; }
+
+    # Function to check if a file should be ignored
+    should_ignore_file() {
+      local file="$1"
+      local ignore_file="$2"
+
+      # Skip the reuse output file itself
+      if [[ "$file" == "reuse_output.txt" ]]; then
+        return 0  # ignore (return true)
+      fi
+
+      while IFS= read -r ignore_pattern; do
+        # Skip empty lines and comments
+        [[ -z "$ignore_pattern" || "$ignore_pattern" =~ ^[[:space:]]*# ]] && continue
+
+        # Remove trailing whitespace
+        ignore_pattern=$(echo "$ignore_pattern" | sed 's/[[:space:]]*$//')
+
+        # Check for exact match first
+        if [[ "$file" == "$ignore_pattern" ]]; then
+          return 0  # ignore
+        fi
+
+        # Check if it's a directory pattern (ends with /)
+        if [[ "$ignore_pattern" == */ ]]; then
+          # Check if file is in this directory
+          if [[ "$file" == "$ignore_pattern"* ]]; then
+            return 0  # ignore
+          fi
+        else
+          # Use shell pattern matching for globs
+          # Enable extended globbing for more complex patterns
+          shopt -s extglob nullglob
+          if [[ "$file" == $ignore_pattern ]]; then
+            return 0  # ignore
+          fi
+          shopt -u extglob nullglob
+        fi
+      done < "$ignore_file"
+
+      return 1  # don't ignore
+    }
+
+    # Find files that are failing but NOT in the ignore list
+    > unignored_failures.txt
+    while IFS= read -r failing_file; do
+      if ! should_ignore_file "$failing_file" ".reuse/ignore-files.txt"; then
+        echo "$failing_file" >> unignored_failures.txt
+      fi
+    done < failing_files.txt
+
+    # Check if there are any unignored failures
+    if [ -s unignored_failures.txt ]; then
+      echo "❌ REUSE compliance failed for the following files:"
+      cat unignored_failures.txt
+      echo ""
+      echo "These files need proper license headers or should be added to .reuse/ignore-files.txt"
+      echo ""
+      exit 1
+    else
+      echo "✅ All REUSE lint failures are accounted for in .reuse/ignore-files.txt"
+      ignored_count=$(wc -l < failing_files.txt)
+      echo "Ignored $ignored_count file(s) as specified in .reuse/ignore-files.txt"
+    fi
+  else
+    echo "❌ REUSE lint failed and no .reuse/ignore-files.txt file found"
+    echo ""
+    echo "Full REUSE lint output:"
+    cat reuse_output.txt
+    exit 1
+  fi
+else
+  echo "✅ REUSE lint passed - all files have proper license compliance"
+fi

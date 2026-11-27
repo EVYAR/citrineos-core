@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.build.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "composite": false,
+    "paths": {
+      "@ocpp/*": ["./src/ocpp/*"],
+      "@config/*": ["./src/config/*"],
+      "@interfaces/*": ["./src/interfaces/*"]
+    }
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["**/dist/**", "**/node_modules/**"]
+}

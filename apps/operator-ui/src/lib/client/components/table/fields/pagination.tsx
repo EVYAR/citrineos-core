@@ -25,7 +25,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import {
   getPageSizePreference,
   setPageSizePreference,
-} from '@lib/utils/store/table.preferences.slice';
+} from '@lib/utils/store/table-preferences-slice';
 
 interface DataTablePaginationProps<TData extends BaseRecord = BaseRecord> {
   table: UseTableReturnType<TData>['reactTable'];
@@ -107,7 +107,7 @@ export const Pagination = <TData extends BaseRecord = BaseRecord>({
         <div className="flex w-fit items-center justify-center text-sm font-medium">
           {translate('Common.pageOf', {
             page: table.getState().pagination.pageIndex + 1,
-            total: table.getPageCount(),
+            total: Math.max(table.getPageCount(), 1),
           })}
         </div>
         <div className="flex items-center space-x-2">

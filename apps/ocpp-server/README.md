@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 # CitrineOS Server (`@citrineos/ocpp-server`)
 
 This is the OCPP server application for CitrineOS — the runnable entrypoint that wires together
-[`@citrineos/base`](../../packages/base) and [`@citrineos/core`](../../packages/core) into a deployable
+[`@citrineos/base`](../../packages/base) and [`@citrineos/ocpp`](../../packages/ocpp) into a deployable
 service. It hosts the WebSocket endpoints that charging stations connect to, the OCPP message router, the
 HTTP/REST Data and Message APIs, and the Sequelize database migrations.
 
@@ -18,8 +18,15 @@ It is one workspace member of the `citrineos-core` pnpm monorepo. For repository
 `pnpm install`, building, the full-stack Docker Compose files, and the operator UI), see the
 [root README](../../README.md).
 
+The server class itself lives in `@citrineos/ocpp` as
+[`CitrineOSServer`](../../packages/ocpp/src/server/citrineos-server.ts); this app is only the
+entrypoint that loads config and runs it. Downstream distributions should subclass that class rather
+than copy it — see [Extending `CitrineOSServer`](../../packages/ocpp/src/server/README.md).
+
 How the server wires its dependencies — the Awilix container, module/service registration, and the
-bootstrap sequence — is documented in [`DEPENDENCY_INJECTION.md`](./DEPENDENCY_INJECTION.md).
+bootstrap sequence — is documented in
+[`DEPENDENCY_INJECTION.md`](../../packages/ocpp/src/server/DEPENDENCY_INJECTION.md), alongside the
+server class it describes.
 
 ## Table of Contents
 
@@ -28,9 +35,21 @@ bootstrap sequence — is documented in [`DEPENDENCY_INJECTION.md`](./DEPENDENCY
   - [Without Docker](#without-docker)
 - [Attaching a Debugger](#attaching-a-debugger)
 - [Server Ports](#server-ports)
-- [Database Sync vs. Migration](#database-sync-vs-migration)
-- [Runtime Configuration](#runtime-configuration)
-- [Bootstrap Configuration Environment Variables](#bootstrap-configuration-environment-variables)
+- [Database Migrations](#database-migrations)
+  - [Table Partitioning](#table-partitioning)
+- [Configuration](#configuration)
+  - [Naming](#naming)
+  - [Server and logging](#server-and-logging)
+  - [Database](#database)
+  - [Message broker and cache](#message-broker-and-cache)
+  - [File access](#file-access)
+  - [Websocket servers](#websocket-servers)
+  - [OCPP behaviour](#ocpp-behaviour)
+  - [Timeouts](#timeouts)
+  - [Modules](#modules)
+  - [API authentication](#api-authentication)
+  - [Certificate authorities](#certificate-authorities)
+  - [Running several instances side by side](#running-several-instances-side-by-side)
 - [Generating OCPP Interfaces](#generating-ocpp-interfaces)
 - [Validating Custom OCPP DataTransfer Messages](#validating-custom-ocpp-datatransfer-messages)
 - [Allow Unknown Charging Stations & Auto-Commissioning](#allow-unknown-charging-stations--auto-commissioning)
@@ -44,7 +63,7 @@ Make sure the workspace has been installed and built first (from the repository 
 ### With Docker (backend only)
 
 From the repository root, the `--solo` flag brings up the server plus its supporting services — RabbitMQ, PostgreSQL,
-MinIO, and Hasura — but **not** the operator UI:
+and Hasura — but **not** the operator UI:
 
 ```shell
 pnpm citrine --solo            # from published images
@@ -70,19 +89,20 @@ cd apps/ocpp-server
 pnpm run start
 ```
 
-This launches the server via `nodemon` (see `nodemon.json`), which builds the workspace, runs database migrations,
+This launches the server via `nodemon` (see `config/nodemon.json`), which builds the workspace, runs database migrations,
 and then starts the process with the Node.js inspector listening on port 9229.
 
-CitrineOS requires configuration to allow your OCPP 1.6 and OCPP 2.0.1 compliant charging stations to connect.
-To change the configuration used outside of Docker, adjust the configuration file at
-`apps/ocpp-server/src/config/envs/local.ts`. Make sure any changes to the local configuration do not make it into your PR.
+The schema defaults are the local-development values, so this needs no configuration to come up. To change how your
+OCPP 1.6 and 2.0.1 charging stations connect, set the environment variables described under
+[Configuration](#configuration), or edit [`src/assets/websocket-servers.json`](./src/assets/websocket-servers.json)
+for the websocket endpoints themselves. Make sure local-only changes to that file do not make it into your PR.
 
 ## Attaching a Debugger
 
 Whether you run the application with Docker or locally with pnpm, you can attach a debugger to port 9229 and set
 breakpoints in the TypeScript code directly from your IDE.
 
-To make the process **wait for the debugger to attach** before executing, modify the `nodemon.json` exec command from:
+To make the process **wait for the debugger to attach** before executing, modify the `config/nodemon.json` exec command from:
 
 ```shell
 pnpm run build --prefix ../../ && pnpm run db:migrate && node --inspect=0.0.0.0:9229 ./dist/index.js
@@ -99,92 +119,434 @@ pnpm run build --prefix ../../ && pnpm run db:migrate && node --inspect-brk=0.0.
 When running, the server container exposes the following ports (see the root `docker-compose.yml`):
 
 - `8080`: webserver HTTP — [Swagger](http://localhost:8080/docs)
-- `8081`: websocket server TCP connection without auth
-- `8082`: websocket server TCP connection with basic HTTP auth
-- `8083`: additional websocket server
-- `8443` / `8444`: TLS websocket servers
+- `8081`: websocket server, security profile 0 (no auth)
+- `8082`: websocket server, security profile 1 (basic HTTP auth)
+- `8443`: websocket server, security profile 2 (TLS)
+- `8444`: websocket server, security profile 3 (mTLS)
 - `9229`: Node.js debugger
+
+The websocket ports come from [`src/assets/websocket-servers.json`](./src/assets/websocket-servers.json); change that
+file and the published ports in `docker-compose.yml` together.
 
 ## Database Migrations
 
 CitrineOS uses Sequelize migrations to manage database schema changes. The `pnpm run db:migrate` script — run
-automatically on start via `nodemon.json`, and on container start via `entrypoint.sh` — applies any pending
+automatically on start via `config/nodemon.json`, and on container start via `entrypoint.sh` — applies any pending
 migrations.
 
-## Runtime Configuration
+### Table Partitioning
 
-Values from configuration files (`local.ts`, `docker.ts`, `swarm.docker.ts`) may be overridden at runtime via
-environment variables. Environment variables prefixed with `citrineos_` and hierarchically separated by an
-underscore will override the corresponding value. For example, the amqp URL:
+#### OCPPMessages
+
+`OCPPMessages` is range partitioned on `createdAt`, one partition per ISO week, keeping a rolling retention window.
+Migration `20260813120000-partition-ocpp-messages` performs the conversion: it copies only the rows inside the
+retention window into the partitioned table. Everything older is left behind in
+`OCPPMessages_old` for you to archive and drop. That is how old data leaves the live table.
+
+Two things to know when working with the model:
+
+- The primary key is the composite `(id, "createdAt")`, since a unique constraint on a partitioned table must contain
+  the partition key. `id` alone is no longer database-enforced unique — only the shared sequence keeps it so, so never
+  supply `id` explicitly outside a migration.
+- `requestMessageId` has no foreign key: a foreign key must target a complete unique key, and `(id)` is no longer one.
+  The link is maintained solely by the correlation triggers.
+
+There is deliberately no `DEFAULT` partition, so an insert whose `createdAt` falls outside every provisioned week fails
+outright. `rotate_ocpp_messages_partitions(retain_weeks, future_weeks, dry_run)` provisions upcoming weeks and drops
+expired ones; `entrypoint.sh` calls it on every start to provision only, never to drop when running locally.
+
+All week boundaries are computed in UTC. Every component that creates partitions must agree on the timezone, or a new
+partition's lower bound will not meet the previous partition's upper bound.
+
+```shell
+# provision upcoming partitions by hand (never drops anything)
+pnpm run db:partitions
+```
+
+#### The `Transactions` cluster
+
+`Transactions` is range partitioned on `createdAt`, one partition per month. Its children —
+`TransactionEvents`, `StartTransactions`, `StopTransactions`, `ChargingNeeds`, `MeterValues` — are partitioned on a
+new `transactionCreatedAt` column so their partitions line up with the parent's. Migration
+`20260818120000-partition-transactions` performs the conversion and, as above, leaves rows outside the retention
+window behind in the matching `*_old` tables. `transactions.retain_months` (default 12) sets that window.
+
+- `transactionCreatedAt` **must be supplied on insert**: tuple routing to a partition happens before any `BEFORE INSERT`
+  trigger fires, so the database cannot fill it in. The repositories pass the parent's `createdAt`; the models'
+  `@BeforeCreate` hook resolves it as a fallback, and an unlinked row gets its own timestamp.
+- Every child foreign key is now composite — `(transactionDatabaseId, transactionCreatedAt)` referencing
+  `Transactions(id, "createdAt")` — which is what rejects a wrong partition key.
+- `ChargingProfiles` is deliberately left unpartitioned and its `transactionDatabaseId` foreign key dropped, so a
+  station-level profile (`transactionDatabaseId IS NULL`) survives transaction retention.
+- The old `UNIQUE (stationId, transactionId)` cannot exist on a partitioned table, and no single column can reference
+  `Transactions(id, "createdAt")`, so `TransactionKeys.transactionDatabaseId` has no foreign key. That unpartitioned
+  registry enforces the pair globally instead — `AFTER INSERT` claims, `AFTER DELETE` releases, rotation prunes keys
+  whose transaction is gone (a partition drop is DDL, so no row trigger fires). Callers still see a unique violation.
+
+`rotate_transactions_partitions(retain_months, future_months, dry_run)` provisions upcoming months and drops expired
+ones, and the same `pnpm run db:partitions` provisions both clusters. Unlike the weekly rotation it must
+`DETACH PARTITION` before `DROP TABLE`, children before `Transactions`: a plain drop is refused while an inbound
+composite foreign key depends on the partition, and `DROP ... CASCADE` would delete the child constraints themselves.
+
+Neither cluster is ever pruned locally. `entrypoint.sh` and `pnpm run db:partitions` call both procedures with a
+`retain` of 9999, which puts the drop cutoff centuries in the past so nothing can qualify and the call can only create;
+dropping is destructive.
+
+The oldest partition the migration creates is `MINVALUE`-bounded, so it accepts anything older than itself. That
+catch-all is gone once it rotates away, after which a row predating the oldest partition has no partition to land in.
+
+#### WebsocketEvents
+
+`WebsocketEvents` was created partitioned by migration `20261005120000-create-websocket-events`: range partitioned on
+`createdAt`, one partition per ISO week, so it never needs a conversion. What is said above about `OCPPMessages`
+applies here too — the composite `(id, "createdAt")` primary key, so nothing can reference a row by `id` alone; no
+`DEFAULT` partition; a `MINVALUE`-bounded first partition; UTC week boundaries.
+
+`rotate_websocket_events_partitions(retain_weeks, future_weeks, dry_run)` provisions upcoming weeks and drops expired
+ones. Called with no arguments it keeps four weeks. `entrypoint.sh` and `pnpm run db:partitions` call it provision-only,
+as they do the others.
+
+## Configuration
+
+Configuration comes from environment variables, validated on startup against the Zod schema in
+[`packages/types/src/config/types.ts`](../../packages/types/src/config/types.ts). That schema is the authoritative
+reference — the tables below list the settings most people need, not every field.
+
+Two things are not environment variables: the [websocket servers](#websocket-servers) come from a mounted JSON file,
+and `APP_NAME` selects what the process runs (`all`, `router`, `modules`, or a single module name).
+
+If you are coming from a checkout that used `src/config/envs/local.ts` and `docker.ts`, see
+[Migrating from the Old Configuration](../../README.md#migrating-from-the-old-configuration) in the root README for a
+field-by-field mapping.
+
+### Dokploy Core Compose environment
+
+`docker-compose.dokploy-core.yml` requires `CORE_ENV_FILE` to point to a complete, reviewed Core environment
+file. Start from `.env.dokploy.core.example`, resolve its deployment references, and add the schema-backed settings
+for your existing listeners, TLS assets, authorization, roles and charging callouts before use. The Compose file
+passes this file through instead of translating legacy `BOOTSTRAP_CITRINEOS_*` or `CITRINEOS_UTIL_*` variables.
+Relative paths resolve from the Compose file's directory. Keep credential-bearing files outside the checkout.
+
+For example, set `CORE_ENV_FILE=/secure/core.env` in the Compose deployment environment. This is a Docker Compose
+environment file, so quote literal values according to Compose env-file syntax; Dokploy `${{environment.*}}`
+references in the example must be resolved before supplying the file. Inject application configuration through
+that file, since host environment variables are not automatically forwarded to the service.
+
+This deployment always sets `DB_STRATEGY=none`. Run the reviewed offline migration and partition-provisioning
+steps first. The health check uses `CITRINEOS_PORT` from the container environment (8080 when absent).
+
+### Naming
+
+Take `CITRINEOS_` and append the path to the field, uppercased, with one underscore per level:
+
+| Setting                            | Variable                                     |
+| ---------------------------------- | -------------------------------------------- |
+| `logLevel`                         | `CITRINEOS_LOGLEVEL`                         |
+| `database.host`                    | `CITRINEOS_DATABASE_HOST`                    |
+| `messageBroker.amqp.url`           | `CITRINEOS_MESSAGEBROKER_AMQP_URL`           |
+| `timeouts.maxCallLengthSeconds`    | `CITRINEOS_TIMEOUTS_MAXCALLLENGTHSECONDS`    |
+| `fileAccess.local.defaultFilePath` | `CITRINEOS_FILEACCESS_LOCAL_DEFAULTFILEPATH` |
+
+The underscore separates **levels, not words** — a camelCase field name stays one segment. Names are matched
+case-insensitively, so `citrineos_database_host` works too.
+
+Values are parsed as JSON when they can be and used as a raw string otherwise, so numbers and booleans need no
+quoting, an object can set a whole block at once (`CITRINEOS_DATABASE='{"host":"db","port":5432}'`), and `'{}'` opts
+into an optional block using all of its defaults.
+
+Anything you do not set takes its schema default, and the defaults are the local-development values — so running
+outside Docker generally needs no environment at all. A variable that does not resolve to a schema field is reported
+at startup as `refers to unknown configuration field '<segment>'` and ignored, so check the first lines of output
+after changing configuration.
+
+### Server and logging
+
+| Variable                     | Default               | Notes                                                 |
+| ---------------------------- | --------------------- | ----------------------------------------------------- |
+| `CITRINEOS_ENV`              | `development`         | `development` or `production`; affects log formatting |
+| `CITRINEOS_HOST`             | `0.0.0.0`             | HTTP bind address                                     |
+| `CITRINEOS_PORT`             | `8080`                | HTTP port                                             |
+| `CITRINEOS_LOGLEVEL`         | `2`                   | 0–6; 2 is debug                                       |
+| `CITRINEOS_SWAGGER_ENABLED`  | `true`                | Set `false` to stop serving the docs                  |
+| `CITRINEOS_SWAGGER_PATH`     | `/docs`               | Where the docs are mounted                            |
+| `CITRINEOS_SWAGGER_LOGOPATH` | `src/assets/logo.png` | Resolved from the working directory, not `fileAccess` |
+
+#### Keeping secrets out of the logs
+
+The logger redacts what `logRedaction` names, everywhere it appears in anything logged — no call site has to
+remember to strip it, and adding to the list needs no code change.
+
+| Variable                                | Default        | Notes                                                             |
+| --------------------------------------- | -------------- | ----------------------------------------------------------------- |
+| `CITRINEOS_LOGREDACTION_KEYS`           | `["password"]` | Property names to censor at any depth, matched case-insensitively |
+| `CITRINEOS_LOGREDACTION_PATHS`          | `[]`           | Dotted paths to censor, where `*` matches one segment             |
+| `CITRINEOS_LOGREDACTION_PATTERNS`       | `[]`           | Regexes matched against logged strings; each is applied globally  |
+| `CITRINEOS_LOGREDACTION_PLACEHOLDER`    | `[***]`        | What a censored value is replaced with                            |
+| `CITRINEOS_LOGREDACTION_REDACTKEYCODES` | `true`         | Redact OCPP `KeyCode` idTokens — see below                        |
+
+Values are JSON, so a list is set as one:
+
+```bash
+CITRINEOS_LOGREDACTION_KEYS='["password","clientSecret","authorization"]'
+CITRINEOS_LOGREDACTION_PATHS='["credentials.token","*.privateKey"]'
+CITRINEOS_LOGREDACTION_PATTERNS='["sk-[A-Za-z0-9]{20,}"]'
+```
+
+Pick the narrowest one that fits: `keys` for a name that means the same thing wherever it appears, `paths` when
+only one location is sensitive, `patterns` for a value recognizable by shape rather than by position.
+
+`redactKeyCodes` is separate because it cannot be expressed as any of the three. An OCPP `idToken` is a public
+tag id or a driver's typed PIN depending on its sibling `type` field, and OCPP 2.x C04.FR.04 requires that a
+`KeyCode` one never appear in logging. It is applied by a rule that inspects the whole object, so it holds
+wherever a key code could reach a log rather than only where someone remembered. Leave it on unless the
+deployment is somewhere the rule is moot.
+
+To redact something else that depends on an object's shape, write a `RedactionRule` and return it from
+`CitrineOSServer.redactionRules()`.
+
+### Database
+
+| Variable                        | Default     |
+| ------------------------------- | ----------- |
+| `CITRINEOS_DATABASE_HOST`       | `localhost` |
+| `CITRINEOS_DATABASE_PORT`       | `5432`      |
+| `CITRINEOS_DATABASE_DATABASE`   | `citrine`   |
+| `CITRINEOS_DATABASE_USERNAME`   | `citrine`   |
+| `CITRINEOS_DATABASE_PASSWORD`   | `citrine`   |
+| `CITRINEOS_DATABASE_DIALECT`    | `postgres`  |
+| `CITRINEOS_DATABASE_SYNC`       | `false`     |
+| `CITRINEOS_DATABASE_ALTER`      | `false`     |
+| `CITRINEOS_DATABASE_FORCE`      | `false`     |
+| `CITRINEOS_DATABASE_MAXRETRIES` | `3`         |
+| `CITRINEOS_DATABASE_RETRYDELAY` | `1000`      |
+
+Schema validation, applied to both Sequelize and Drizzle layers:
+
+| Variable                                    | Default  |
+| ------------------------------------------- | -------- |
+| `CITRINEOS_DATABASE_SCHEMA`                 | `public` |
+| `CITRINEOS_DATABASE_VALIDATESCHEMA`         | `true`   |
+| `CITRINEOS_DATABASE_VALIDATESCHEMASEVERITY` | `error`  |
+
+When `CITRINEOS_DATABASE_VALIDATESCHEMA` is true, on startup the server will check the live schema against the schemas
+the code declares and log its findings. If `CITRINEOS_DATABASE_VALIDATESCHEMASEVERITY` is `error`, the server will not start up.
+If `CITRINEOS_DATABASE_VALIDATESCHEMASEVERITY` is `warn`, the server will continue to run - this is the intended way
+to roll the check onto an existing deployment before making it a hard gate. Suppressed errors are surfaced on
+`/health/ready` as a `warn` on the `schema` and `drizzleSchema` checks. Validation is skipped entirely when
+`SYNC`/`ALTER`/`FORCE` is set, since `sequelize.sync()` has just reshaped the database from the models.
+
+There is one check per data layer — the Sequelize models, and (when `CITRINEOS_USE_DRIZZLE=true`) the Drizzle table
+declarations — but both read the settings above.
+
+Each check verifies that every declared table and column exists, with a compatible type and nullability; the Drizzle
+check additionally verifies that every declared index exists, which Sequelize's model metadata does not expose. A
+column narrower than the code expects is an error, since values the code permits would be rejected at runtime; a wider
+one is only a warning. Columns and tables that exist in the database but are not declared are warnings, not errors —
+except a `NOT NULL` column with no default, which breaks every insert.
+
+Connection pooling and TLS are optional blocks: `CITRINEOS_DATABASE_POOL_MAX`, `..._POOL_MIN`, `..._POOL_ACQUIRE`,
+`..._POOL_IDLE`, and `CITRINEOS_DATABASE_SSL_REQUIRE`, `..._SSL_REJECTUNAUTHORIZED`, `..._SSL_CA`.
+
+The migration runner reads the same variables, through
+[`src/config/sequelize-bridge.config.ts`](./src/config/sequelize-bridge.config.ts) — so `pnpm run db:migrate` and the
+server always agree on which database they are talking to.
+
+### Message broker and cache
+
+| Variable                                                | Default                             |
+| ------------------------------------------------------- | ----------------------------------- |
+| `CITRINEOS_MESSAGEBROKER_AMQP_URL`                      | `amqp://guest:guest@localhost:5672` |
+| `CITRINEOS_MESSAGEBROKER_AMQP_EXCHANGE`                 | `citrineos`                         |
+| `CITRINEOS_MESSAGEBROKER_AMQP_MAXRECONNECTDELAYSECONDS` | `30`                                |
+| `CITRINEOS_MESSAGEBROKER_AMQP_INSTANCEIDENTIFIER`       | unset                               |
+| `CITRINEOS_CACHE_TYPE`                                  | `memory`                            |
+
+For Redis, set `CITRINEOS_CACHE_TYPE=redis` and `CITRINEOS_CACHE_URL` to a `redis://` or `rediss://` URL. There is no
+host/port form.
+
+The Redis server must publish keyspace and keyevent notifications: run it with `notify-keyspace-events KEg$xe`.
+CitrineOS waits on cache keys through them and learns from them when a Call goes unanswered. A server without them
+raises no error; those waits run to their full timeout, and Call timeouts are never reported.
+
+### File access
+
+`fileAccess` is the storage the server reads its runtime files through — the websocket servers file, TLS material, the
+ACME account key, role definitions. Keys inside it resolve against the configured root.
+
+| Variable                    | Default                               |
+| --------------------------- | ------------------------------------- |
+| `CITRINEOS_FILEACCESS_TYPE` | `local` — one of `local`, `s3`, `gcp` |
+
+When `local`:
+
+- `CITRINEOS_FILEACCESS_LOCAL_DEFAULTFILEPATH` — root directory, relative to the process working directory
+  (default `src/assets`). The working directory differs between setups: running with pnpm from this package it is
+  `apps/ocpp-server`, while in the Docker image it is the repository root, which is why `docker-compose.yml` sets this
+  to `apps/ocpp-server/src/assets`.
+
+When `s3`:
+
+- `CITRINEOS_FILEACCESS_S3_REGION` — AWS region (optional)
+- `CITRINEOS_FILEACCESS_S3_ENDPOINT` — endpoint URL, for MinIO or a custom S3
+- `CITRINEOS_FILEACCESS_S3_DEFAULTBUCKETNAME` — bucket name (default `citrineos-s3-bucket`)
+- `CITRINEOS_FILEACCESS_S3_S3FORCEPATHSTYLE` — force path style (default `true`)
+- `CITRINEOS_FILEACCESS_S3_ACCESSKEYID` / `CITRINEOS_FILEACCESS_S3_SECRETACCESSKEY` — credentials; the AWS SDK's own
+  `AWS_*` variables also work
+
+When `gcp`:
+
+- `CITRINEOS_FILEACCESS_GCP_PROJECTID` — project ID (required)
+- `CITRINEOS_FILEACCESS_GCP_DEFAULTBUCKETNAME` — bucket name (default `citrineos-s3-bucket`)
+- `CITRINEOS_FILEACCESS_GCP_CREDENTIALS` — credentials object as JSON. If unset, Application Default Credentials are
+  used (`GOOGLE_APPLICATION_CREDENTIALS`, or gcloud CLI credentials)
+
+### Websocket servers
+
+The websocket endpoints charging stations connect to are listed in a JSON file read through `fileAccess`, not in
+environment variables — [`src/assets/websocket-servers.json`](./src/assets/websocket-servers.json) by default,
+relocatable with `CITRINEOS_WEBSOCKETSERVERCONFIGFILE`.
+
+Each entry requires `id` (unique), `host`, `port`, `protocols`, `securityProfile`, and **exactly one** of `tenantId`
+or `dynamicTenantResolution`. Security profiles 2 and 3 additionally require TLS material — `tlsKeyFilePath` and
+`tlsCertificateChainFilePath`, plus `mtlsCertificateAuthorityKeyFilePath` for profile 3. Those paths resolve against
+the `fileAccess` root, so they are written as `certificates/leafKey.pem`.
+
+The file is validated on startup and a bad entry stops the server with the failing index and reason.
+
+### OCPP behaviour
+
+| Variable                                   | Default    | Notes                                                                    |
+| ------------------------------------------ | ---------- | ------------------------------------------------------------------------ |
+| `CITRINEOS_OCPP_HEARTBEATINTERVAL`         | `60`       | Seconds, sent to stations on boot                                        |
+| `CITRINEOS_OCPP_BOOTRETRYINTERVAL`         | `15`       | Seconds, sent when a boot is Pending or Rejected                         |
+| `CITRINEOS_OCPP_UNKNOWNCHARGERSTATUS`      | `Accepted` | `Accepted`, `Pending` or `Rejected`, for stations with no BootConfig row |
+| `CITRINEOS_OCPP_GETBASEREPORTONPENDING`    | `true`     |                                                                          |
+| `CITRINEOS_OCPP_BOOTWITHREJECTEDVARIABLES` | `false`    |                                                                          |
+| `CITRINEOS_OCPP_AUTOACCEPT`                | `true`     | When `false`, boot status is never promoted automatically                |
+
+These apply to every OCPP version; there is no longer a per-protocol split. See
+[Allow Unknown Charging Stations & Auto-Commissioning](#allow-unknown-charging-stations--auto-commissioning) for how
+they interact with station provisioning.
+
+### Timeouts
+
+| Variable                                               | Default |
+| ------------------------------------------------------ | ------- |
+| `CITRINEOS_TIMEOUTS_MAXCALLLENGTHSECONDS`              | `20`    |
+| `CITRINEOS_TIMEOUTS_MAXCACHINGSECONDS`                 | `30`    |
+| `CITRINEOS_TIMEOUTS_SHUTDOWNGRACEPERIODSECONDS`        | `30`    |
+| `CITRINEOS_TIMEOUTS_REALTIMEAUTHDEFAULTTIMEOUTSECONDS` | `15`    |
+| `CITRINEOS_TIMEOUTS_NOTREADYTHRESHOLDSECONDS`          | `60`    |
+| `CITRINEOS_TIMEOUTS_STALECALLMAXAGESECONDS`            | unset   |
+
+`maxCachingSeconds` may not be lower than `maxCallLengthSeconds`; the schema rejects that combination.
+
+### Modules
+
+| Variable                                                         | Default |
+| ---------------------------------------------------------------- | ------- |
+| `CITRINEOS_TRANSACTIONS_COSTUPDATEDINTERVAL`                     | `60`    |
+| `CITRINEOS_TRANSACTIONS_SENDCOSTUPDATEDONMETERVALUE`             | unset   |
+| `CITRINEOS_TRANSACTIONS_RECEIPTBASEURL`                          | unset   |
+| `CITRINEOS_EVDRIVER_ENABLEGETCHARGINGPROFILESONSTARTTRANSACTION` | `false` |
+
+Exactly one of `costUpdatedInterval` or `sendCostUpdatedOnMeterValue` must be set. Signed meter values are an optional
+block: `CITRINEOS_TRANSACTIONS_SIGNEDMETERVALUES_PUBLICKEYFILEID`, `..._SIGNINGMETHOD`,
+`..._REJECTUNSUPPORTEDSIGNEDMETERVALUES`.
+
+### API authentication
+
+`CITRINEOS_AUTH_MODE` selects how the API authenticates callers.
+
+| Mode                   | Identity                                              | Enforced |
+| ---------------------- | ----------------------------------------------------- | -------- |
+| `jwt`                  | Bearer token verified against the issuer's JWKS       | yes      |
+| `localDev` _(default)_ | Token minted by this server from an ephemeral keypair | yes      |
+| `localBypass`          | None — every request is accepted                      | no       |
+
+`jwt` takes a block of its own. `jwksUri` and `issuer` are required; the claim paths default to `roles` and
+`tenant_id`, which most providers will need overridden. Values here are illustrative.
+
+```shell
+CITRINEOS_AUTH_MODE=jwt
+CITRINEOS_AUTH_JWT_JWKSURI=https://id.example.test/realms/acme/protocol/openid-connect/certs
+CITRINEOS_AUTH_JWT_ISSUER=https://id.example.test/realms/acme
+CITRINEOS_AUTH_JWT_ROLESCLAIM=resource_access.acme-portal.roles
+CITRINEOS_AUTH_JWT_TENANTCLAIM=tenant_id
+CITRINEOS_AUTH_JWT_AUDIENCE=acme-portal      # optional
+CITRINEOS_AUTH_JWT_CACHETIMESECONDS=3600     # optional
+CITRINEOS_AUTH_JWT_RATELIMIT=true            # optional, default true
+```
+
+- `issuer` must equal the token's `iss` exactly. `jwksUri` only has to be reachable from the server, so the two may
+  name different hosts — an internal service address for the fetch, the public URL for the comparison.
+- Keys are fetched on demand and cached by `kid`, so key rotation needs no restart.
+- The claim settings take dotted paths, e.g. `resource_access.<client>.roles`, and handle the well-known claim
+  structures.
+- `audience` is optional. Leaving it unset accepts any validly signed token from the issuer, including one minted
+  for a different client of the same issuer; the server warns about this at startup.
+- Verification is restricted to the algorithms the signing key can produce, so a token naming `HS*` or `none` is
+  refused whatever its header claims.
+
+`localDev` mints its own tokens from a keypair generated at startup and verifies them through the same path as
+`jwt`. `POST /dev/token` returns a token for the requested roles. It is refused when `env` is `production`, and it
+requires flat claim paths, since a nested path cannot be minted locally.
+
+### Roles
+
+Role definitions are read through `fileAccess`, so the file can sit on a mounted path or in a bucket.
+
+| Variable                                 | Default                | Meaning                                    |
+| ---------------------------------------- | ---------------------- | ------------------------------------------ |
+| `CITRINEOS_ROLES_SEEDFILE`               | `roles-seed.json`      | Key resolved against the `fileAccess` root |
+| `CITRINEOS_ROLES_REFRESHINTERVALSECONDS` | `60`                   | How often the file is re-read              |
+| `CITRINEOS_ROLES_COMMON`                 | `permissions.user.get` | Granted to every authenticated caller      |
+
+The file is re-read on the interval, so adding a role or changing its grants takes effect without a restart. A
+failed re-read keeps the last good policy. A failed _first_ load is fatal under `jwt` and `localDev` — the server
+refuses to start rather than serve while denying everything.
+
+Each role lists the actions it holds per resource and the API permissions it may call:
 
 ```json
-util: {
-    (...)
-    messageBroker: {
-        amqp: {
-            url: 'amqp://guest:guest@localhost:5672'
-            (...)
-        }
-        (...)
-    }
-    (...)
+{
+  "dispatcher": {
+    "resources": { "Locations": ["list", "show"] },
+    "permissions": ["ocpp.configuration.triggerMessage"]
+  }
 }
 ```
 
-may be overridden by setting the environment variable `CITRINEOS_util_messageBroker_amqp_url` (case-insensitive).
+Permission names are derived from the endpoints themselves; `GET /permissions` returns every name this build
+exposes. A granted name that is not in that list is logged as having no effect.
 
-## Bootstrap Configuration Environment Variables
+### Certificate authorities
 
-All environment variables use the `CITRINEOS_` prefix.
-Additional prefixes can be added by passing the `--env-prefix` argument to nodemon (e.g.
-`nodemon --env-prefix=instance1_`), which is useful for running multiple instances side by side.
-Here's the complete list of environment variables used in bootstrapping the application (this is not the full system
-configuration):
+Both CAs are opt-in and off by default. Each is zero-config once enabled, so an empty object is enough:
 
-### Basic Bootstrap Configuration
+```shell
+CITRINEOS_INTEGRATIONS_V2GCA='{}'              # Hubject test PKI
+CITRINEOS_INTEGRATIONS_CHARGINGSTATIONCA='{}'  # ACME, Let's Encrypt staging
+```
 
-- `BOOTSTRAP_CITRINEOS_CONFIG_FILENAME` - Name of the main config file (default: `config.json`)
-- `BOOTSTRAP_CITRINEOS_CONFIG_DIR` - Directory containing the config file (optional)
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_TYPE` - Type of file access: `local`, `s3`, or `gcp`
+Override individual fields as needed — `CITRINEOS_INTEGRATIONS_V2GCA_HUBJECT_CLIENTID` and `..._CLIENTSECRET` (the
+defaults are placeholders and cannot issue anything real), or
+`CITRINEOS_INTEGRATIONS_CHARGINGSTATIONCA_ACME_ENV` (`staging` / `production`), `..._ACME_EMAIL` and
+`..._ACME_ACCOUNTKEYFILEPATH` (default `certificates/acme_account_key.pem`, resolved against the `fileAccess` root).
 
-### Database Configuration
+With neither enabled, the certificate-signing endpoints and the Certificates module's CA-backed operations raise an
+error when used; everything else runs normally.
 
-Database connection details (moved from system config to bootstrap config for better security and 12-factor compliance):
+### Running several instances side by side
 
-- `BOOTSTRAP_CITRINEOS_DATABASE_HOST` - Database host (default: `localhost`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_PORT` - Database port (default: `5432`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_NAME` - Database name (default: `citrine`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_DIALECT` - Database dialect (default: `postgres`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_USERNAME` - Database username (optional)
-- `BOOTSTRAP_CITRINEOS_DATABASE_PASSWORD` - Database password (optional)
-- `BOOTSTRAP_CITRINEOS_DATABASE_SYNC` - Enable database sync (via sequelize) (true/false, default: `false`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_ALTER` - Enable database alter (via sequelize) (true/false, default: `false`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_MAX_RETRIES` - Maximum connection retries (default: `3`)
-- `BOOTSTRAP_CITRINEOS_DATABASE_RETRY_DELAY` - Retry delay in milliseconds (default: `1000`)
+The prefix itself can be changed by passing `--env-prefix=` to the server process:
 
-### Local File Access
+```shell
+node dist/index.js --env-prefix=instance1_
+```
 
-When `BOOTSTRAP_CITRINEOS_FILE_ACCESS_TYPE=local`:
-
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_LOCAL_DEFAULT_FILE_PATH` - Default file path (default: `/data`)
-
-### S3 File Access
-
-When `BOOTSTRAP_CITRINEOS_FILE_ACCESS_TYPE=s3`:
-
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_REGION` - AWS region (optional)
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_ENDPOINT` - S3 endpoint URL (for MinIO or custom S3)
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_DEFAULT_BUCKET_NAME` - S3 bucket name (default: `citrineos-s3-bucket`)
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_FORCE_PATH_STYLE` - Force path style (true/false, default: `true`)
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_ACCESS_KEY_ID` - S3 access key ID
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_S3_SECRET_ACCESS_KEY` - S3 secret access key
-
-### GCP File Access
-
-When `BOOTSTRAP_CITRINEOS_FILE_ACCESS_TYPE=gcp`:
-
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_GCP_PROJECTID` - Project ID
-- `BOOTSTRAP_CITRINEOS_FILE_ACCESS_GCP_CREDENTIALS` - GCP Credentials object (Optional, if not set will use Application Default Credentials such as the `GOOGLE_APPLICATION_CREDENTIALS` environment variable or gcloud CLI credentials)
+That instance then reads `INSTANCE1_*` variables. The flag **replaces** the prefix rather than adding one, so
+`CITRINEOS_*` names are ignored for that process.
 
 ## Generating OCPP Interfaces
 
@@ -197,7 +559,7 @@ field-level validation that the official schemas lack.
 
 It is possible to add custom JSON schemas to validate the data fields of DataTransfer messages, which are supported by
 all OCPP versions.
-The OCPP message validator is created in `apps/ocpp-server/src/citrineOSServer.ts`. Register a DataTransfer schema by
+The OCPP message validator is created in `packages/ocpp/src/server/citrineos-server.ts`. Register a DataTransfer schema by
 compiling it onto that validator's AJV and passing it in:
 
 ```ts
@@ -220,8 +582,7 @@ before validation. Other approaches to custom DataTransfer message types are not
 
 The System Configuration defines websocket servers with certain properties, one of which is 'Allow Unknown Charging
 Stations', a boolean that permits charging stations which are not commissioned to connect to CitrineOS.
-This triggers an auto-commissioning flow which creates the station on its first connection, and creates evses and
-connectors for that station in response to StatusNotifications.
+This triggers an auto-commissioning flow: the moment any client connects to such a websocket server, a `ChargingStations` row is created for it (recording its online state and OCPP protocol), and evses and connectors are created for that station in response to StatusNotifications.
 This is not recommended for production; it is exclusively for testing and is enabled by the default configuration only
 on the websocket server at port 8081 — which also has no security.
 Since not all information on the charger is necessarily available in the OCPP messages, commissioning may be wrong and
@@ -230,10 +591,14 @@ concept of 'evses'. This will lead to improper behavior if a 1.6 station with mu
 CitrineOS will assume each new transaction is on the same evse and will automatically mark older transactions on that
 evse as inactive, leading to an inconsistent state with the charging station.
 
+> [!WARNING]
+> **`allowUnknownChargingStations` is intended for development and testing only. DO NOT USE IN PRODUCTION ENVIRONMENTS.**
+> When enabled, CitrineOS automatically creates a `ChargingStations` record immediately upon websocket connection.
+
 ## Hasura Metadata
 
 In order for Hasura to track the existing Citrine tables and relationships, this repository comes with Hasura metadata
-already exported into the `apps/ocpp-server/hasura-metadata` folder.
+already exported into the `apps/ocpp-server/db/hasura-metadata` folder.
 Running the Docker container will automatically import this metadata and track all tables and relationships.
 
 Unfortunately, Hasura doesn't currently support importing metadata from a JSON (which is the format if you export your
@@ -277,7 +642,7 @@ hasura metadata export
 ```
 
 - Find the exported files in the `graphql-engine` container's files in the metadata filepath `<name of project i.e. citrine>/metadata` and pull that metadata backup onto your local machine
-- Copy the contents of the copied `metadata` folder into the `apps/ocpp-server/hasura-metadata` folder in this repository
+- Copy the contents of the copied `metadata` folder into the `apps/ocpp-server/db/hasura-metadata` folder in this repository
 
 ## Testing with EVerest
 

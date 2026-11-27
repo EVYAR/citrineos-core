@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Load OCPI command handlers without re-entering their own package barrel before the base class initializes."
+}

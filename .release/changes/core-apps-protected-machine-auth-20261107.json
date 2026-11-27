@@ -1,0 +1,4 @@
+{
+  "type": "minor",
+  "summary": "Add bounded tenant-specific Core machine credentials shared by OCPI commands and a same-origin server-session-guarded generic Operator UI proxy, preserving partner OCPI and Keycloak client authentication and keeping service tokens server-side; wire explicit validated OCPI Hasura service headers separately without default roles or credentials."
+}

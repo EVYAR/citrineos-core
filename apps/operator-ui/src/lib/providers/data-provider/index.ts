@@ -4,51 +4,45 @@
 'use client';
 
 import { authProvider } from '@lib/providers/auth-provider';
-import { ResourceType } from '@lib/utils/access.types';
 import config from '@lib/utils/config';
-import { HasuraHeader } from '@lib/utils/hasura.types';
+import { HasuraHeader } from '@lib/utils/hasura-types';
 import dataProviderHasura, {
   GraphQLClient,
   type HasuraDataProviderOptions,
 } from '@refinedev/hasura';
-import { getHasuraAdminSecretAction } from '@lib/server/actions/getHasuraAdminSecretAction';
-
-const requestMiddleware = async (request: any) => {
-  const requestHeaders = {
-    ...request.headers,
-  };
-
-  const hasuraAdminSecret = await getHasuraAdminSecretAction().then((result) =>
-    result.success ? result.data : '',
-  );
-
-  if (hasuraAdminSecret) {
-    console.debug('Authorizing to Hasura via Hasura Admin Secret');
-    requestHeaders[HasuraHeader.X_HASURA_ADMIN_SECRET] = hasuraAdminSecret;
-  } else if (authProvider) {
-    console.debug('Authorizing to Hasura via configured Auth Provider');
-    const token = await authProvider.getToken();
-    if (token) {
-      requestHeaders['Authorization'] = 'Bearer ' + token;
-    }
-    const hasuraHeaders = await authProvider.getHasuraHeaders();
-    if (hasuraHeaders) {
-      const hasuraRole = hasuraHeaders.get(HasuraHeader.X_HASURA_ROLE);
-      if (hasuraRole) {
-        requestHeaders[HasuraHeader.X_HASURA_ROLE] = hasuraRole;
-      }
-    }
-  }
-  return {
-    ...request,
-    headers: requestHeaders,
-  };
-};
 
 const API_URL = config.apiUrl;
 
 const client = new GraphQLClient(API_URL, {
-  requestMiddleware,
+  credentials: 'same-origin',
+  requestMiddleware: async (request) => {
+    if (config.authProvider === 'generic') return request;
+    const token = await authProvider.getToken();
+    if (!token) throw new Error('Hasura user session required');
+    const headers = new Headers();
+    if (Array.isArray(request.headers)) {
+      request.headers.forEach((pair) => {
+        const [name, value] = pair;
+        if (pair.length !== 2 || typeof name !== 'string' || typeof value !== 'string') {
+          throw new Error('Invalid GraphQL request headers');
+        }
+        headers.append(name, value);
+      });
+    } else if (request.headers) {
+      if (typeof request.headers.forEach === 'function') {
+        request.headers.forEach((value: string, name: string) => headers.append(name, value));
+      } else {
+        Object.entries(request.headers).forEach(([name, value]) => {
+          if (typeof value !== 'string') throw new Error('Invalid GraphQL request headers');
+          headers.append(name, value);
+        });
+      }
+    }
+    headers.set('Authorization', `Bearer ${token}`);
+    const role = (await authProvider.getHasuraHeaders()).get(HasuraHeader.X_HASURA_ROLE);
+    if (role) headers.set(HasuraHeader.X_HASURA_ROLE, role);
+    return { ...request, headers };
+  },
 });
 
 const hasuraProviderOptions = {

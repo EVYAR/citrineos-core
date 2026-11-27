@@ -2,18 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { EventGroup, loadBootstrapConfig } from '@citrineos/base';
-import { CitrineOSServer } from './citrineOSServer.js';
-import { getSystemConfig } from './config/index.js';
+import { ConfigLoader } from '@citrineos/base';
+import { CitrineOSServer } from '@citrineos/ocpp';
+import { EventGroup } from '@citrineos/types';
 
 async function main() {
-  const bootstrapConfig = loadBootstrapConfig();
-  const config = await getSystemConfig(bootstrapConfig);
-  const server = new CitrineOSServer(
-    process.env.APP_NAME?.toLowerCase() as EventGroup,
-    bootstrapConfig,
-    config,
-  );
+  const config = await ConfigLoader.loadConfig();
+  const server = new CitrineOSServer(process.env.APP_NAME?.toLowerCase() as EventGroup, config);
   server.run().catch((error: any) => {
     console.error(error);
     process.exit(1);

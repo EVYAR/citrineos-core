@@ -1,0 +1,221 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+
+import type { AuthenticationOptions } from '@citrineos/base';
+import { OCPP2_0_1, OCPPVersion, type SystemConfig } from '@citrineos/types';
+import type { IVariableAttributeRepository } from '@citrineos/dal';
+import {
+  DefaultSequelizeInstance,
+  type ITenantRepository,
+  sequelize,
+  SequelizeChargingStationNetworkProfileRepository,
+  SequelizeLocationRepository,
+  SequelizeServerNetworkProfileRepository,
+  SequelizeSetNetworkProfileRepository,
+  SequelizeTenantRepository,
+} from '@citrineos/dal';
+import { NetworkProfileFilter } from '@/transport/network-connection/authenticator/network-profile-filter.js';
+import type { IncomingMessage } from 'http';
+import type { Sequelize } from 'sequelize-typescript';
+import { GenericContainer, type StartedTestContainer, Wait } from 'testcontainers';
+import { Logger } from 'tslog';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/**
+ * ServerNetworkProfile has a tenantId, but its primary key is an operator-chosen string shared
+ * across the whole table. A profile id named by one tenant's ChargingStationNetworkProfile can
+ * therefore belong to another tenant, and this filter gates a websocket connection on the
+ * securityProfile it finds there.
+ */
+const TENANT_A = 1;
+const TENANT_B = 2;
+const STATION = 'CP001';
+const SHARED_PROFILE_ID = 'websocket-server-0';
+const CONFIGURATION_SLOT = 1;
+
+let pgContainer: StartedTestContainer;
+let sequelizeInstance: Sequelize;
+let config: SystemConfig;
+let locationRepository: SequelizeLocationRepository;
+let tenantRepository: ITenantRepository;
+let serverNetworkProfileRepository: SequelizeServerNetworkProfileRepository;
+let setNetworkProfileRepository: SequelizeSetNetworkProfileRepository;
+
+beforeAll(async () => {
+  pgContainer = await new GenericContainer('postgis/postgis:16-3.4-alpine')
+    .withEnvironment({
+      POSTGRES_USER: 'test',
+      POSTGRES_PASSWORD: 'test',
+      POSTGRES_DB: 'citrineos_test',
+    })
+    .withExposedPorts(5432)
+    .withWaitStrategy(Wait.forLogMessage('database system is ready to accept connections', 2))
+    .start();
+
+  config = {
+    database: {
+      host: pgContainer.getHost(),
+      port: pgContainer.getMappedPort(5432),
+      database: 'citrineos_test',
+      dialect: 'postgres',
+      username: 'test',
+      password: 'test',
+      sync: false,
+      alter: false,
+      force: false,
+      maxRetries: 1,
+      retryDelay: 100,
+    },
+  } as unknown as SystemConfig;
+
+  sequelizeInstance = DefaultSequelizeInstance.getInstance(config);
+  await sequelizeInstance.query('CREATE EXTENSION IF NOT EXISTS citext;');
+  await sequelizeInstance.sync({ force: true });
+
+  locationRepository = new SequelizeLocationRepository({
+    config,
+    logger: undefined,
+    sequelizeInstance,
+  } as never);
+  tenantRepository = new SequelizeTenantRepository({
+    config,
+    logger: undefined,
+    sequelizeInstance,
+  } as never);
+  serverNetworkProfileRepository = new SequelizeServerNetworkProfileRepository({
+    config,
+    logger: undefined,
+    sequelizeInstance,
+  } as never);
+  setNetworkProfileRepository = new SequelizeSetNetworkProfileRepository({
+    config,
+    logger: undefined,
+    sequelizeInstance,
+  } as never);
+}, 90_000);
+
+afterAll(async () => {
+  await sequelizeInstance?.close();
+  await pgContainer?.stop();
+});
+
+/** Exposes the protected filter hook. */
+class TestNetworkProfileFilter extends NetworkProfileFilter {
+  public check(tenantId: number, identifier: string, securityProfile: number): Promise<void> {
+    return this['filter'](
+      tenantId,
+      identifier,
+      {} as IncomingMessage,
+      { securityProfile } as AuthenticationOptions,
+    );
+  }
+}
+
+function aFilter(): TestNetworkProfileFilter {
+  const variableAttributeRepository = {
+    readAllByQuerystring: vi.fn().mockResolvedValue([{ value: String(CONFIGURATION_SLOT) }]),
+  } as unknown as IVariableAttributeRepository;
+
+  const serverNetworkProfileRepository = new SequelizeServerNetworkProfileRepository({
+    config,
+    logger: undefined,
+    sequelizeInstance,
+  } as never);
+
+  const chargingStationNetworkProfileRepository =
+    new SequelizeChargingStationNetworkProfileRepository({
+      config,
+      logger: undefined,
+      sequelizeInstance,
+    } as never);
+
+  return new TestNetworkProfileFilter({
+    variableAttributeRepository,
+    serverNetworkProfileRepository,
+    chargingStationNetworkProfileRepository,
+    logger: new Logger({ type: 'hidden' }),
+  });
+}
+
+describe('NetworkProfileFilter tenant scoping', () => {
+  let stationId: number;
+
+  beforeEach(async () => {
+    await sequelizeInstance.truncate({ cascade: true, restartIdentity: true });
+
+    await tenantRepository.createTenant({ name: 'A', isUserTenant: false });
+    await tenantRepository.createTenant({ name: 'B', isUserTenant: false });
+
+    // Only tenant B owns this profile, and it permits security profile 1.
+    await serverNetworkProfileRepository.upsertServerNetworkProfile(
+      {
+        id: SHARED_PROFILE_ID,
+        host: 'localhost',
+        port: 8080,
+        pingInterval: 60,
+        protocols: [OCPPVersion.OCPP2_0_1],
+        securityProfile: 1,
+        allowUnknownChargingStations: false,
+        dynamicTenantResolution: false,
+        tenantId: TENANT_B,
+      },
+      30,
+    );
+
+    const station = await locationRepository.createOrUpdateChargingStation(TENANT_A, {
+      ocppConnectionName: STATION,
+      isOnline: false,
+    });
+    stationId = (station as unknown as { id: number }).id;
+
+    const setNetworkProfile = await setNetworkProfileRepository.createPending({
+      ocppConnectionName: STATION,
+      correlationId: 'any-correlation-id',
+      configurationSlot: 1,
+      ocppVersion: OCPP2_0_1.OCPPVersionEnumType.OCPP20,
+      ocppTransport: OCPP2_0_1.OCPPTransportEnumType.JSON,
+      ocppCsmsUrl: 'url',
+      messageTimeout: 30,
+      securityProfile: 0,
+      ocppInterface: OCPP2_0_1.OCPPInterfaceEnumType.Wired1,
+      tenantId: TENANT_A,
+    });
+
+    // Tenant A's station names it anyway. Nothing validates the reference on the way in.
+    await sequelize.ChargingStationNetworkProfile.create({
+      stationId,
+      configurationSlot: CONFIGURATION_SLOT,
+      websocketServerConfigId: SHARED_PROFILE_ID,
+      tenantId: TENANT_A,
+      setNetworkProfileId: setNetworkProfile.id!,
+    } as never);
+  });
+
+  it('refuses a station whose profile reference resolves to another tenant', async () => {
+    await expect(aFilter().check(TENANT_A, STATION, 1)).rejects.toThrow(/SecurityProfile/);
+  });
+
+  it('allows the station once the profile belongs to its own tenant', async () => {
+    await serverNetworkProfileRepository.upsertServerNetworkProfile(
+      {
+        id: 'websocket-server-a',
+        host: 'localhost',
+        port: 8080,
+        pingInterval: 60,
+        protocols: [OCPPVersion.OCPP2_0_1],
+        securityProfile: 1,
+        allowUnknownChargingStations: false,
+        tenantId: TENANT_A,
+        dynamicTenantResolution: false,
+      },
+      30,
+    );
+    await sequelize.ChargingStationNetworkProfile.update(
+      { websocketServerConfigId: 'websocket-server-a' },
+      { where: { tenantId: TENANT_A, stationId } },
+    );
+
+    await expect(aFilter().check(TENANT_A, STATION, 1)).resolves.toBeUndefined();
+  });
+});

@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Configure the standalone acceptance profile's exact internal origin for NextRequest loopback normalization while preserving strict public Origin checks."
+}

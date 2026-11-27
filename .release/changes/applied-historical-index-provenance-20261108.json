@@ -1,0 +1,4 @@
+{
+  "type": "none",
+  "summary": "Preserve original source evidence for a migration applied before its source was reverted and validate the archive manifest against the reviewed fork history without changing applied database records."
+}

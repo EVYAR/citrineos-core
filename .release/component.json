@@ -6,5 +6,6 @@
   "baselineVersion": "2.0.0-alpha3",
   "developmentBranch": "dev",
   "productionBranch": "prod",
-  "upstream": true
+  "upstream": true,
+  "upstreamRepository": "https://github.com/citrineos/citrineos-core.git"
 }

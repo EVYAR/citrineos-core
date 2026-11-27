@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Preserve command callbacks while a busy OCPP station is requeued; publish only an actual terminal charger result, send failure or response timeout instead of reporting failure before a successful retry."
+}

@@ -12,9 +12,9 @@ services:
 
   manager:
     build:
-      dockerfile: ./everest/Dockerfile
+      context: ./everest
+      dockerfile: Dockerfile
       args:
-        - EVEREST_TARGET_URL=${EVEREST_TARGET_URL}
         - EVEREST_IMAGE_TAG=${EVEREST_IMAGE_TAG:-2025.6.1-dt-esdp}
         - EVEREST_IMAGE_REPOSITORY=${EVEREST_IMAGE_REPOSITORY:-ghcr.io/everest/everest-demo/manager}
     platform: linux/x86_64

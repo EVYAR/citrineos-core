@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Require a complete reviewed Core schema environment and skip implicit runtime migrations in the standalone Dokploy Compose definition."
+}

@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Label the independently built Hasura metadata image with the coordinated Core source commit."
+}

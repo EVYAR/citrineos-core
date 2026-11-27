@@ -1,0 +1,99 @@
+// SPDX-FileCopyrightText: 2026 Contributors to the CitrineOS Project
+//
+// SPDX-License-Identifier: Apache-2.0
+import {
+  AbstractHandler,
+  type AbstractHandlerDependencies,
+  AsRequestHandler,
+  type IMessage,
+  type IOcppSender,
+} from '@citrineos/base';
+import {
+  type HandlerProperties,
+  OCPP_2_VER_LIST,
+  OCPP_CallAction,
+  OCPP2_common_types,
+  OCPP2_request_types,
+  OCPP2_response_types,
+} from '@citrineos/types';
+import type {
+  IComponentRepository,
+  IVariableAttributeRepository,
+  IVariableMonitoringRepository,
+} from '@citrineos/dal';
+
+@AsRequestHandler(OCPP_2_VER_LIST, OCPP_CallAction.NotifyEvent)
+export class NotifyEventRequestOcpp2Handler extends AbstractHandler {
+  protected _ocppSender: IOcppSender;
+  protected _componentRepository: IComponentRepository;
+  protected _variableAttributeRepository: IVariableAttributeRepository;
+  protected _variableMonitoringRepository: IVariableMonitoringRepository;
+
+  constructor({
+    logger,
+    ocppSender,
+    componentRepository,
+    variableAttributeRepository,
+    variableMonitoringRepository,
+  }: AbstractHandlerDependencies & {
+    ocppSender: IOcppSender;
+    componentRepository: IComponentRepository;
+    variableAttributeRepository: IVariableAttributeRepository;
+    variableMonitoringRepository: IVariableMonitoringRepository;
+  }) {
+    super(logger);
+
+    this._ocppSender = ocppSender;
+    this._componentRepository = componentRepository;
+    this._variableAttributeRepository = variableAttributeRepository;
+    this._variableMonitoringRepository = variableMonitoringRepository;
+  }
+
+  async handle(
+    message: IMessage<OCPP2_request_types.NotifyEventRequest>,
+    props?: HandlerProperties,
+  ): Promise<void> {
+    this._logger.debug('Handler for NotifyEventRequest received message:', message, props);
+    const ocppConnectionName = message.context.ocppConnectionName;
+
+    const events = message.payload.eventData as OCPP2_common_types.EventDataType[];
+    for (const event of events) {
+      const [component, variable] =
+        await this._componentRepository.findOrCreateEvseAndComponentAndVariable(
+          message.context.tenantId,
+          event.component,
+          event.variable,
+        );
+      await this._variableMonitoringRepository.createEventDatumByComponentIdAndVariableIdAndStationId(
+        message.context.tenantId,
+        event,
+        ocppConnectionName,
+        component?.id,
+        variable?.id,
+      );
+      const reportDataType: OCPP2_common_types.ReportDataType = {
+        component,
+        variable,
+        variableAttribute: [
+          {
+            value: event.actualValue,
+          },
+        ],
+      };
+      await this._variableAttributeRepository.createOrUpdateDeviceModelByStationId(
+        message.context.tenantId,
+        reportDataType,
+        ocppConnectionName,
+        message.payload.generatedAt,
+      );
+    }
+
+    const response: OCPP2_response_types.NotifyEventResponse = {};
+
+    const messageConfirmation = await this._ocppSender.sendCallResultWithMessage(message, response);
+    this._logger.debug(
+      this.createHandlerSentMessageLog('NotifyEventResponse'),
+      messageConfirmation,
+    );
+  }
+}

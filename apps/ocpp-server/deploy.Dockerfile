@@ -13,18 +13,30 @@ COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter "@citrineos/ocpp-server..." build
 
+# Independent OCPP app identity; package version stays upstream2.1.0.
+ARG COMMIT_SHA
+RUN node -e 'const fs = require("node:fs"); const pkg = JSON.parse(fs.readFileSync("apps/ocpp-server/package.json", "utf8")); const sourceSha = process.env.COMMIT_SHA || null; if (sourceSha && !/^[a-f0-9]{40}$/.test(sourceSha)) throw new Error("COMMIT_SHA must be a full source SHA"); fs.writeFileSync("apps/ocpp-server/dist/build-info.json", JSON.stringify({component: pkg.name, version: pkg.version, sourceSha}) + "\n");'
+
+RUN pnpm --filter "@citrineos/ocpp-server" deploy --legacy --prod /deploy
+
 # The final stage, which copies built files and prepares the run environment
 # Using a slim image to reduce the final image size
 FROM node:24.16.0-slim
 
-RUN corepack enable
 
-COPY --from=build /usr/local/apps/citrineos /usr/local/apps/citrineos
+COPY --from=build /deploy /usr/local/apps/citrineos/apps/ocpp-server
+# pnpm deploy honours the package's `files` list (["dist"]), so runtime files
+# living outside dist/ must be copied explicitly.
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc /usr/local/apps/citrineos/apps/ocpp-server/.sequelizerc
+# static assets read from the image by k8s (hasura's copy-metadata initContainer).
+COPY --from=build /usr/local/apps/citrineos/apps/ocpp-server/db/hasura-metadata /usr/local/apps/citrineos/apps/ocpp-server/db/hasura-metadata
 
-WORKDIR /usr/local/apps/citrineos
+WORKDIR /usr/local/apps/citrineos/apps/ocpp-server
 
 RUN chmod +x /usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh
 
-EXPOSE ${PORT}
+ARG COMMIT_SHA
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
 
 ENTRYPOINT ["/usr/local/apps/citrineos/apps/ocpp-server/entrypoint.sh"]
