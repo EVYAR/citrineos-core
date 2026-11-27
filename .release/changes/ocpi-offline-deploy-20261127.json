@@ -1,0 +1,4 @@
+{
+  "type": "patch",
+  "summary": "Package the OCPI server from the frozen pnpm dependency store without resolving the workspace from the registry a second time."
+}
