@@ -32,7 +32,7 @@ export const UPSERT_SEQUENCE = gql`
         updatedAt: $createdAt
       }
       on_conflict: {
-        constraint: ChargingStationSequences_stationId_type_key
+        constraint: stationId_type
         update_columns: value
       }
     ) {

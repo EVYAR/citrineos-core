@@ -172,7 +172,7 @@ describe('chargingStationSequence queries', () => {
   });
 
   it('UPSERT_SEQUENCE upserts on the (stationId, type) unique constraint', () => {
-    expect(UPSERT_SEQUENCE).toContain('constraint: ChargingStationSequences_stationId_type_key');
+    expect(UPSERT_SEQUENCE).toContain('constraint: stationId_type');
     expect(UPSERT_SEQUENCE).toContain('update_columns: value');
     // updatedAt is written from the same $createdAt variable on insert.
     expect(UPSERT_SEQUENCE).toContain('updatedAt: $createdAt');
@@ -355,6 +355,7 @@ describe('token queries', () => {
   });
 
   it('GET_GROUP_AUTHORIZATION pins idTokenType to the Central literal', () => {
+    expect(GET_GROUP_AUTHORIZATION).toContain('$groupId: citext!');
     expect(GET_GROUP_AUTHORIZATION).toContain('idToken: { _eq: $groupId }');
     expect(GET_GROUP_AUTHORIZATION).toContain('idTokenType: { _eq: "Central" }');
     expect(GET_GROUP_AUTHORIZATION).toContain('tenantPartnerId: { _eq: $tenantPartnerId }');
